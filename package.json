@@ -4,6 +4,19 @@
   "description": "Review project files and Git diffs inside Oh My Pi",
   "type": "module",
   "private": true,
+  "files": [
+    "src/contracts.ts",
+    "src/filesystem.ts",
+    "src/index.ts",
+    "src/review-source.ts",
+    "src/git/process.ts",
+    "src/git/repository.ts",
+    "src/git/status.ts",
+    "src/model/baseline.ts",
+    "src/model/tree.ts",
+    "src/ui/files-panel.ts",
+    "src/ui/render.ts"
+  ],
   "engines": {
     "bun": ">=1.3.14"
   },
