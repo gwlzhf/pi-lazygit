@@ -282,10 +282,7 @@ export class FilesPanel implements Component {
     this.#previewController?.abort();
     this.#previewGeneration += 1;
     this.#previewController = undefined;
-    this.#previewPath = undefined;
-    this.#preview = undefined;
     this.#previewLoading = false;
-    this.#previewScroll = 0;
     const controller = new AbortController();
     this.#refreshController = controller;
     this.#refreshLoading = true;
@@ -433,14 +430,17 @@ export class FilesPanel implements Component {
     if (this.#disposed || (!force && this.#previewPath === path && (this.#previewLoading || this.#preview !== undefined))) {
       return;
     }
+    const samePath = this.#previewPath === path;
     const generation = ++this.#previewGeneration;
     this.#previewController?.abort();
     const controller = new AbortController();
     this.#previewController = controller;
     this.#previewPath = path;
-    this.#preview = undefined;
+    if (!samePath) {
+      this.#preview = undefined;
+      this.#previewScroll = 0;
+    }
     this.#previewLoading = true;
-    this.#previewScroll = 0;
 
     void this.#source.preview(path, { signal: controller.signal }).then(
       result => {
@@ -608,7 +608,7 @@ export class FilesPanel implements Component {
   }
 
   #renderPreviewRows(width: number, height: number): readonly string[] {
-    if (this.#previewLoading) return [this.#theme.fg("accent", "Loading preview…")];
+    if (this.#previewLoading && this.#preview === undefined) return [this.#theme.fg("accent", "Loading preview…")];
     const value = this.#preview;
     if (value === undefined) return [this.#theme.fg("muted", "Select a file to preview")];
     if (value.kind === "binary") {
@@ -631,6 +631,8 @@ export class FilesPanel implements Component {
   #footer(): string {
     const project = this.#snapshot;
     const pieces: string[] = [];
+    if (this.#preview?.truncated) pieces.push("preview truncated");
+    else if (project?.truncated) pieces.push("listing truncated");
     if (this.#sessionName !== undefined && this.#sessionName.length > 0) pieces.push(sanitizeTerminalText(this.#sessionName).replaceAll("\n", " "));
     if (project?.kind === "filesystem") {
       pieces.push("filesystem", pluralFiles(project.allFiles.length));
@@ -647,8 +649,6 @@ export class FilesPanel implements Component {
     else if (this.#refreshError !== undefined) pieces.push(`error: ${this.#refreshError}`);
     else if (this.#previewLoading) pieces.push("loading preview");
     else if (this.#preview?.kind === "error") pieces.push("preview error");
-    else if (this.#preview?.truncated) pieces.push("preview truncated");
-    else if (project?.truncated) pieces.push("listing truncated");
     else if (project?.baselineEstablishedAt !== undefined) pieces.push(`baseline ${new Date(project.baselineEstablishedAt).toISOString()}`);
 
     pieces.push(this.#focus === "preview"

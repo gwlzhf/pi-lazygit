@@ -192,7 +192,9 @@ export class ProjectReviewSource implements ReviewSource {
     coordinator.controller.signal.throwIfAborted();
     const key = canonicalRoot(inspection.root);
     let capture = coordinator.captures.get(key);
+    let created = false;
     if (capture === undefined) {
+      created = true;
       const hashFile = this.#hashFile(repository, inspection.root);
       capture = this.baselines
         .capture(
@@ -220,7 +222,7 @@ export class ProjectReviewSource implements ReviewSource {
 
     await waitForCaller(capture, callerSignal);
     callerSignal.throwIfAborted();
-    return true;
+    return created;
   }
 
   async establishBaseline(signal: AbortSignal): Promise<void> {

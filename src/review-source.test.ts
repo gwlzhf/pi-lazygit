@@ -407,7 +407,64 @@ test("one aborted waiter does not cancel a shared baseline capture or another wa
   const second = await secondRefresh;
 
   expect(second.sessionChanges.size).toBe(0);
-  expect(hashCalls).toBe(1);
+  expect(hashCalls).toBe(2);
+});
+
+test("a refresh joining baseline capture compares changes inspected after capture started", async () => {
+  const root = resolve("joining-baseline-refresh");
+  const dirty = change("dirty.ts", "M");
+  const added = change("added.ts", "A");
+  const initialInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 1, deletions: 0 }]]),
+  );
+  const joinedInspection = inspection(
+    root,
+    [dirty, added],
+    new Map([
+      [dirty.path, { insertions: 1, deletions: 0 }],
+      [added.path, { insertions: 2, deletions: 0 }],
+    ]),
+  );
+  const hashResult = deferred<string | null>();
+  const captureStarted = deferred<void>();
+  const secondInspection = deferred<void>();
+  let inspected = 0;
+  const git: FakeGit = {
+    async inspect(receivedSignal) {
+      receivedSignal.throwIfAborted();
+      inspected += 1;
+      if (inspected === 2) {
+        secondInspection.resolve(undefined);
+        return joinedInspection;
+      }
+      return initialInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      captureStarted.resolve(undefined);
+      return hashResult.promise;
+    },
+    async preview(path) {
+      return preview(path);
+    },
+  };
+  const factories = gitFactories(git, []);
+  const baselines = new BaselineStore();
+  const firstSource = new ProjectReviewSource(root, baselines, undefined, factories);
+  const secondSource = new ProjectReviewSource(root, baselines, undefined, factories);
+
+  const firstRefresh = firstSource.refresh({ signal });
+  await captureStarted.promise;
+  const secondRefresh = secondSource.refresh({ signal });
+  await secondInspection.promise;
+  hashResult.resolve("captured");
+
+  const [first, second] = await Promise.all([firstRefresh, secondRefresh]);
+  expect(first.sessionChanges.size).toBe(0);
+  expect([...second.sessionChanges]).toEqual([[added.path, added]]);
+  expect(second.sessionSummary).toEqual({ files: 1, insertions: 2, deletions: 0 });
 });
 
 test("a live caller retries after a canceled shared capture", async () => {

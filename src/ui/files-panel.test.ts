@@ -282,6 +282,47 @@ describe("FilesPanel state machine", () => {
     expect(source.previewCalls.at(-1)?.path).toBe("src/b.ts");
   });
 
+  test("refresh keeps the resolved preview visible while loading its replacement", async () => {
+    const { panel, source } = harness(100, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["before refresh"]));
+    await settle();
+
+    panel.handleInput("r");
+    expect(panel.render(100).join("\n")).toContain("before refresh");
+    source.refreshCalls[1]?.value.resolve(snapshot());
+    await settle();
+    expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
+    expect(panel.render(100).join("\n")).toContain("before refresh");
+
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["after refresh"]));
+    await settle();
+    const rendered = panel.render(100).join("\n");
+    expect(rendered).toContain("after refresh");
+    expect(rendered).not.toContain("before refresh");
+  });
+
+  test("rejected refresh preserves the last resolved preview", async () => {
+    const { panel, source } = harness(100, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["stable preview"]));
+    await settle();
+
+    panel.handleInput("r");
+    source.refreshCalls[1]?.value.reject(new Error("refresh failed"));
+    await settle();
+
+    const rendered = panel.render(100).join("\n");
+    expect(rendered).toContain("stable preview");
+    expect(rendered).toContain("error: refresh failed");
+  });
+
   test("late preview and refresh generations cannot replace newer results", async () => {
     const { panel, source, tui } = harness(60, 6);
     panel.start();
@@ -436,7 +477,7 @@ describe("FilesPanel deterministic rendering", () => {
       `│${"Binary file".padEnd(58)}│`,
       `│${"2,048 bytes".padEnd(58)}│`,
       `│${"".padEnd(58)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · listing ┘",
+      "└─ listing truncated · demo · modified · workspace · +3 -1 ┘",
     ]);
     special.panel.handleInput("\x1b");
     special.panel.handleInput("\x1b[B");
@@ -444,8 +485,13 @@ describe("FilesPanel deterministic rendering", () => {
     await settle();
     special.panel.handleInput("\r");
     const truncated = special.panel.render(60);
-    expect(truncated[1]).toBe(`│${"1 partial".padEnd(58)}│`);
-    expect(truncated.at(-1)).toBe("└─ demo · modified · workspace · +3 -1 · 2 files · preview ┘");
+    expect(truncated).toEqual([
+      `┌─ File: src/b.ts ${"─".repeat(41)}┐`,
+      `│${"1 partial".padEnd(58)}│`,
+      `│${"".padEnd(58)}│`,
+      `│${"".padEnd(58)}│`,
+      "└─ preview truncated · demo · modified · workspace · +3 -1 ┘",
+    ]);
     special.panel.handleInput("\x1b");
     special.panel.handleInput("\x1b[A");
     special.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "error", [], { error: "permission denied\x1b[2J" }));
