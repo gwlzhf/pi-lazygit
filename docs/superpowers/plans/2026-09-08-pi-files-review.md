@@ -620,6 +620,8 @@ export class ProjectReviewSource implements ReviewSource {
   preview(path: string, options: PreviewOptions): Promise<FilePreview>;
 }
 
+
+export function createReviewSource(cwd: string): ReviewSource;
 export function prepareSessionBaseline(cwd: string): Promise<void>;
 export function clearSessionBaselines(): void;
 ```
