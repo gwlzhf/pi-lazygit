@@ -26,6 +26,18 @@ omp plugin link .
 
 OMP reads the extension entry from the package manifest. Restart OMP after linking so the plugin is loaded and the session baseline is established.
 
+## Install a release package
+
+Extract the versioned archive, then link the extracted package directory:
+
+```powershell
+New-Item -ItemType Directory pi-lazygit-0.1.0
+tar -xzf .\pi-lazygit-0.1.0.tgz --strip-components=1 -C .\pi-lazygit-0.1.0
+omp plugin link .\pi-lazygit-0.1.0
+```
+
+Restart OMP after linking. The release package contains only the manifest, README, and production extension sources.
+
 For a one-run development session without linking the plugin, run this from the repository root:
 
 ```powershell
