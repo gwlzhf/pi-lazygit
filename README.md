@@ -28,11 +28,10 @@ OMP reads the extension entry from the package manifest. Restart OMP after linki
 
 ## Install a release package
 
-Extract the versioned archive, then link the extracted package directory:
+Download the Windows ZIP package, extract it with PowerShell, then link the extracted directory:
 
 ```powershell
-New-Item -ItemType Directory pi-lazygit-0.1.0
-tar -xzf .\pi-lazygit-0.1.0.tgz --strip-components=1 -C .\pi-lazygit-0.1.0
+Expand-Archive -LiteralPath .\pi-lazygit-0.1.0.zip -DestinationPath .\pi-lazygit-0.1.0
 omp plugin link .\pi-lazygit-0.1.0
 ```
 
