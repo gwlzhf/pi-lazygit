@@ -48,7 +48,7 @@ omp --extension ./src/index.ts
 Within an interactive OMP session, use either entry point:
 
 - `/files`
-- `Ctrl+Shift+G`
+- `Alt+Q`
 
 Both open the same review panel. Only one panel can be open at a time. Headless, print, RPC, and ACP invocations do not mount the panel; an attempted invocation reports that the interactive UI is unavailable.
 

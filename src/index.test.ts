@@ -137,7 +137,7 @@ async function invokeShortcut(
   await shortcut?.handler(ctx);
 }
 
-test("registers /files, Ctrl+Shift+G, and session lifecycle handlers", () => {
+test("registers /files, Alt+Q, and session lifecycle handlers", () => {
   const harness = createApiHarness();
   createExtension({
     createReviewSource: createSource,
@@ -147,8 +147,8 @@ test("registers /files, Ctrl+Shift+G, and session lifecycle handlers", () => {
   })(harness.api);
 
   expect(harness.commands.get("files")?.description).toContain("files");
-  expect(harness.shortcuts.get(FILES_SHORTCUT)).toBeDefined();
-  expect(FILES_SHORTCUT).toBe("ctrl+shift+g");
+  expect(harness.shortcuts.get("alt+q")).toBeDefined();
+  expect(harness.shortcuts.get("ctrl+shift+g")).toBeUndefined();
   expect(harness.lifecycle.get("session_start")).toBeDefined();
   expect(harness.lifecycle.get("session_shutdown")).toBeDefined();
 });

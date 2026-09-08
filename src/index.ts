@@ -17,7 +17,7 @@ export interface ExtensionDependencies {
   readonly createPanel: (options: FilesPanelOptions) => FilesPanel;
 }
 
-export const FILES_SHORTCUT = "ctrl+shift+g";
+export const FILES_SHORTCUT = "alt+q";
 
 const productionDependencies: ExtensionDependencies = {
   createReviewSource,

@@ -55,7 +55,7 @@ test("registers /files, Alt+Q, and session lifecycle handlers", () => {
 Run:
 
 ```powershell
-bun test src/index.test.ts --test-name-pattern "registers /files, Alt\\+Q"
+bun test src/index.test.ts --test-name-pattern "registers /files, Alt"
 ```
 
 Expected: FAIL because the extension still registers `ctrl+shift+g`, so the `alt+q` lookup is undefined and the old shortcut remains present.
@@ -85,7 +85,7 @@ Keep the `/files` entry and surrounding behavior description unchanged.
 Run:
 
 ```powershell
-bun test src/index.test.ts --test-name-pattern "registers /files, Alt\\+Q"
+bun test src/index.test.ts --test-name-pattern "registers /files, Alt"
 ```
 
 Expected: PASS; the extension registration map contains `alt+q` and does not contain `ctrl+shift+g`.
