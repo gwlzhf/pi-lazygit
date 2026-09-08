@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import * as nodePath from "node:path";
 import {
+  DEFAULT_DIFF_CONTEXT,
   MAX_PREVIEW_BYTES,
   MAX_PREVIEW_LINES,
+  normalizeDiffContext,
   type ChangeRecord,
   type ChangeSummary,
   type FilePreview,
@@ -425,7 +427,11 @@ export class GitRepository {
     }
   }
 
-  async preview(path: string, signal: AbortSignal): Promise<FilePreview> {
+  async preview(
+    path: string,
+    signal: AbortSignal,
+    contextLines: number = DEFAULT_DIFF_CONTEXT,
+  ): Promise<FilePreview> {
     throwIfAborted(signal);
     let displayPath = normalizeProjectPath(path);
     try {
@@ -455,7 +461,7 @@ export class GitRepository {
         "diff",
         "--no-ext-diff",
         "--no-color",
-        "--unified=3",
+        `--unified=${normalizeDiffContext(contextLines) ?? DEFAULT_DIFF_CONTEXT}`,
         "HEAD",
         "--",
         displayPath,

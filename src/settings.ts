@@ -1,6 +1,15 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as nodePath from "node:path";
-import { DEFAULT_TREE_RATIO, TREE_MAX_RATIO, TREE_MIN_RATIO } from "./contracts";
+import {
+  DEFAULT_DIFF_CONTEXT,
+  DEFAULT_DIFF_LAYOUT,
+  DEFAULT_TREE_RATIO,
+  isDiffLayout,
+  normalizeDiffContext,
+  TREE_MAX_RATIO,
+  TREE_MIN_RATIO,
+  type DiffLayout,
+} from "./contracts";
 import {
   DEFAULT_HIGHLIGHT_THEME,
   isHighlightThemeName,
@@ -10,14 +19,20 @@ import {
 /** Panel preferences that outlive a single OMP session. */
 export interface PanelSettings {
   readonly treeRatio: number;
+  readonly treeCollapsed: boolean;
   readonly highlightTheme: HighlightThemeName;
+  readonly diffLayout: DiffLayout;
+  readonly diffContext: number;
 }
 
 /** Storage for {@link PanelSettings}; writes coalesce so a drag is one file write. */
 export interface PanelSettingsStore {
   load(): Promise<PanelSettings>;
   saveTreeRatio(ratio: number): void;
+  saveTreeCollapsed(collapsed: boolean): void;
   saveHighlightTheme(theme: HighlightThemeName): void;
+  saveDiffLayout(layout: DiffLayout): void;
+  saveDiffContext(context: number): void;
   flush(): Promise<void>;
 }
 
@@ -26,7 +41,10 @@ const WRITE_DELAY_MS = 400;
 
 export const DEFAULT_PANEL_SETTINGS: PanelSettings = {
   treeRatio: DEFAULT_TREE_RATIO,
+  treeCollapsed: false,
   highlightTheme: DEFAULT_HIGHLIGHT_THEME,
+  diffLayout: DEFAULT_DIFF_LAYOUT,
+  diffContext: DEFAULT_DIFF_CONTEXT,
 };
 
 /** Clamp a stored or reported ratio into the supported range, or reject it. */
@@ -97,12 +115,25 @@ export function createPanelSettingsStore(
           current = DEFAULT_PANEL_SETTINGS;
           return current;
         }
-        const value = parsed as { treeRatio?: unknown; highlightTheme?: unknown };
+        const value = parsed as {
+          treeRatio?: unknown;
+          treeCollapsed?: unknown;
+          highlightTheme?: unknown;
+          diffLayout?: unknown;
+          diffContext?: unknown;
+        };
         current = {
           treeRatio: clampTreeRatio(value.treeRatio) ?? DEFAULT_PANEL_SETTINGS.treeRatio,
+          treeCollapsed: typeof value.treeCollapsed === "boolean"
+            ? value.treeCollapsed
+            : DEFAULT_PANEL_SETTINGS.treeCollapsed,
           highlightTheme: isHighlightThemeName(value.highlightTheme)
             ? value.highlightTheme
             : DEFAULT_PANEL_SETTINGS.highlightTheme,
+          diffLayout: isDiffLayout(value.diffLayout)
+            ? value.diffLayout
+            : DEFAULT_PANEL_SETTINGS.diffLayout,
+          diffContext: normalizeDiffContext(value.diffContext) ?? DEFAULT_PANEL_SETTINGS.diffContext,
         };
         return current;
       } catch {
@@ -118,9 +149,28 @@ export function createPanelSettingsStore(
       scheduleWrite();
     },
 
+    saveTreeCollapsed(collapsed: boolean): void {
+      if (typeof collapsed !== "boolean") return;
+      current = { ...current, treeCollapsed: collapsed };
+      scheduleWrite();
+    },
+
     saveHighlightTheme(theme: HighlightThemeName): void {
       if (!isHighlightThemeName(theme)) return;
       current = { ...current, highlightTheme: theme };
+      scheduleWrite();
+    },
+
+    saveDiffLayout(layout: DiffLayout): void {
+      if (!isDiffLayout(layout)) return;
+      current = { ...current, diffLayout: layout };
+      scheduleWrite();
+    },
+
+    saveDiffContext(context: number): void {
+      const normalized = normalizeDiffContext(context);
+      if (normalized === undefined) return;
+      current = { ...current, diffContext: normalized };
       scheduleWrite();
     },
 

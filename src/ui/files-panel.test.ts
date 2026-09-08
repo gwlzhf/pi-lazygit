@@ -5,6 +5,7 @@ import { visibleWidth } from "@oh-my-pi/pi-tui";
 import type {
   ChangeRecord,
   FilePreview,
+  PreviewOptions,
   ProjectSnapshot,
   ReviewSource,
   StatusCode,
@@ -35,7 +36,10 @@ interface Pending<T> {
 
 class ControlledSource implements ReviewSource {
   readonly refreshCalls: Pending<ProjectSnapshot>[] = [];
-  readonly previewCalls: (Pending<FilePreview> & { readonly path: string })[] = [];
+  readonly previewCalls: (Pending<FilePreview> & {
+    readonly path: string;
+    readonly diffContext: number | undefined;
+  })[] = [];
 
   refresh({ signal }: { readonly signal: AbortSignal }): Promise<ProjectSnapshot> {
     const value = deferred<ProjectSnapshot>();
@@ -43,9 +47,14 @@ class ControlledSource implements ReviewSource {
     return value.promise;
   }
 
-  preview(path: string, { signal }: { readonly signal: AbortSignal }): Promise<FilePreview> {
+  preview(path: string, options: PreviewOptions): Promise<FilePreview> {
     const value = deferred<FilePreview>();
-    this.previewCalls.push({ path, signal, value });
+    this.previewCalls.push({
+      path,
+      signal: options.signal,
+      diffContext: options.diffContext,
+      value,
+    });
     return value.promise;
   }
 }
@@ -731,7 +740,7 @@ describe("FilesPanel deterministic rendering", () => {
       `│${">   M  a.ts".padEnd(29)}│${"@@ -1 +1 @@".padEnd(68)}│`,
       `│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`,
       `│${"".padEnd(29)}│${"+new".padEnd(68)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · ↑↓ move · ↵ open · tab · [ ] width · m/a · s · r┘",
+      "└─ demo · modified · workspace · +3 -1 · 2 files · unified diff · ctx 3 · ↑↓ move · ↵ open · tab · ┘",
     ]);
 
     const narrow = harness(60, 6);
@@ -860,5 +869,201 @@ describe("FilesPanel deterministic rendering", () => {
     const resized = panel.render(61);
     panel.invalidate();
     expect(panel.render(61)).not.toBe(resized);
+  });
+});
+
+describe("FilesPanel tree collapse", () => {
+  async function collapsibleHarness(overrides: Partial<FilesPanelOptions> = {}): Promise<{
+    readonly value: ReturnType<typeof harness>;
+    readonly collapses: boolean[];
+  }> {
+    const collapses: boolean[] = [];
+    const value = harness(100, 6, {
+      onTreeCollapsedChange: collapsed => collapses.push(collapsed),
+      ...overrides,
+    });
+    value.panel.start();
+    value.source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    value.panel.handleInput("\x1b[B");
+    value.source.previewCalls.at(-1)?.value.resolve(
+      preview("src/a.ts", "text", ["alpha", "beta", "gamma", "delta", "epsilon"]),
+    );
+    await settle();
+    return { value, collapses };
+  }
+
+  test("hides the tree pane, reports the change, and restores it", async () => {
+    const { value, collapses } = await collapsibleHarness();
+    const { panel } = value;
+
+    expect(panel.render(100)[0]).toContain("┬");
+
+    panel.handleInput("\\");
+    const collapsed = panel.render(100);
+    expect(collapses).toEqual([true]);
+    expect(collapsed[0]).toBe(`┌─ File: src/a.ts ${"─".repeat(81)}┐`);
+    expect(collapsed[1]).toBe(`│${"1 alpha".padEnd(98)}│`);
+    expect(collapsed.at(-1)).toContain("↑↓ scroll");
+    expectWidthSafe(collapsed, 100);
+
+    // Ctrl+B toggles the tree as well.
+    panel.handleInput("\x02");
+    expect(collapses).toEqual([true, false]);
+    expect(panel.render(100)[0]).toContain("┬");
+  });
+
+  test("routes keys to the preview while collapsed and reveals the tree again on tab", async () => {
+    const { value, collapses } = await collapsibleHarness();
+    const { panel } = value;
+
+    panel.handleInput("\\");
+    panel.handleInput("j");
+    expect(panel.render(100)[1]).toBe(`│${"2 beta".padEnd(98)}│`);
+
+    panel.handleInput("\t");
+    expect(collapses).toEqual([true, false]);
+    const restored = panel.render(100);
+    expect(restored[0]).toContain("┬");
+    // Focus is back on the tree: its selected row keeps the cursor marker.
+    expect(restored[2]).toContain(">   M  a.ts");
+  });
+
+  test("escape reveals a collapsed tree before it closes the panel", async () => {
+    const { value } = await collapsibleHarness();
+    const { panel, doneResults } = value;
+
+    panel.handleInput("\\");
+    panel.handleInput("\x1b");
+    expect(doneResults).toEqual([]);
+    expect(panel.render(100)[0]).toContain("┬");
+
+    panel.handleInput("\x1b");
+    expect(doneResults).toEqual([undefined]);
+  });
+
+  test("opens collapsed when the persisted settings say so, and ] brings the tree back", async () => {
+    const collapses: boolean[] = [];
+    const { panel, source } = harness(100, 6, {
+      treeCollapsed: true,
+      onTreeCollapsedChange: collapsed => collapses.push(collapsed),
+    });
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    const opened = panel.render(100);
+    expect(opened[0]).toBe(`┌─ Preview ${"─".repeat(88)}┐`);
+    expect(opened[1]).toBe(`│${"Select a file to preview".padEnd(98)}│`);
+
+    // Narrowing a hidden tree is a no-op; widening reveals it.
+    panel.handleInput("[");
+    expect(collapses).toEqual([]);
+    expect(panel.render(100)[0]).toBe(`┌─ Preview ${"─".repeat(88)}┐`);
+    panel.handleInput("]");
+    expect(collapses).toEqual([false]);
+    expect(panel.render(100)[0]).toContain("┬");
+  });
+});
+
+describe("FilesPanel diff layout and context", () => {
+  const DIFF_LINES = ["diff --git a/src/a.ts b/src/a.ts", "@@ -1 +1 @@", "-old", "+new"];
+
+  async function diffHarness(columns: number, overrides: Partial<FilesPanelOptions> = {}): Promise<
+    ReturnType<typeof harness>
+  > {
+    const value = harness(columns, 6, overrides);
+    value.panel.start();
+    value.source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    value.panel.handleInput("\x1b[B");
+    value.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "diff", DIFF_LINES));
+    await settle();
+    return value;
+  }
+
+  test("d pairs removals with additions in two aligned columns", async () => {
+    const layouts: string[] = [];
+    const { panel } = await diffHarness(100, {
+      onDiffLayoutChange: layout => layouts.push(layout),
+    });
+
+    expect(panel.render(100)[3]).toBe(`│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`);
+
+    panel.handleInput("d");
+    const split = panel.render(100);
+    expect(layouts).toEqual(["split"]);
+    expect(split[1]).toBe(`│${"  ▼ src/".padEnd(29)}│${DIFF_LINES[0]?.padEnd(68)}│`);
+    expect(split[2]).toBe(`│${">   M  a.ts".padEnd(29)}│${"@@ -1 +1 @@".padEnd(68)}│`);
+    expect(split[3]).toBe(
+      `│${"    A  b.ts".padEnd(29)}│1 ${"-old".padEnd(31)}│1 ${"+new".padEnd(32)}│`,
+    );
+    expect(split.at(-1)).toContain("split diff · ctx 3");
+    expectWidthSafe(split, 100);
+
+    panel.handleInput("d");
+    expect(layouts).toEqual(["split", "unified"]);
+    expect(panel.render(100)[3]).toBe(`│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`);
+  });
+
+  test("keeps the unified layout when the preview pane is too narrow to split", async () => {
+    const { panel } = await diffHarness(40, { diffLayout: "split" });
+
+    panel.handleInput("\r");
+    const rendered = panel.render(40);
+    expect(rendered[1]).toBe(`│${DIFF_LINES[0]?.padEnd(38)}│`);
+    expect(rendered[3]).toBe(`│${"-old".padEnd(38)}│`);
+  });
+
+  test("c cycles the Git context, refetches the preview, and reports the change", async () => {
+    const contexts: number[] = [];
+    const { panel, source } = await diffHarness(100, {
+      onDiffContextChange: context => contexts.push(context),
+    });
+
+    expect(source.previewCalls.at(-1)?.diffContext).toBe(3);
+    expect(panel.render(100).at(-1)).toContain("ctx 3");
+
+    panel.handleInput("c");
+    expect(contexts).toEqual([10]);
+    const refetch = source.previewCalls.at(-1);
+    expect(refetch?.path).toBe("src/a.ts");
+    expect(refetch?.diffContext).toBe(10);
+    refetch?.value.resolve(preview("src/a.ts", "diff", DIFF_LINES));
+    await settle();
+    expect(panel.render(100).at(-1)).toContain("ctx 10");
+
+    panel.handleInput("c");
+    panel.handleInput("c");
+    expect(contexts).toEqual([10, 25, 100_000]);
+    expect(source.previewCalls.at(-1)?.diffContext).toBe(100_000);
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "diff", DIFF_LINES));
+    await settle();
+    expect(panel.render(100).at(-1)).toContain("ctx full");
+
+    panel.handleInput("c");
+    expect(contexts).toEqual([10, 25, 100_000, 3]);
+  });
+
+  test("scrolls the split view by its own row count", async () => {
+    const lines = ["@@ -1,4 +1,4 @@"];
+    for (let index = 1; index <= 8; index += 1) lines.push(`-old ${index}`);
+    for (let index = 1; index <= 8; index += 1) lines.push(`+new ${index}`);
+    const { panel, source } = harness(100, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "diff", lines));
+    await settle();
+    panel.handleInput("d");
+    panel.handleInput("\r");
+
+    // 1 hunk header plus 8 paired rows: the last page of 4 starts at row 5,
+    // where the 16-line unified diff would still have 12 lines to go.
+    panel.handleInput("\x1b[F");
+    const end = panel.render(100);
+    expect(end[1]).toBe(`│${"  ▼ src/".padEnd(29)}│5 ${"-old 5".padEnd(31)}│5 ${"+new 5".padEnd(32)}│`);
+    expect(end[4]).toBe(`│${"".padEnd(29)}│8 ${"-old 8".padEnd(31)}│8 ${"+new 8".padEnd(32)}│`);
   });
 });

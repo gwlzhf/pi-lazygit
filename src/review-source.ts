@@ -294,7 +294,9 @@ export class ProjectReviewSource implements ReviewSource {
 
   async preview(path: string, options: PreviewOptions): Promise<FilePreview> {
     const backend = this.#backend ?? (await this.#discoverBackend(options.signal)).backend;
-    return backend.project.preview(path, options.signal);
+    return backend.kind === "git"
+      ? backend.project.preview(path, options.signal, options.diffContext)
+      : backend.project.preview(path, options.signal);
   }
 }
 

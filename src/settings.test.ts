@@ -30,7 +30,7 @@ describe("clampTreeRatio", () => {
 });
 
 describe("panel settings store", () => {
-  test("round-trips width and theme through the settings file", async () => {
+  test("round-trips every panel preference through the settings file", async () => {
     const file = await settingsFile();
     const store = createPanelSettingsStore(async () => file);
 
@@ -38,9 +38,19 @@ describe("panel settings store", () => {
 
     store.saveTreeRatio(0.18);
     store.saveHighlightTheme("nord");
+    store.saveTreeCollapsed(true);
+    store.saveDiffLayout("split");
+    store.saveDiffContext(25);
     await store.flush();
 
-    const expected = { treeRatio: 0.18, highlightTheme: "nord" } as const;
+    const expected = {
+      ...DEFAULT_PANEL_SETTINGS,
+      treeRatio: 0.18,
+      treeCollapsed: true,
+      highlightTheme: "nord",
+      diffLayout: "split",
+      diffContext: 25,
+    } as const;
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual(expected);
     expect(await createPanelSettingsStore(async () => file).load()).toEqual(expected);
   });
@@ -51,13 +61,17 @@ describe("panel settings store", () => {
 
     store.saveTreeRatio(0.1);
     store.saveHighlightTheme("nord");
+    store.saveDiffLayout("split");
     store.saveTreeRatio(0.16);
     store.saveHighlightTheme("tokyo-night");
+    store.saveDiffLayout("unified");
     await store.flush();
 
     expect(await store.load()).toEqual({
+      ...DEFAULT_PANEL_SETTINGS,
       treeRatio: 0.16,
       highlightTheme: "tokyo-night",
+      diffLayout: "unified",
     });
   });
 
@@ -69,20 +83,39 @@ describe("panel settings store", () => {
 
     await writeFile(file, JSON.stringify({ treeRatio: 0.2 }), "utf8");
     expect(await store.load()).toEqual({
+      ...DEFAULT_PANEL_SETTINGS,
       treeRatio: 0.2,
-      highlightTheme: "pi",
     });
 
     await writeFile(file, JSON.stringify({ treeRatio: 0.18, highlightTheme: "unknown" }), "utf8");
     expect(await store.load()).toEqual({
+      ...DEFAULT_PANEL_SETTINGS,
       treeRatio: 0.18,
-      highlightTheme: "pi",
     });
 
     await writeFile(file, JSON.stringify({ treeRatio: "wide", highlightTheme: "nord" }), "utf8");
     expect(await store.load()).toEqual({
-      treeRatio: DEFAULT_PANEL_SETTINGS.treeRatio,
+      ...DEFAULT_PANEL_SETTINGS,
       highlightTheme: "nord",
+    });
+
+    await writeFile(
+      file,
+      JSON.stringify({ treeCollapsed: "yes", diffLayout: "columns", diffContext: 7 }),
+      "utf8",
+    );
+    expect(await store.load()).toEqual(DEFAULT_PANEL_SETTINGS);
+
+    await writeFile(
+      file,
+      JSON.stringify({ treeCollapsed: true, diffLayout: "split", diffContext: 10 }),
+      "utf8",
+    );
+    expect(await store.load()).toEqual({
+      ...DEFAULT_PANEL_SETTINGS,
+      treeCollapsed: true,
+      diffLayout: "split",
+      diffContext: 10,
     });
   });
 
@@ -100,8 +133,8 @@ describe("panel settings store", () => {
 
     await writeFile(file, JSON.stringify({ treeRatio: 0.75 }), "utf8");
     expect(await store.load()).toEqual({
+      ...DEFAULT_PANEL_SETTINGS,
       treeRatio: 0.3,
-      highlightTheme: "pi",
     });
   });
 

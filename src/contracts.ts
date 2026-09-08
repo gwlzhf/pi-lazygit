@@ -15,6 +15,39 @@ export type ViewMode = "modified" | "all";
 export type ChangeScope = "workspace" | "session";
 export type StatusCode = "M" | "A" | "D" | "R" | "?" | "U";
 
+/** How a Git diff preview is laid out: one unified column, or old/new columns. */
+export type DiffLayout = "unified" | "split";
+/** Diff layout the panel opens with when nothing was persisted. */
+export const DEFAULT_DIFF_LAYOUT: DiffLayout = "unified";
+
+/**
+ * Context line count that makes `git diff` emit the whole file around every
+ * hunk. Git clamps the value to the file length, so a large constant is enough.
+ */
+export const FULL_DIFF_CONTEXT = 100_000;
+/** Unchanged-line counts cycled by the preview, ending at whole-file context. */
+export const DIFF_CONTEXT_LEVELS: readonly number[] = [3, 10, 25, FULL_DIFF_CONTEXT];
+/** Context line count the panel opens with when nothing was persisted. */
+export const DEFAULT_DIFF_CONTEXT = 3;
+
+export function isDiffLayout(value: unknown): value is DiffLayout {
+  return value === "unified" || value === "split";
+}
+
+/** Accept a stored context level, or reject anything outside the cycle. */
+export function normalizeDiffContext(value: unknown): number | undefined {
+  return typeof value === "number" && DIFF_CONTEXT_LEVELS.includes(value) ? value : undefined;
+}
+
+export function nextDiffContext(context: number): number {
+  const index = DIFF_CONTEXT_LEVELS.indexOf(context);
+  return DIFF_CONTEXT_LEVELS[(index + 1) % DIFF_CONTEXT_LEVELS.length] ?? DEFAULT_DIFF_CONTEXT;
+}
+
+export function diffContextLabel(context: number): string {
+  return context >= FULL_DIFF_CONTEXT ? "full" : String(context);
+}
+
 export interface ChangeRecord {
   readonly path: string;
   readonly oldPath?: string;
@@ -57,6 +90,8 @@ export interface RefreshOptions {
 
 export interface PreviewOptions {
   readonly signal: AbortSignal;
+  /** Unchanged lines Git keeps around each hunk; ignored by non-diff previews. */
+  readonly diffContext?: number;
 }
 
 export interface ReviewSource {

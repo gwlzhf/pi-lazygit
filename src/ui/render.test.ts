@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
+import { parseUnifiedDiff, type DiffRow } from "./diff-view";
 import {
   fitCell,
   renderDiffLine,
+  renderDiffSplitRow,
   renderHighlightedLine,
   renderNumberedLine,
   renderSingleBorder,
@@ -177,6 +179,63 @@ describe("preview line rendering", () => {
 
     expect(lines).toEqual([" 1 alpha    ", "12 猫   beta"]);
     for (const line of lines) expectFits(line, 12);
+  });
+
+  test("renders side-by-side rows with numbered, marked columns", () => {
+    const theme = plainTheme();
+    const rows = parseUnifiedDiff(["@@ -1,2 +1,2 @@", " keep", "-old", "+new"]) ?? [];
+
+    const rendered = rows.map(row => renderDiffSplitRow(row, 21, theme, 1));
+
+    expect(rendered).toEqual([
+      "@@ -1,2 +1,2 @@      ",
+      "1  keep   │1  keep   ",
+      "2 -old    │2 +new    ",
+    ]);
+    for (const line of rendered) expectFits(line, 21);
+  });
+
+  test("blanks the column that has no counterpart and colors each side", () => {
+    const calls: ThemeColor[] = [];
+    const theme = plainTheme(calls);
+    const rows = parseUnifiedDiff(["@@ -1 +1,2 @@", "-old", "+new", "+extra"]) ?? [];
+
+    const rendered = rows.slice(1).map(row => renderDiffSplitRow(row, 21, theme, 1));
+
+    expect(rendered).toEqual([
+      "1 -old    │1 +new    ",
+      "          │2 +extra  ",
+    ]);
+    expect(calls).toEqual([
+      "dim",
+      "toolDiffRemoved",
+      "borderMuted",
+      "dim",
+      "toolDiffAdded",
+      "dim",
+      "borderMuted",
+      "dim",
+      "toolDiffAdded",
+    ]);
+  });
+
+  test("sanitizes split cells and stays width safe at every width", () => {
+    const theme = plainTheme();
+    const rows: readonly DiffRow[] = parseUnifiedDiff([
+      "diff --git a/a.ts b/a.ts",
+      "@@ -1 +1 @@",
+      "-猫\t\x1b[2Jold\0",
+      "+new",
+    ]) ?? [];
+
+    for (let width = 1; width <= 120; width += 1) {
+      for (const row of rows) {
+        const line = renderDiffSplitRow(row, width, theme, 3);
+        expectFits(line, width);
+        expect(line).not.toContain("\x1b[2J");
+        expect(line).not.toContain("\0");
+      }
+    }
   });
 
   test("keeps highlight colors, closes them, and stays width safe", () => {

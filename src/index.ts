@@ -76,12 +76,24 @@ export function createExtension(
               keybindings,
               ...(sessionName === undefined ? {} : { sessionName }),
               treeRatio: settings.treeRatio,
+              treeCollapsed: settings.treeCollapsed,
               highlightTheme: settings.highlightTheme,
+              diffLayout: settings.diffLayout,
+              diffContext: settings.diffContext,
               onTreeRatioChange: ratio => {
                 dependencies.settings.saveTreeRatio(ratio);
               },
+              onTreeCollapsedChange: collapsed => {
+                dependencies.settings.saveTreeCollapsed(collapsed);
+              },
               onHighlightThemeChange: highlightTheme => {
                 dependencies.settings.saveHighlightTheme(highlightTheme);
+              },
+              onDiffLayoutChange: diffLayout => {
+                dependencies.settings.saveDiffLayout(diffLayout);
+              },
+              onDiffContextChange: diffContext => {
+                dependencies.settings.saveDiffContext(diffContext);
               },
               ...(highlight === undefined ? {} : { highlight }),
               done,

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { MAX_PREVIEW_BYTES } from "../contracts";
+import { FULL_DIFF_CONTEXT, MAX_PREVIEW_BYTES } from "../contracts";
 import { GitRepository } from "./repository";
 import {
   type CommandOutput,
@@ -406,6 +406,34 @@ test("previews staged plus unstaged edits together against HEAD", async () => {
   expect(preview.kind).toBe("diff");
   expect(preview.lines).toContain("+staged");
   expect(preview.lines).toContain("+unstaged");
+});
+
+test("widens the diff context on request and rejects unsupported levels", async () => {
+  const root = await initializeRepository();
+  const original = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`);
+  await writeFile(join(root, "long.ts"), `${original.join("\n")}\n`);
+  await git(root, "add", "long.ts");
+  await git(root, "commit", "--quiet", "-m", "long");
+  await writeFile(
+    join(root, "long.ts"),
+    `${original.map(line => (line === "line 10" ? "line ten" : line)).join("\n")}\n`,
+  );
+  const repository = await openRepository(root);
+  const signal = new AbortController().signal;
+
+  const narrow = await repository.preview("long.ts", signal);
+  const wide = await repository.preview("long.ts", signal, FULL_DIFF_CONTEXT);
+  const rejected = await repository.preview("long.ts", signal, 4);
+
+  expect(narrow.lines).toContain("-line 10");
+  expect(narrow.lines).toContain(" line 7");
+  expect(narrow.lines).not.toContain(" line 1");
+  expect(wide.lines).toContain("-line 10");
+  expect(wide.lines).toContain(" line 1");
+  expect(wide.lines).toContain(" line 20");
+  // A level outside the cycle falls back to the default rather than to Git's
+  // own error for a malformed `--unified` value.
+  expect(rejected.lines).toEqual(narrow.lines);
 });
 
 test("previews untracked content and deleted tracked files", async () => {

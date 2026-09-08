@@ -42,7 +42,7 @@ Within an interactive OMP session, use either entry point:
 
 Both open the same review panel. Only one panel can be open at a time. Headless, print, RPC, and ACP invocations do not mount the panel; an attempted invocation reports that the interactive UI is unavailable.
 
-At wide terminal widths the project tree and preview appear side by side. At narrow widths, the tree and preview use a single pane.
+At wide terminal widths the project tree and preview appear side by side. At narrow widths, or with the tree collapsed, the tree and preview use a single pane.
 
 The panel opens as a fullscreen overlay on the terminal's alternate screen, so the OMP transcript stays intact underneath and the terminal reports mouse events to the panel. While the panel is open, the terminal's own text selection is unavailable.
 
@@ -52,7 +52,9 @@ The panel opens as a fullscreen overlay on the terminal's alternate screen, so t
 
 The tree pane width is adjustable. Drag the divider between the panes with the left mouse button, or use `[` / `]` (also `Ctrl+Left` / `Ctrl+Right`) to change it one column at a time. The width is capped at 30% of the panel interior and never falls below 12 columns, unless the 30% cap is itself below 12 columns, in which case the cap wins.
 
-The width and syntax theme are stored in `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden), so both survive panel closes and OMP restarts. Width is stored as a ratio of the panel interior. Rapid changes are coalesced into a single write; unreadable, invalid, or unwritable settings fall back to the 30% width and Pi syntax theme without interrupting the session.
+`\` (also `Ctrl+B`) collapses the tree pane so the preview uses the full panel width, and restores it again. While the tree is collapsed the preview holds focus and every key routes to it; `\`, `Ctrl+B`, `Tab`, `Esc`, `Left`/`h`, and `]` all bring the tree back and return focus to it. `Esc` therefore takes two presses to close the panel from a collapsed tree: one to reveal it, one to close.
+
+The width, collapsed state, syntax theme, and diff view settings are stored in `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden), so they survive panel closes and OMP restarts. Width is stored as a ratio of the panel interior. Rapid changes are coalesced into a single write; unreadable, invalid, or unwritable settings fall back to the 30% width, expanded tree, Pi syntax theme, and unified 3-line diff without interrupting the session.
 
 The mouse wheel moves the selection in the tree pane and scrolls the preview pane, following the pointer in the side-by-side layout and the focused pane in the single-pane layout.
 
@@ -61,6 +63,19 @@ The mouse wheel moves the selection in the tree pane and scrolls the preview pan
 Text previews use OMP's highlighter with four palettes: Pi (default, using the active OMP theme), Catppuccin, Nord, and Tokyo Night. Press `t` from either pane to cycle them in that order. The selected palette affects code syntax only; panel borders, status colors, and diff colors continue to use the active OMP theme. The language is detected from the file path — TypeScript, JavaScript/Node, C#, Go, C/C++, Rust, Python, Java, Kotlin, Ruby, PHP, shell, JSON, YAML, and the other languages OMP supports. Files whose language is unknown or unsupported render as plain text.
 
 Diffs keep their per-line added/removed/hunk coloring instead of language highlighting. Preview content is sanitized before it is highlighted, so file contents can never emit their own terminal escape sequences.
+
+## Diff views
+
+In Git mode a tracked file's preview is a diff, and two keys control how it reads. Both work from either pane, and both are remembered across sessions.
+
+`d` switches between the layouts:
+
+- **Unified** (default) is Git's own single-column output.
+- **Split** shows the old file on the left and the new file on the right, with each column line-numbered and marked `-` or `+`. Removals pair with the additions that replace them; where one side has no counterpart, its column is blank. File and hunk headers stay across the full width. The split layout needs at least 40 columns of preview; a narrower preview keeps the unified layout, as does a combined merge diff, which numbers more than two files per hunk.
+
+`c` cycles how much unchanged code surrounds each change: **3** lines (default), **10**, **25**, then **full** — the entire file, with the changed lines still marked. Each press refetches the diff from Git, so the count is exact rather than reconstructed. Whole-file context still obeys the 1 MiB and 5,000-line preview limits.
+
+The footer reports the active layout and context, for example `split diff · ctx 10`.
 
 ## Keys
 
@@ -75,7 +90,10 @@ Diffs keep their per-line added/removed/hunk coloring instead of language highli
 | `Enter` | Toggle a directory, or open/focus the selected file preview |
 | `Tab` / `Shift+Tab` | Move focus to the preview |
 | `[` / `]` or `Ctrl+Left` / `Ctrl+Right` | Narrow/widen the tree pane |
+| `\` or `Ctrl+B` | Collapse the tree pane |
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
+| `d` | Switch the diff preview between unified and split columns |
+| `c` | Cycle the diff context: 3, 10, 25, full file |
 | `m` | Show modified files |
 | `a` | Show all visible files |
 | `s` | Toggle workspace/session scope |
@@ -93,7 +111,10 @@ Diffs keep their per-line added/removed/hunk coloring instead of language highli
 | `Home` / `End` | Jump to the start/end |
 | `Tab` / `Shift+Tab` | Return focus to the project tree |
 | `[` / `]` or `Ctrl+Left` / `Ctrl+Right` | Narrow/widen the tree pane |
+| `\` or `Ctrl+B` | Collapse/restore the tree pane |
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
+| `d` | Switch the diff preview between unified and split columns |
+| `c` | Cycle the diff context: 3, 10, 25, full file |
 | `Left` or `h` | Return focus to the project tree |
 | `Esc` | Return focus to the project tree |
 | configured OMP `app.interrupt` key | Return to the tree; invoke it again from the tree to close |
@@ -113,7 +134,7 @@ The active repository baseline is captured at `session_start`, before the panel 
 
 Session scope is temporal attribution, not Agent attribution. Any edit made after the baseline counts, including edits made by external programs, other terminals, or people. A file restored to its baseline state disappears from session scope.
 
-Tracked files display a unified `HEAD`-to-working-tree diff that combines staged and unstaged changes. Deleted files display their deletion diff. Untracked and unchanged text files display read-only, line-numbered content. Binary files display metadata instead of raw bytes.
+Tracked files display a `HEAD`-to-working-tree diff that combines staged and unstaged changes, in the layout and context selected with `d` and `c`. Deleted files display their deletion diff. Untracked and unchanged text files display read-only, line-numbered content. Binary files display metadata instead of raw bytes.
 
 ## Non-Git directories
 

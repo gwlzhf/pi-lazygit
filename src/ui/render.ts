@@ -1,5 +1,6 @@
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import { replaceTabs, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import type { DiffCell, DiffRow } from "./diff-view";
 
 const OSC_SEQUENCE = /(?:\x1b\]|\u009d)[\s\S]*?(?:\x07|\x1b\\|\u009c)/gu;
 const STRING_SEQUENCE = /(?:\x1b[P_X^]|[\u0090\u0098\u009e\u009f])[\s\S]*?(?:\x1b\\|\u009c)/gu;
@@ -134,6 +135,51 @@ export function renderDiffLine(line: string, width: number, theme: Theme): strin
   const clean = safeLine(line);
   const cell = fitCell(clean, width);
   return theme.fg(diffColor(clean), cell);
+}
+
+/** Smallest preview width that still fits two readable diff columns. */
+export const SPLIT_DIFF_MINIMUM_WIDTH = 40;
+
+function diffCellColor(kind: DiffCell["kind"]): ThemeColor {
+  if (kind === "add") return "toolDiffAdded";
+  if (kind === "remove") return "toolDiffRemoved";
+  return "toolDiffContext";
+}
+
+function renderDiffCell(cell: DiffCell, width: number, theme: Theme, gutterWidth: number): string {
+  if (width <= 0) return "";
+  // Padding opposite an unpaired removal or addition: blank, but still filled so
+  // the column separator stays aligned.
+  if (cell.kind === "empty") return theme.fg("dim", " ".repeat(width));
+  const number = (cell.number === undefined ? "" : String(cell.number)).padStart(Math.max(1, gutterWidth));
+  const numberWidth = visibleWidth(number);
+  if (width <= numberWidth) return theme.fg("dim", fitCell(number, width));
+  const marker = cell.kind === "add" ? "+" : cell.kind === "remove" ? "-" : " ";
+  const body = fitCell(`${marker}${safeLine(cell.text)}`, width - numberWidth - 1);
+  return `${theme.fg("dim", `${number} `)}${theme.fg(diffCellColor(cell.kind), body)}`;
+}
+
+/**
+ * Render one side-by-side diff row: the old file left, the new file right, and
+ * hunk or file headers across the full width.
+ */
+export function renderDiffSplitRow(
+  row: DiffRow,
+  width: number,
+  theme: Theme,
+  gutterWidth: number,
+): string {
+  const safeWidth = Math.max(0, Math.floor(width));
+  if (safeWidth === 0) return "";
+  if (row.kind !== "pair") return renderDiffLine(row.text, safeWidth, theme);
+  if (safeWidth < 3) return theme.fg("dim", " ".repeat(safeWidth));
+  const leftWidth = Math.floor((safeWidth - 1) / 2);
+  const rightWidth = safeWidth - 1 - leftWidth;
+  return [
+    renderDiffCell(row.left, leftWidth, theme, gutterWidth),
+    themedBorder(theme, "│"),
+    renderDiffCell(row.right, rightWidth, theme, gutterWidth),
+  ].join("");
 }
 
 export function renderNumberedLine(

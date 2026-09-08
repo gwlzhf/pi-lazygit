@@ -3,9 +3,9 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@oh-my-pi/pi-coding-agent";
-import type { ReviewSource } from "./contracts";
+import type { DiffLayout, ReviewSource } from "./contracts";
 import { createExtension, FILES_SHORTCUT, type ExtensionDependencies } from "./index";
-import type { PanelSettings, PanelSettingsStore } from "./settings";
+import { DEFAULT_PANEL_SETTINGS, type PanelSettings, type PanelSettingsStore } from "./settings";
 import type { FilesPanel, FilesPanelOptions } from "./ui/files-panel";
 import type { HighlightThemeName } from "./ui/highlight";
 
@@ -123,12 +123,12 @@ function createSource(): ReviewSource {
 
 function createSettingsStore(overrides: Partial<PanelSettingsStore> = {}): PanelSettingsStore {
   return {
-    load: async (): Promise<PanelSettings> => ({
-      treeRatio: 0.3,
-      highlightTheme: "pi",
-    }),
+    load: async (): Promise<PanelSettings> => ({ ...DEFAULT_PANEL_SETTINGS }),
     saveTreeRatio: () => {},
+    saveTreeCollapsed: () => {},
     saveHighlightTheme: () => {},
+    saveDiffLayout: () => {},
+    saveDiffContext: () => {},
     flush: async () => {},
     ...overrides,
   };
@@ -293,6 +293,9 @@ test("restores panel settings, persists changes, and flushes on close", async ()
   const panelOptions: FilesPanelOptions[] = [];
   const savedRatios: number[] = [];
   const savedThemes: HighlightThemeName[] = [];
+  const savedCollapsed: boolean[] = [];
+  const savedLayouts: DiffLayout[] = [];
+  const savedContexts: number[] = [];
   let flushes = 0;
 
   createExtension(dependencies({
@@ -301,12 +304,28 @@ test("restores panel settings, persists changes, and flushes on close", async ()
       return createPanel();
     },
     settings: createSettingsStore({
-      load: async () => ({ treeRatio: 0.17, highlightTheme: "nord" }),
+      load: async () => ({
+        ...DEFAULT_PANEL_SETTINGS,
+        treeRatio: 0.17,
+        treeCollapsed: true,
+        highlightTheme: "nord",
+        diffLayout: "split",
+        diffContext: 25,
+      }),
       saveTreeRatio: ratio => {
         savedRatios.push(ratio);
       },
       saveHighlightTheme: theme => {
         savedThemes.push(theme);
+      },
+      saveTreeCollapsed: collapsed => {
+        savedCollapsed.push(collapsed);
+      },
+      saveDiffLayout: layout => {
+        savedLayouts.push(layout);
+      },
+      saveDiffContext: context => {
+        savedContexts.push(context);
       },
       flush: async () => {
         flushes += 1;
@@ -318,10 +337,19 @@ test("restores panel settings, persists changes, and flushes on close", async ()
 
   expect(panelOptions[0]?.treeRatio).toBe(0.17);
   expect(panelOptions[0]?.highlightTheme).toBe("nord");
+  expect(panelOptions[0]?.treeCollapsed).toBe(true);
+  expect(panelOptions[0]?.diffLayout).toBe("split");
+  expect(panelOptions[0]?.diffContext).toBe(25);
   panelOptions[0]?.onTreeRatioChange?.(0.22);
   panelOptions[0]?.onHighlightThemeChange?.("tokyo-night");
+  panelOptions[0]?.onTreeCollapsedChange?.(false);
+  panelOptions[0]?.onDiffLayoutChange?.("unified");
+  panelOptions[0]?.onDiffContextChange?.(10);
   expect(savedRatios).toEqual([0.22]);
   expect(savedThemes).toEqual(["tokyo-night"]);
+  expect(savedCollapsed).toEqual([false]);
+  expect(savedLayouts).toEqual(["unified"]);
+  expect(savedContexts).toEqual([10]);
   expect(flushes).toBe(1);
 });
 

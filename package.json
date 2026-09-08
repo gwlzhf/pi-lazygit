@@ -15,6 +15,7 @@
     "src/git/status.ts",
     "src/model/baseline.ts",
     "src/model/tree.ts",
+    "src/ui/diff-view.ts",
     "src/ui/files-panel.ts",
     "src/ui/highlight.ts",
     "src/ui/render.ts"

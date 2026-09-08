@@ -8,12 +8,19 @@ import {
   type TUI,
 } from "@oh-my-pi/pi-tui";
 import {
+  DEFAULT_DIFF_CONTEXT,
+  DEFAULT_DIFF_LAYOUT,
   DEFAULT_TREE_RATIO,
+  diffContextLabel,
+  isDiffLayout,
+  nextDiffContext,
+  normalizeDiffContext,
   TREE_MAX_RATIO,
   TREE_MIN_COLUMNS,
   TREE_MIN_RATIO,
   type ChangeRecord,
   type ChangeScope,
+  type DiffLayout,
   type FilePreview,
   type ProjectSnapshot,
   type ReviewSource,
@@ -28,6 +35,11 @@ import {
   visiblePaths,
 } from "../model/tree";
 import {
+  diffGutterWidth,
+  parseUnifiedDiff,
+  type DiffRow,
+} from "./diff-view";
+import {
   DEFAULT_HIGHLIGHT_THEME,
   getHighlightThemeLabel,
   HIGHLIGHT_THEMES,
@@ -37,6 +49,7 @@ import {
 } from "./highlight";
 import {
   renderDiffLine,
+  renderDiffSplitRow,
   renderHighlightedLine,
   renderNumberedLine,
   renderSingleBorder,
@@ -44,6 +57,7 @@ import {
   renderSplitBorder,
   renderSplitRow,
   sanitizeTerminalText,
+  SPLIT_DIFF_MINIMUM_WIDTH,
 } from "./render";
 
 export interface FilesPanelOptions {
@@ -57,6 +71,18 @@ export interface FilesPanelOptions {
   readonly treeRatio?: number;
   /** Reports every tree width change so the host can persist it. */
   readonly onTreeRatioChange?: (ratio: number) => void;
+  /** Whether the tree pane opens hidden, restored from persisted settings. */
+  readonly treeCollapsed?: boolean;
+  /** Reports every tree collapse toggle so the host can persist it. */
+  readonly onTreeCollapsedChange?: (collapsed: boolean) => void;
+  /** Diff preview layout restored from persisted settings. */
+  readonly diffLayout?: DiffLayout;
+  /** Reports every diff layout change so the host can persist it. */
+  readonly onDiffLayoutChange?: (layout: DiffLayout) => void;
+  /** Diff context line count restored from persisted settings. */
+  readonly diffContext?: number;
+  /** Reports every diff context change so the host can persist it. */
+  readonly onDiffContextChange?: (context: number) => void;
   /** Syntax palette restored from persisted settings. */
   readonly highlightTheme?: HighlightThemeName;
   /** Reports every syntax palette change so the host can persist it. */
@@ -112,6 +138,9 @@ export class FilesPanel implements Component {
   readonly #keybindings: KeybindingsManager;
   readonly #sessionName: string | undefined;
   readonly #onTreeRatioChange: ((ratio: number) => void) | undefined;
+  readonly #onTreeCollapsedChange: ((collapsed: boolean) => void) | undefined;
+  readonly #onDiffLayoutChange: ((layout: DiffLayout) => void) | undefined;
+  readonly #onDiffContextChange: ((context: number) => void) | undefined;
   readonly #onHighlightThemeChange: ((theme: HighlightThemeName) => void) | undefined;
   readonly #highlight: Highlighter | undefined;
   readonly #done: (result: undefined) => void;
@@ -136,9 +165,17 @@ export class FilesPanel implements Component {
   #refreshGeneration = 0;
   #previewGeneration = 0;
   #treeRatio: number;
+  #treeCollapsed: boolean;
+  #diffLayout: DiffLayout;
+  #diffContext: number;
   #highlightTheme: HighlightThemeName;
   #lastWidth = 0;
+  #lastPreviewWidth = 0;
   #dividerDrag = false;
+  #diffRows: {
+    readonly preview: FilePreview;
+    readonly rows: readonly DiffRow[] | undefined;
+  } | undefined;
   #highlighted: {
     readonly preview: FilePreview;
     readonly theme: HighlightThemeName;
@@ -162,9 +199,16 @@ export class FilesPanel implements Component {
     this.#keybindings = options.keybindings;
     this.#sessionName = options.sessionName;
     this.#onTreeRatioChange = options.onTreeRatioChange;
+    this.#onTreeCollapsedChange = options.onTreeCollapsedChange;
+    this.#onDiffLayoutChange = options.onDiffLayoutChange;
+    this.#onDiffContextChange = options.onDiffContextChange;
     this.#onHighlightThemeChange = options.onHighlightThemeChange;
     this.#highlight = options.highlight;
     this.#treeRatio = Math.max(TREE_MIN_RATIO, Math.min(TREE_MAX_RATIO, options.treeRatio ?? DEFAULT_TREE_RATIO));
+    this.#treeCollapsed = options.treeCollapsed ?? false;
+    this.#focus = this.#treeCollapsed ? "preview" : "tree";
+    this.#diffLayout = isDiffLayout(options.diffLayout) ? options.diffLayout : DEFAULT_DIFF_LAYOUT;
+    this.#diffContext = normalizeDiffContext(options.diffContext) ?? DEFAULT_DIFF_CONTEXT;
     this.#highlightTheme = options.highlightTheme ?? DEFAULT_HIGHLIGHT_THEME;
     this.#done = options.done;
   }
@@ -184,8 +228,7 @@ export class FilesPanel implements Component {
     const interrupted = this.#keybindings.matches(data, "app.interrupt");
     if (interrupted || matchesKey(data, "escape")) {
       if (this.#focus === "preview") {
-        this.#focus = "tree";
-        this.#requestRender();
+        this.#focusTree();
       } else {
         this.#finish();
       }
@@ -193,8 +236,26 @@ export class FilesPanel implements Component {
     }
 
     if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
+      if (this.#treeCollapsed) {
+        this.#setTreeCollapsed(false);
+        return;
+      }
       this.#focus = this.#focus === "tree" ? "preview" : "tree";
       this.#requestRender();
+      return;
+    }
+    if (matchesKey(data, "\\") || matchesKey(data, "ctrl+b")) {
+      this.#setTreeCollapsed(!this.#treeCollapsed);
+      return;
+    }
+    if (matchesKey(data, "d")) {
+      this.#diffLayout = this.#diffLayout === "unified" ? "split" : "unified";
+      this.#onDiffLayoutChange?.(this.#diffLayout);
+      this.#requestRender();
+      return;
+    }
+    if (matchesKey(data, "c")) {
+      this.#cycleDiffContext();
       return;
     }
     if (matchesKey(data, "[") || matchesKey(data, "ctrl+left")) {
@@ -243,7 +304,7 @@ export class FilesPanel implements Component {
     if (terminalRows === 0) {
       lines = Object.freeze([]);
     } else if (terminalRows <= 2) {
-      const wide = safeWidth >= WIDE_LAYOUT_MINIMUM;
+      const wide = this.#isWideLayout(safeWidth);
       const leftWidth = this.#treeWidth(safeWidth);
       const header = wide
         ? renderSplitBorder(this.#treeTitle(), this.#previewTitle(), safeWidth, leftWidth, "top", this.#theme)
@@ -253,7 +314,7 @@ export class FilesPanel implements Component {
         : [header, renderSingleBorder(this.#footer(), safeWidth, "bottom", this.#theme)]);
     } else {
       const contentHeight = terminalRows - 2;
-      lines = safeWidth >= WIDE_LAYOUT_MINIMUM
+      lines = this.#isWideLayout(safeWidth)
         ? this.#renderWide(safeWidth, contentHeight)
         : this.#renderNarrow(safeWidth, contentHeight);
     }
@@ -284,6 +345,7 @@ export class FilesPanel implements Component {
     this.#refreshController = undefined;
     this.#previewController = undefined;
     this.#highlighted = undefined;
+    this.#diffRows = undefined;
     this.#cache = undefined;
   }
 
@@ -335,10 +397,44 @@ export class FilesPanel implements Component {
     if (matchesKey(data, "enter")) this.#openSelection();
   }
 
+  /** Return to the tree, revealing it first when it is collapsed. */
+  #focusTree(): void {
+    if (this.#treeCollapsed) {
+      this.#setTreeCollapsed(false);
+      return;
+    }
+    this.#focus = "tree";
+    this.#requestRender();
+  }
+
+  #setTreeCollapsed(collapsed: boolean): void {
+    if (this.#treeCollapsed === collapsed) return;
+    this.#treeCollapsed = collapsed;
+    // A hidden tree cannot hold focus, and revealing it hands focus back.
+    this.#focus = collapsed ? "preview" : "tree";
+    this.#onTreeCollapsedChange?.(collapsed);
+    this.#requestRender();
+  }
+
+  /**
+   * Widen the unchanged context Git prints around each hunk, up to the whole
+   * file. The diff itself comes from Git, so the preview is refetched.
+   */
+  #cycleDiffContext(): void {
+    this.#diffContext = nextDiffContext(this.#diffContext);
+    this.#onDiffContextChange?.(this.#diffContext);
+    const path = this.#previewPath;
+    if (path === undefined) {
+      this.#requestRender();
+      return;
+    }
+    this.#beginPreview(path, true);
+    this.#requestRender();
+  }
+
   #handlePreviewInput(data: string): void {
     if (matchesKey(data, "left") || matchesKey(data, "h")) {
-      this.#focus = "tree";
-      this.#requestRender();
+      this.#focusTree();
       return;
     }
     const height = this.#previewViewportHeight();
@@ -362,7 +458,7 @@ export class FilesPanel implements Component {
    * a left press on the wide-layout divider starts a width drag.
    */
   #routeMouse(event: SgrMouseEvent): boolean {
-    const wide = this.#lastWidth >= WIDE_LAYOUT_MINIMUM;
+    const wide = this.#isWideLayout(this.#lastWidth);
     const treeWidth = this.#treeWidth(this.#lastWidth);
     if (event.release) {
       this.#dividerDrag = false;
@@ -385,6 +481,11 @@ export class FilesPanel implements Component {
     return true;
   }
 
+  /** Whether both panes are shown: the panel is wide enough and the tree is out. */
+  #isWideLayout(width: number): boolean {
+    return !this.#treeCollapsed && width >= WIDE_LAYOUT_MINIMUM;
+  }
+
   /** Tree pane columns for a panel width, clamped to the resize bounds. */
   #treeWidth(width: number): number {
     const available = Math.max(0, Math.floor(width) - 3);
@@ -394,6 +495,11 @@ export class FilesPanel implements Component {
   }
 
   #resizeTree(deltaColumns: number): void {
+    // Widening a collapsed tree brings it back; narrowing it further is a no-op.
+    if (this.#treeCollapsed) {
+      if (deltaColumns > 0) this.#setTreeCollapsed(false);
+      return;
+    }
     this.#setTreeColumns(this.#treeWidth(this.#lastWidth) + deltaColumns);
   }
 
@@ -580,7 +686,7 @@ export class FilesPanel implements Component {
     }
     this.#previewLoading = true;
 
-    void this.#source.preview(path, { signal: controller.signal }).then(
+    void this.#source.preview(path, { signal: controller.signal, diffContext: this.#diffContext }).then(
       result => {
         if (!this.#isCurrentPreview(generation, controller, path)) return;
         this.#previewController = undefined;
@@ -618,6 +724,7 @@ export class FilesPanel implements Component {
     this.#previewLoading = false;
     this.#previewScroll = 0;
     this.#highlighted = undefined;
+    this.#diffRows = undefined;
   }
 
   #setPreviewScroll(next: number, height: number): void {
@@ -633,7 +740,28 @@ export class FilesPanel implements Component {
     if (value === undefined) return 1;
     if (value.kind === "binary") return value.byteSize === undefined ? 1 : 2;
     if (value.kind === "error") return 1;
+    if (value.kind === "diff") {
+      // Scrolling counts the rows the last render produced: pairing removals
+      // with additions makes the split view shorter than the unified one.
+      const rows = this.#splitDiffRows(value, this.#lastPreviewWidth);
+      if (rows !== undefined) return rows.length;
+    }
     return value.lines.length;
+  }
+
+  /**
+   * Side-by-side rows for a diff preview, or `undefined` when the split layout
+   * is off, the pane is too narrow, or the diff is not a plain two-way diff.
+   */
+  #splitDiffRows(value: FilePreview, width: number): readonly DiffRow[] | undefined {
+    if (this.#diffLayout !== "split" || value.kind !== "diff") return undefined;
+    if (width < SPLIT_DIFF_MINIMUM_WIDTH) return undefined;
+    let cached = this.#diffRows;
+    if (cached?.preview !== value) {
+      cached = { preview: value, rows: parseUnifiedDiff(value.lines) };
+      this.#diffRows = cached;
+    }
+    return cached.rows;
   }
 
   #requestRender(): void {
@@ -746,6 +874,7 @@ export class FilesPanel implements Component {
   }
 
   #renderPreviewRows(width: number, height: number): readonly string[] {
+    this.#lastPreviewWidth = width;
     if (this.#previewLoading && this.#preview === undefined) return [this.#theme.fg("accent", "Loading preview…")];
     const value = this.#preview;
     if (value === undefined) return [this.#theme.fg("muted", "Select a file to preview")];
@@ -756,6 +885,18 @@ export class FilesPanel implements Component {
     }
     if (value.kind === "error") {
       return [this.#theme.fg("error", `Error: ${errorMessage(value.error ?? "Unable to load file")}`)];
+    }
+
+    if (value.kind === "diff") {
+      const rows = this.#splitDiffRows(value, width);
+      if (rows !== undefined) {
+        const first = Math.max(0, Math.min(this.#previewScroll, Math.max(0, rows.length - height)));
+        this.#previewScroll = first;
+        const numbers = diffGutterWidth(rows);
+        return rows
+          .slice(first, first + height)
+          .map(row => renderDiffSplitRow(row, width, this.#theme, numbers));
+      }
     }
 
     const start = Math.max(0, Math.min(this.#previewScroll, Math.max(0, value.lines.length - height)));
@@ -868,12 +1009,15 @@ export class FilesPanel implements Component {
     if (this.#highlight !== undefined) {
       pieces.push(`theme ${getHighlightThemeLabel(this.#highlightTheme)}`, "t theme");
     }
+    if (this.#preview?.kind === "diff") {
+      pieces.push(`${this.#diffLayout} diff`, `ctx ${diffContextLabel(this.#diffContext)}`);
+    }
 
     pieces.push(this.#focus === "preview"
-      ? "↑↓ scroll · pgup/dn · tab/h/esc tree · [ ] width"
+      ? "↑↓ scroll · pgup/dn · d/c diff · \\ tree · tab/h/esc tree · [ ] width"
       : project?.kind === "filesystem"
-        ? "↑↓ move · ↵ open · tab · [ ] width · r · esc"
-        : "↑↓ move · ↵ open · tab · [ ] width · m/a · s · r · esc");
+        ? "↑↓ move · ↵ open · tab · \\ tree · [ ] width · r · esc"
+        : "↑↓ move · ↵ open · tab · \\ tree · [ ] width · m/a · s · r · esc");
     return pieces.join(" · ");
   }
 }
