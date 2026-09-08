@@ -8,6 +8,7 @@
     "src/contracts.ts",
     "src/filesystem.ts",
     "src/index.ts",
+    "src/settings.ts",
     "src/review-source.ts",
     "src/git/process.ts",
     "src/git/repository.ts",
@@ -15,6 +16,7 @@
     "src/model/baseline.ts",
     "src/model/tree.ts",
     "src/ui/files-panel.ts",
+    "src/ui/highlight.ts",
     "src/ui/render.ts"
   ],
   "engines": {

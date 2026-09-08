@@ -7,13 +7,17 @@ import {
   type SgrMouseEvent,
   type TUI,
 } from "@oh-my-pi/pi-tui";
-import type {
-  ChangeRecord,
-  ChangeScope,
-  FilePreview,
-  ProjectSnapshot,
-  ReviewSource,
-  ViewMode,
+import {
+  DEFAULT_TREE_RATIO,
+  TREE_MAX_RATIO,
+  TREE_MIN_COLUMNS,
+  TREE_MIN_RATIO,
+  type ChangeRecord,
+  type ChangeScope,
+  type FilePreview,
+  type ProjectSnapshot,
+  type ReviewSource,
+  type ViewMode,
 } from "../contracts";
 import {
   buildTree,
@@ -23,8 +27,10 @@ import {
   type TreeRow,
   visiblePaths,
 } from "../model/tree";
+import type { Highlighter } from "./highlight";
 import {
   renderDiffLine,
+  renderHighlightedLine,
   renderNumberedLine,
   renderSingleBorder,
   renderSingleRow,
@@ -40,6 +46,12 @@ export interface FilesPanelOptions {
   readonly theme: Theme;
   readonly keybindings: KeybindingsManager;
   readonly sessionName?: string;
+  /** Tree width restored from the persisted settings. */
+  readonly treeRatio?: number;
+  /** Reports every tree width change so the host can persist it. */
+  readonly onTreeRatioChange?: (ratio: number) => void;
+  /** Colors text previews; previews render unstyled when omitted. */
+  readonly highlight?: Highlighter;
   readonly done: (result: undefined) => void;
 }
 
@@ -56,10 +68,6 @@ const EMPTY_CHANGES: ReadonlyMap<string, ChangeRecord> = new Map();
 
 const WIDE_LAYOUT_MINIMUM = 80;
 
-/** Largest share of the panel interior the project tree may occupy. */
-const TREE_MAX_RATIO = 0.3;
-/** Smallest tree pane width, unless the panel interior is narrower than this. */
-const TREE_MIN_COLUMNS = 12;
 /** Rows moved or scrolled per mouse wheel notch. */
 const WHEEL_STEP = 3;
 /** Prefix of an SGR mouse report. */
@@ -92,6 +100,8 @@ export class FilesPanel implements Component {
   readonly #theme: Theme;
   readonly #keybindings: KeybindingsManager;
   readonly #sessionName: string | undefined;
+  readonly #onTreeRatioChange: ((ratio: number) => void) | undefined;
+  readonly #highlight: Highlighter | undefined;
   readonly #done: (result: undefined) => void;
 
   #viewMode: ViewMode = "modified";
@@ -113,9 +123,10 @@ export class FilesPanel implements Component {
   #previewController: AbortController | undefined;
   #refreshGeneration = 0;
   #previewGeneration = 0;
-  #treeRatio = TREE_MAX_RATIO;
+  #treeRatio: number;
   #lastWidth = 0;
   #dividerDrag = false;
+  #highlighted: { readonly preview: FilePreview; readonly lines: readonly string[] | undefined } | undefined;
   #revision = 0;
   #cache: RenderCache | undefined;
   #started = false;
@@ -129,6 +140,9 @@ export class FilesPanel implements Component {
     this.#theme = options.theme;
     this.#keybindings = options.keybindings;
     this.#sessionName = options.sessionName;
+    this.#onTreeRatioChange = options.onTreeRatioChange;
+    this.#highlight = options.highlight;
+    this.#treeRatio = Math.max(TREE_MIN_RATIO, Math.min(TREE_MAX_RATIO, options.treeRatio ?? DEFAULT_TREE_RATIO));
     this.#done = options.done;
   }
 
@@ -236,6 +250,7 @@ export class FilesPanel implements Component {
     this.#previewController?.abort();
     this.#refreshController = undefined;
     this.#previewController = undefined;
+    this.#highlighted = undefined;
     this.#cache = undefined;
   }
 
@@ -357,6 +372,7 @@ export class FilesPanel implements Component {
     const clamped = Math.max(minimum, Math.min(maximum, Math.round(columns)));
     if (clamped === this.#treeWidth(this.#lastWidth)) return;
     this.#treeRatio = clamped / available;
+    this.#onTreeRatioChange?.(this.#treeRatio);
     this.#requestRender();
   }
 
@@ -568,6 +584,7 @@ export class FilesPanel implements Component {
     this.#preview = undefined;
     this.#previewLoading = false;
     this.#previewScroll = 0;
+    this.#highlighted = undefined;
   }
 
   #setPreviewScroll(next: number, height: number): void {
@@ -711,9 +728,34 @@ export class FilesPanel implements Component {
     const start = Math.max(0, Math.min(this.#previewScroll, Math.max(0, value.lines.length - height)));
     this.#previewScroll = start;
     const gutter = String(Math.max(1, value.lines.length)).length;
-    return value.lines.slice(start, start + height).map((line, offset) => value.kind === "diff"
-      ? renderDiffLine(line, width, this.#theme)
-      : renderNumberedLine(line, start + offset + 1, width, this.#theme, gutter));
+    if (value.kind === "diff") {
+      return value.lines.slice(start, start + height).map(line => renderDiffLine(line, width, this.#theme));
+    }
+    const colored = this.#highlightedLines(value);
+    return value.lines.slice(start, start + height).map((line, offset) => {
+      const number = start + offset + 1;
+      const highlighted = colored?.[start + offset];
+      return highlighted === undefined
+        ? renderNumberedLine(line, number, width, this.#theme, gutter)
+        : renderHighlightedLine(highlighted, number, width, this.#theme, gutter);
+    });
+  }
+
+  /**
+   * Syntax-highlighted copy of a text preview, computed once per preview.
+   * Content is sanitized before it is colored, so the highlighter only ever
+   * adds escape sequences to inert text. Returns undefined when no highlighter
+   * is installed, the language is unknown, or the result does not line up with
+   * the source.
+   */
+  #highlightedLines(value: FilePreview): readonly string[] | undefined {
+    if (this.#highlight === undefined || value.kind !== "text" || value.lines.length === 0) return undefined;
+    if (this.#highlighted?.preview === value) return this.#highlighted.lines;
+    const source = value.lines.map(line => sanitizeTerminalText(line).replaceAll("\n", " "));
+    const colored = this.#highlight(source.join("\n"), value.path);
+    const lines = colored !== undefined && colored.length === source.length ? colored : undefined;
+    this.#highlighted = { preview: value, lines };
+    return lines;
   }
 
   #footer(): string {

@@ -8,13 +8,17 @@ import {
   createReviewSource,
   prepareSessionBaseline,
 } from "./review-source";
+import { createPanelSettingsStore, type PanelSettingsStore } from "./settings";
 import { FilesPanel, type FilesPanelOptions } from "./ui/files-panel";
+import { loadHighlighter, type Highlighter } from "./ui/highlight";
 
 export interface ExtensionDependencies {
   readonly createReviewSource: (cwd: string) => ReviewSource;
   readonly prepareSession: (cwd: string) => Promise<void>;
   readonly clearSession: () => void;
   readonly createPanel: (options: FilesPanelOptions) => FilesPanel;
+  readonly settings: PanelSettingsStore;
+  readonly loadHighlighter: () => Promise<Highlighter | undefined>;
 }
 
 export const FILES_SHORTCUT = "alt+q";
@@ -24,6 +28,8 @@ const productionDependencies: ExtensionDependencies = {
   prepareSession: prepareSessionBaseline,
   clearSession: clearSessionBaselines,
   createPanel: options => new FilesPanel(options),
+  settings: createPanelSettingsStore(),
+  loadHighlighter,
 };
 
 function errorMessage(error: unknown): string {
@@ -53,6 +59,10 @@ export function createExtension(
       try {
         const source = dependencies.createReviewSource(ctx.cwd);
         const sessionName = pi.getSessionName();
+        const [settings, highlight] = await Promise.all([
+          dependencies.settings.load(),
+          dependencies.loadHighlighter(),
+        ]);
         await ctx.ui.custom<undefined>(
           (tui, theme, keybindings, done) => {
             const panel = dependencies.createPanel({
@@ -62,6 +72,11 @@ export function createExtension(
               theme,
               keybindings,
               ...(sessionName === undefined ? {} : { sessionName }),
+              treeRatio: settings.treeRatio,
+              onTreeRatioChange: ratio => {
+                dependencies.settings.saveTreeRatio(ratio);
+              },
+              ...(highlight === undefined ? {} : { highlight }),
               done,
             });
             panel.start();
@@ -89,6 +104,9 @@ export function createExtension(
         );
       } finally {
         panelOpen = false;
+        // The panel coalesces width changes; make sure the last one reaches
+        // disk even if the session ends right after the panel closes.
+        await dependencies.settings.flush();
       }
     };
 

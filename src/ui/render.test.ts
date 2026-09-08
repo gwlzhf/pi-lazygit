@@ -4,6 +4,7 @@ import { visibleWidth } from "@oh-my-pi/pi-tui";
 import {
   fitCell,
   renderDiffLine,
+  renderHighlightedLine,
   renderNumberedLine,
   renderSingleBorder,
   renderSingleRow,
@@ -176,5 +177,21 @@ describe("preview line rendering", () => {
 
     expect(lines).toEqual([" 1 alpha    ", "12 猫   beta"]);
     for (const line of lines) expectFits(line, 12);
+  });
+
+  test("keeps highlight colors, closes them, and stays width safe", () => {
+    const theme = plainTheme();
+    const colored = "\x1b[35mconst\x1b[39m x";
+
+    expect(renderHighlightedLine(colored, 1, 14, theme, 2)).toBe(" 1 \x1b[35mconst\x1b[39m x    \x1b[0m");
+    // A truncated row still ends with a reset, so no color reaches the border.
+    expect(renderHighlightedLine(colored, 1, 8, theme, 2)).toBe(" 1 \x1b[35mconst\x1b[0m\x1b[0m");
+    expect(renderHighlightedLine(colored, 7, 2, theme, 2)).toBe(" 7");
+
+    for (let width = 1; width <= 120; width += 1) {
+      const line = renderHighlightedLine(colored, 42, width, theme, 3);
+      expectFits(line, width);
+      expect(line.endsWith("\x1b[0m") || width <= 3).toBe(true);
+    }
   });
 });

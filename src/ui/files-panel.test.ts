@@ -9,7 +9,7 @@ import type {
   ReviewSource,
   StatusCode,
 } from "../contracts";
-import { FilesPanel } from "./files-panel";
+import { FilesPanel, type FilesPanelOptions } from "./files-panel";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -118,15 +118,17 @@ function keybindings(): KeybindingsManager {
   } as unknown as KeybindingsManager;
 }
 
-function harness(columns = 100, rows = 7): {
+function harness(columns = 100, rows = 7, overrides: Partial<FilesPanelOptions> = {}): {
   readonly panel: FilesPanel;
   readonly source: ControlledSource;
   readonly tui: FakeTui;
   readonly doneResults: undefined[];
+  readonly ratios: number[];
 } {
   const source = new ControlledSource();
   const tui = fakeTui(columns, rows);
   const doneResults: undefined[] = [];
+  const ratios: number[] = [];
   const panel = new FilesPanel({
     cwd: "C:/repo",
     source,
@@ -134,9 +136,11 @@ function harness(columns = 100, rows = 7): {
     theme: plainTheme(),
     keybindings: keybindings(),
     sessionName: "demo",
+    onTreeRatioChange: ratio => ratios.push(ratio),
     done: result => doneResults.push(result),
+    ...overrides,
   });
-  return { panel, source, tui, doneResults };
+  return { panel, source, tui, doneResults, ratios };
 }
 
 async function settle(): Promise<void> {
@@ -508,6 +512,114 @@ describe("FilesPanel focus and tree width", () => {
 
     panel.handleInput("\x1b[<64;5;3M");
     expect(panel.render(100).join("\n")).toContain("> ▼ src/");
+  });
+
+  test("opens at the restored width and reports every change once", async () => {
+    const { panel, source, ratios } = harness(100, 6, { treeRatio: 0.15 });
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    // 15% of the 97 interior columns is 15 columns, so the divider sits at 16.
+    expect(dividerColumn(panel.render(100))).toBe(16);
+    expect(ratios).toEqual([]);
+
+    panel.handleInput("]");
+    panel.handleInput("]");
+    expect(ratios).toEqual([16 / 97, 17 / 97]);
+    expect(dividerColumn(panel.render(100))).toBe(18);
+
+    for (let press = 0; press < 40; press += 1) panel.handleInput("]");
+    // Reports stop at the cap instead of repeating the unchanged ratio.
+    expect(ratios.at(-1)).toBe(29 / 97);
+    expect(ratios).toHaveLength(14);
+  });
+
+  test("clamps a restored width that is out of range", async () => {
+    const wide = harness(100, 6, { treeRatio: 0.9 });
+    wide.panel.start();
+    wide.source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    expect(dividerColumn(wide.panel.render(100))).toBe(30);
+
+    // 5% of 97 columns is below the 12-column floor, which wins.
+    const narrow = harness(100, 6, { treeRatio: -1 });
+    narrow.panel.start();
+    narrow.source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    expect(dividerColumn(narrow.panel.render(100))).toBe(13);
+  });
+});
+
+describe("FilesPanel syntax highlighting", () => {
+  test("colors text previews through the injected highlighter", async () => {
+    const calls: Array<readonly [string, string]> = [];
+    const highlight = (code: string, path: string): readonly string[] => {
+      calls.push([code, path]);
+      return code.split("\n").map(line => `\x1b[35m${line}\x1b[39m`);
+    };
+    const { panel, source } = harness(60, 6, { highlight });
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["const x = 1;", "export {};"]));
+    await settle();
+    panel.handleInput("\r");
+
+    const rendered = panel.render(60);
+    expect(calls).toEqual([["const x = 1;\nexport {};", "src/a.ts"]]);
+    expect(rendered[1]).toBe(`│1 \x1b[35mconst x = 1;\x1b[39m${" ".repeat(44)}\x1b[0m│`);
+    expect(rendered[2]).toBe(`│2 \x1b[35mexport {};\x1b[39m${" ".repeat(46)}\x1b[0m│`);
+    expectWidthSafe(rendered, 60);
+
+    // Highlighting a preview is memoized, not repeated per render.
+    panel.render(60);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("falls back to plain lines for diffs, unknown languages, and bad results", async () => {
+    const highlight = (code: string, path: string): readonly string[] | undefined =>
+      path.endsWith(".ts") ? [`\x1b[35m${code}\x1b[39m`] : undefined;
+    const { panel, source } = harness(60, 6, { highlight });
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    // Two source lines against one highlighted line: the result is discarded.
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["alpha", "beta"]));
+    await settle();
+    panel.handleInput("\r");
+    expect(panel.render(60)[1]).toBe(`│${"1 alpha".padEnd(58)}│`);
+
+    panel.handleInput("\x1b");
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/b.ts", "diff", ["+added"]));
+    await settle();
+    panel.handleInput("\r");
+    expect(panel.render(60)[1]).toBe(`│${"+added".padEnd(58)}│`);
+  });
+
+  test("sanitizes preview content before it reaches the highlighter", async () => {
+    const seen: string[] = [];
+    const highlight = (code: string): readonly string[] => {
+      seen.push(code);
+      return code.split("\n");
+    };
+    const { panel, source } = harness(60, 6, { highlight });
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["let x = 1;\x1b[2J\x07"]));
+    await settle();
+    panel.handleInput("\r");
+
+    const rendered = panel.render(60);
+    expect(seen).toEqual(["let x = 1;"]);
+    expect(rendered.join("\n")).not.toContain("\x1b[2J");
+    expect(rendered.join("\n")).not.toContain("\x07");
   });
 });
 

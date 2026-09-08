@@ -4,7 +4,8 @@ import type {
   ExtensionContext,
 } from "@oh-my-pi/pi-coding-agent";
 import type { ReviewSource } from "./contracts";
-import { createExtension, FILES_SHORTCUT } from "./index";
+import { createExtension, FILES_SHORTCUT, type ExtensionDependencies } from "./index";
+import type { PanelSettings, PanelSettingsStore } from "./settings";
 import type { FilesPanel, FilesPanelOptions } from "./ui/files-panel";
 
 type CommandRegistration = Parameters<ExtensionAPI["registerCommand"]>[1];
@@ -115,6 +116,30 @@ function createSource(): ReviewSource {
   };
 }
 
+function createSettingsStore(overrides: Partial<PanelSettingsStore> = {}): PanelSettingsStore {
+  return {
+    load: async (): Promise<PanelSettings> => ({ treeRatio: 0.3 }),
+    saveTreeRatio: () => {},
+    flush: async () => {},
+    ...overrides,
+  };
+}
+
+/** Fill the dependencies a test does not care about with inert defaults. */
+function dependencies(
+  overrides: Partial<ExtensionDependencies> = {},
+): ExtensionDependencies {
+  return {
+    createReviewSource: createSource,
+    prepareSession: async () => {},
+    clearSession: () => {},
+    createPanel,
+    settings: createSettingsStore(),
+    loadHighlighter: async () => undefined,
+    ...overrides,
+  };
+}
+
 function createPanel(): FilesPanel {
   return {
     start() {},
@@ -143,12 +168,12 @@ async function invokeShortcut(
 
 test("registers /files, Alt+Q, and session lifecycle handlers", () => {
   const harness = createApiHarness();
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: createSource,
     prepareSession: async () => {},
     clearSession: () => {},
     createPanel,
-  })(harness.api);
+  }))(harness.api);
 
   expect(harness.commands.get("files")?.description).toContain("files");
   expect(harness.shortcuts.get("alt+q")).toBeDefined();
@@ -161,7 +186,7 @@ test("registration performs no source, panel, or lifecycle work", () => {
   const harness = createApiHarness();
   const calls: string[] = [];
 
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: () => {
       calls.push("source");
       return createSource();
@@ -176,7 +201,7 @@ test("registration performs no source, panel, or lifecycle work", () => {
       calls.push("panel");
       return createPanel();
     },
-  })(harness.api);
+  }))(harness.api);
 
   expect(calls).toEqual([]);
 });
@@ -189,7 +214,7 @@ test("command and shortcut route through the same panel opener", async () => {
   let panelStarts = 0;
   const source = createSource();
 
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: cwd => {
       sourceCreations += 1;
       expect(cwd).toBe("C:\\workspace");
@@ -205,7 +230,7 @@ test("command and shortcut route through the same panel opener", async () => {
       };
       return panel;
     },
-  })(api.api);
+  }))(api.api);
 
   await invokeCommand(api.commands.get("files"), context.ctx);
   await invokeShortcut(api.shortcuts.get(FILES_SHORTCUT), context.ctx);
@@ -229,12 +254,12 @@ test("mounts the panel as a fullscreen overlay with mouse tracking", async () =>
   const api = createApiHarness();
   const context = createContextHarness();
 
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: () => createSource(),
     prepareSession: async () => {},
     clearSession: () => {},
     createPanel: () => createPanel(),
-  })(api.api);
+  }))(api.api);
 
   await invokeCommand(api.commands.get("files"), context.ctx);
 
@@ -253,13 +278,72 @@ test("mounts the panel as a fullscreen overlay with mouse tracking", async () =>
   ]);
 });
 
+test("restores the persisted width, persists changes, and flushes on close", async () => {
+  const api = createApiHarness();
+  const context = createContextHarness();
+  const panelOptions: FilesPanelOptions[] = [];
+  const saved: number[] = [];
+  let flushes = 0;
+
+  createExtension(dependencies({
+    createPanel: options => {
+      panelOptions.push(options);
+      return createPanel();
+    },
+    settings: createSettingsStore({
+      load: async () => ({ treeRatio: 0.17 }),
+      saveTreeRatio: ratio => {
+        saved.push(ratio);
+      },
+      flush: async () => {
+        flushes += 1;
+      },
+    }),
+  }))(api.api);
+
+  await invokeCommand(api.commands.get("files"), context.ctx);
+
+  expect(panelOptions[0]?.treeRatio).toBe(0.17);
+  panelOptions[0]?.onTreeRatioChange?.(0.22);
+  expect(saved).toEqual([0.22]);
+  expect(flushes).toBe(1);
+});
+
+test("passes a highlighter to the panel only when one loads", async () => {
+  const api = createApiHarness();
+  const context = createContextHarness();
+  const panelOptions: FilesPanelOptions[] = [];
+  const highlighter = (code: string): readonly string[] => code.split("\n");
+
+  createExtension(dependencies({
+    createPanel: options => {
+      panelOptions.push(options);
+      return createPanel();
+    },
+    loadHighlighter: async () => highlighter,
+  }))(api.api);
+  await invokeCommand(api.commands.get("files"), context.ctx);
+
+  const withoutHighlighter = createApiHarness();
+  createExtension(dependencies({
+    createPanel: options => {
+      panelOptions.push(options);
+      return createPanel();
+    },
+    loadHighlighter: async () => undefined,
+  }))(withoutHighlighter.api);
+  await invokeCommand(withoutHighlighter.commands.get("files"), context.ctx);
+
+  expect(panelOptions.map(options => options.highlight)).toEqual([highlighter, undefined]);
+});
+
 test("does not mount a second panel while the first custom UI is open", async () => {
   const customResult = deferred<undefined>();
   const api = createApiHarness();
   const context = createContextHarness({ customResult: customResult.promise });
   let panelsCreated = 0;
 
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: createSource,
     prepareSession: async () => {},
     clearSession: () => {},
@@ -267,7 +351,7 @@ test("does not mount a second panel while the first custom UI is open", async ()
       panelsCreated += 1;
       return createPanel();
     },
-  })(api.api);
+  }))(api.api);
 
   const firstOpen = invokeCommand(api.commands.get("files"), context.ctx);
   const duplicateOpen = invokeShortcut(
@@ -289,7 +373,7 @@ test("warns and mounts nothing when interactive UI is unavailable", async () => 
   let sourcesCreated = 0;
   let panelsCreated = 0;
 
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: cwd => {
       sourcesCreated += 1;
       return createSource();
@@ -300,7 +384,7 @@ test("warns and mounts nothing when interactive UI is unavailable", async () => 
       panelsCreated += 1;
       return createPanel();
     },
-  })(api.api);
+  }))(api.api);
 
   await invokeCommand(api.commands.get("files"), context.ctx);
 
@@ -317,7 +401,7 @@ test("does not mount outside TUI mode even if a host reports UI support", async 
   const context = createContextHarness({ hasUI: true, mode: "print" });
   let panelsCreated = 0;
 
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: createSource,
     prepareSession: async () => {},
     clearSession: () => {},
@@ -325,7 +409,7 @@ test("does not mount outside TUI mode even if a host reports UI support", async 
       panelsCreated += 1;
       return createPanel();
     },
-  })(api.api);
+  }))(api.api);
 
   await invokeShortcut(api.shortcuts.get(FILES_SHORTCUT), context.ctx);
 
@@ -343,7 +427,7 @@ test("prepares the session baseline before opening and clears it at shutdown", a
   const calls: string[] = [];
   let sessionStartCompleted = false;
 
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: cwd => {
       calls.push(`source:${cwd}`);
       return createSource();
@@ -357,7 +441,7 @@ test("prepares the session baseline before opening and clears it at shutdown", a
       calls.push("clear");
     },
     createPanel,
-  })(api.api);
+  }))(api.api);
 
   const sessionStart = Promise.resolve(
     api.lifecycle.get("session_start")?.(
@@ -392,14 +476,14 @@ test("reports baseline failures as warnings without rejecting session startup", 
   const api = createApiHarness();
   const context = createContextHarness();
 
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: createSource,
     prepareSession: async () => {
       throw new Error("Git is unavailable");
     },
     clearSession: () => {},
     createPanel,
-  })(api.api);
+  }))(api.api);
 
   await expect(
     api.lifecycle.get("session_start")?.(
@@ -417,7 +501,7 @@ test("reports panel errors and releases the one-panel guard", async () => {
   const context = createContextHarness();
   let panelAttempts = 0;
 
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: createSource,
     prepareSession: async () => {},
     clearSession: () => {},
@@ -428,7 +512,7 @@ test("reports panel errors and releases the one-panel guard", async () => {
       }
       return createPanel();
     },
-  })(api.api);
+  }))(api.api);
 
   await invokeCommand(api.commands.get("files"), context.ctx);
   await invokeCommand(api.commands.get("files"), context.ctx);
@@ -444,12 +528,12 @@ test("reports custom UI runtime failures as errors", async () => {
   const api = createApiHarness();
   const context = createContextHarness({ customResult: runtime.promise });
 
-  createExtension({
+  createExtension(dependencies({
     createReviewSource: createSource,
     prepareSession: async () => {},
     clearSession: () => {},
     createPanel,
-  })(api.api);
+  }))(api.api);
 
   const open = invokeShortcut(api.shortcuts.get(FILES_SHORTCUT), context.ctx);
   runtime.reject(new Error("custom UI failed"));

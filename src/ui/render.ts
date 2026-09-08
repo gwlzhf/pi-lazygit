@@ -6,6 +6,7 @@ const STRING_SEQUENCE = /(?:\x1b[P_X^]|[\u0090\u0098\u009e\u009f])[\s\S]*?(?:\x1
 const CSI_SEQUENCE = /(?:\x1b\[|\u009b)[0-?]*[ -/]*[@-~]/gu;
 const ESCAPE_SEQUENCE = /\x1b[ -/]*[0-~]/gu;
 const UNSAFE_CONTROLS = /[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]/gu;
+const ANSI_RESET = "\x1b[0m";
 
 export type BorderEdge = "top" | "bottom";
 
@@ -151,4 +152,29 @@ export function renderNumberedLine(
   const prefix = theme.fg("dim", `${number} `);
   const bodyWidth = safeWidth - visibleWidth(prefix);
   return `${prefix}${theme.fg("text", fitCell(safeLine(line), bodyWidth))}`;
+}
+
+/**
+ * Render one syntax-highlighted source line. Unlike {@link renderNumberedLine}
+ * this keeps the escape sequences in `line`, so callers must pass text that was
+ * sanitized before it was colored — never raw file content.
+ */
+export function renderHighlightedLine(
+  line: string,
+  lineNumber: number,
+  width: number,
+  theme: Theme,
+  gutterWidth = String(Math.max(1, lineNumber)).length,
+): string {
+  const safeWidth = Math.max(0, Math.floor(width));
+  if (safeWidth === 0) return "";
+  const number = String(Math.max(1, Math.floor(lineNumber))).padStart(Math.max(1, gutterWidth));
+  if (safeWidth <= visibleWidth(number)) {
+    return theme.fg("dim", fitCell(number, safeWidth));
+  }
+  const prefix = theme.fg("dim", `${number} `);
+  const bodyWidth = safeWidth - visibleWidth(prefix);
+  // Truncation can cut a color sequence off from its terminator, so close the
+  // line explicitly instead of letting a color bleed into the panel border.
+  return `${prefix}${fitCell(line, bodyWidth)}${ANSI_RESET}`;
 }

@@ -50,9 +50,17 @@ The panel opens as a fullscreen overlay on the terminal's alternate screen, so t
 
 `Tab` and `Shift+Tab` move the operating focus between the project tree and the preview. In the side-by-side layout both panes stay visible and only the focused pane consumes keys; in the single-pane layout the focused pane is the one shown.
 
-The tree pane width is adjustable. Drag the divider between the panes with the left mouse button, or use `[` / `]` (also `Ctrl+Left` / `Ctrl+Right`) to change it one column at a time. The width is capped at 30% of the panel interior and never falls below 12 columns, unless the 30% cap is itself below 12 columns, in which case the cap wins. The chosen width is kept as a ratio, so it survives terminal resizes; it resets to the 30% default the next time the panel opens.
+The tree pane width is adjustable. Drag the divider between the panes with the left mouse button, or use `[` / `]` (also `Ctrl+Left` / `Ctrl+Right`) to change it one column at a time. The width is capped at 30% of the panel interior and never falls below 12 columns, unless the 30% cap is itself below 12 columns, in which case the cap wins.
+
+The width is stored as a ratio of the panel interior, so it survives terminal resizes and is restored the next time the panel opens — including after an OMP restart. It is written to `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden). Changes made during a drag are coalesced into a single write, and an unreadable, invalid, or unwritable settings file falls back to the 30% default without interrupting the session.
 
 The mouse wheel moves the selection in the tree pane and scrolls the preview pane, following the pointer in the side-by-side layout and the focused pane in the single-pane layout.
+
+## Syntax highlighting
+
+File previews are syntax highlighted using OMP's own highlighter and theme colors, so the panel matches the rest of the session. The language is detected from the file path — TypeScript, JavaScript/Node, C#, Go, C/C++, Rust, Python, Java, Kotlin, Ruby, PHP, shell, JSON, YAML, and the other languages OMP supports. Files whose language is unknown or unsupported render as plain text.
+
+Diffs keep their per-line added/removed/hunk coloring instead of language highlighting. Preview content is sanitized before it is highlighted, so file contents can never emit their own terminal escape sequences.
 
 ## Keys
 
