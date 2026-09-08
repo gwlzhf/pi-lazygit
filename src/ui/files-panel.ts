@@ -27,7 +27,13 @@ import {
   type TreeRow,
   visiblePaths,
 } from "../model/tree";
-import type { Highlighter } from "./highlight";
+import {
+  DEFAULT_HIGHLIGHT_THEME,
+  getHighlightThemeLabel,
+  HIGHLIGHT_THEMES,
+  type Highlighter,
+  type HighlightThemeName,
+} from "./highlight";
 import {
   renderDiffLine,
   renderHighlightedLine,
@@ -50,6 +56,10 @@ export interface FilesPanelOptions {
   readonly treeRatio?: number;
   /** Reports every tree width change so the host can persist it. */
   readonly onTreeRatioChange?: (ratio: number) => void;
+  /** Syntax palette restored from persisted settings. */
+  readonly highlightTheme?: HighlightThemeName;
+  /** Reports every syntax palette change so the host can persist it. */
+  readonly onHighlightThemeChange?: (theme: HighlightThemeName) => void;
   /** Colors text previews; previews render unstyled when omitted. */
   readonly highlight?: Highlighter;
   readonly done: (result: undefined) => void;
@@ -101,6 +111,7 @@ export class FilesPanel implements Component {
   readonly #keybindings: KeybindingsManager;
   readonly #sessionName: string | undefined;
   readonly #onTreeRatioChange: ((ratio: number) => void) | undefined;
+  readonly #onHighlightThemeChange: ((theme: HighlightThemeName) => void) | undefined;
   readonly #highlight: Highlighter | undefined;
   readonly #done: (result: undefined) => void;
 
@@ -124,9 +135,14 @@ export class FilesPanel implements Component {
   #refreshGeneration = 0;
   #previewGeneration = 0;
   #treeRatio: number;
+  #highlightTheme: HighlightThemeName;
   #lastWidth = 0;
   #dividerDrag = false;
-  #highlighted: { readonly preview: FilePreview; readonly lines: readonly string[] | undefined } | undefined;
+  #highlighted: {
+    readonly preview: FilePreview;
+    readonly theme: HighlightThemeName;
+    readonly lines: readonly string[] | undefined;
+  } | undefined;
   #revision = 0;
   #cache: RenderCache | undefined;
   #started = false;
@@ -141,8 +157,10 @@ export class FilesPanel implements Component {
     this.#keybindings = options.keybindings;
     this.#sessionName = options.sessionName;
     this.#onTreeRatioChange = options.onTreeRatioChange;
+    this.#onHighlightThemeChange = options.onHighlightThemeChange;
     this.#highlight = options.highlight;
     this.#treeRatio = Math.max(TREE_MIN_RATIO, Math.min(TREE_MAX_RATIO, options.treeRatio ?? DEFAULT_TREE_RATIO));
+    this.#highlightTheme = options.highlightTheme ?? DEFAULT_HIGHLIGHT_THEME;
     this.#done = options.done;
   }
 
@@ -180,6 +198,16 @@ export class FilesPanel implements Component {
     }
     if (matchesKey(data, "]") || matchesKey(data, "ctrl+right")) {
       this.#resizeTree(1);
+      return;
+    }
+    if (this.#highlight !== undefined && matchesKey(data, "t")) {
+      const index = HIGHLIGHT_THEMES.findIndex(theme => theme.name === this.#highlightTheme);
+      const nextTheme = HIGHLIGHT_THEMES[(index + 1) % HIGHLIGHT_THEMES.length];
+      if (nextTheme === undefined) return;
+      this.#highlightTheme = nextTheme.name;
+      this.#highlighted = undefined;
+      this.#onHighlightThemeChange?.(this.#highlightTheme);
+      this.#requestRender();
       return;
     }
 
@@ -750,11 +778,14 @@ export class FilesPanel implements Component {
    */
   #highlightedLines(value: FilePreview): readonly string[] | undefined {
     if (this.#highlight === undefined || value.kind !== "text" || value.lines.length === 0) return undefined;
-    if (this.#highlighted?.preview === value) return this.#highlighted.lines;
+    if (
+      this.#highlighted?.preview === value
+      && this.#highlighted.theme === this.#highlightTheme
+    ) return this.#highlighted.lines;
     const source = value.lines.map(line => sanitizeTerminalText(line).replaceAll("\n", " "));
-    const colored = this.#highlight(source.join("\n"), value.path, this.#theme);
+    const colored = this.#highlight(source.join("\n"), value.path, this.#highlightTheme);
     const lines = colored !== undefined && colored.length === source.length ? colored : undefined;
-    this.#highlighted = { preview: value, lines };
+    this.#highlighted = { preview: value, theme: this.#highlightTheme, lines };
     return lines;
   }
 
@@ -780,6 +811,9 @@ export class FilesPanel implements Component {
     else if (this.#previewLoading) pieces.push("loading preview");
     else if (this.#preview?.kind === "error") pieces.push("preview error");
     else if (project?.baselineEstablishedAt !== undefined) pieces.push(`baseline ${new Date(project.baselineEstablishedAt).toISOString()}`);
+    if (this.#highlight !== undefined) {
+      pieces.push(`theme ${getHighlightThemeLabel(this.#highlightTheme)}`, "t theme");
+    }
 
     pieces.push(this.#focus === "preview"
       ? "↑↓ scroll · pgup/dn · tab/h/esc tree · [ ] width"

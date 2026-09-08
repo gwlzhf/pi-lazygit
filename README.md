@@ -52,13 +52,13 @@ The panel opens as a fullscreen overlay on the terminal's alternate screen, so t
 
 The tree pane width is adjustable. Drag the divider between the panes with the left mouse button, or use `[` / `]` (also `Ctrl+Left` / `Ctrl+Right`) to change it one column at a time. The width is capped at 30% of the panel interior and never falls below 12 columns, unless the 30% cap is itself below 12 columns, in which case the cap wins.
 
-The width is stored as a ratio of the panel interior, so it survives terminal resizes and is restored the next time the panel opens — including after an OMP restart. It is written to `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden). Changes made during a drag are coalesced into a single write, and an unreadable, invalid, or unwritable settings file falls back to the 30% default without interrupting the session.
+The width and syntax theme are stored in `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden), so both survive panel closes and OMP restarts. Width is stored as a ratio of the panel interior. Rapid changes are coalesced into a single write; unreadable, invalid, or unwritable settings fall back to the 30% width and Catppuccin theme without interrupting the session.
 
 The mouse wheel moves the selection in the tree pane and scrolls the preview pane, following the pointer in the side-by-side layout and the focused pane in the single-pane layout.
 
 ## Syntax highlighting
 
-File previews are syntax highlighted using OMP's own highlighter and theme colors, so the panel matches the rest of the session. The language is detected from the file path — TypeScript, JavaScript/Node, C#, Go, C/C++, Rust, Python, Java, Kotlin, Ruby, PHP, shell, JSON, YAML, and the other languages OMP supports. Files whose language is unknown or unsupported render as plain text.
+Text previews use OMP's highlighter with one of three built-in soft dark palettes: Catppuccin (default), Nord, or Tokyo Night. Press `t` from either pane to cycle them in that order. The selected palette affects code syntax only; panel borders, status colors, and diff colors continue to use the active OMP theme. The language is detected from the file path — TypeScript, JavaScript/Node, C#, Go, C/C++, Rust, Python, Java, Kotlin, Ruby, PHP, shell, JSON, YAML, and the other languages OMP supports. Files whose language is unknown or unsupported render as plain text.
 
 Diffs keep their per-line added/removed/hunk coloring instead of language highlighting. Preview content is sanitized before it is highlighted, so file contents can never emit their own terminal escape sequences.
 
@@ -75,6 +75,7 @@ Diffs keep their per-line added/removed/hunk coloring instead of language highli
 | `Enter` | Toggle a directory, or open/focus the selected file preview |
 | `Tab` / `Shift+Tab` | Move focus to the preview |
 | `[` / `]` or `Ctrl+Left` / `Ctrl+Right` | Narrow/widen the tree pane |
+| `t` | Cycle Catppuccin, Nord, and Tokyo Night syntax themes |
 | `m` | Show modified files |
 | `a` | Show all visible files |
 | `s` | Toggle workspace/session scope |
@@ -92,6 +93,7 @@ Diffs keep their per-line added/removed/hunk coloring instead of language highli
 | `Home` / `End` | Jump to the start/end |
 | `Tab` / `Shift+Tab` | Return focus to the project tree |
 | `[` / `]` or `Ctrl+Left` / `Ctrl+Right` | Narrow/widen the tree pane |
+| `t` | Cycle Catppuccin, Nord, and Tokyo Night syntax themes |
 | `Left` or `h` | Return focus to the project tree |
 | `Esc` | Return focus to the project tree |
 | configured OMP `app.interrupt` key | Return to the tree; invoke it again from the tree to close |

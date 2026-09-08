@@ -10,48 +10,85 @@
 
 import type { Theme } from "@oh-my-pi/pi-coding-agent";
 
+export const HIGHLIGHT_THEMES = [
+  { name: "catppuccin", label: "Catppuccin", ompName: "dark-catppuccin" },
+  { name: "nord", label: "Nord", ompName: "dark-nord" },
+  { name: "tokyo-night", label: "Tokyo Night", ompName: "dark-tokyo-night" },
+] as const;
+
+export type HighlightThemeName = (typeof HIGHLIGHT_THEMES)[number]["name"];
+
+export const DEFAULT_HIGHLIGHT_THEME: HighlightThemeName = "catppuccin";
+
+export function getHighlightThemeLabel(name: HighlightThemeName): string {
+  return HIGHLIGHT_THEMES.find(theme => theme.name === name)?.label ?? name;
+}
+
+export function isHighlightThemeName(value: unknown): value is HighlightThemeName {
+  return HIGHLIGHT_THEMES.some(theme => theme.name === value);
+}
+
 /**
  * Highlight `code` for the language implied by `path`, returning one entry per
  * input line, or `undefined` when the language is unknown or unsupported.
- * Input is already sanitized; the returned lines carry only color escapes.
- *
- * `theme` is passed on to OMP's highlighter: it reads the syntax colors off the
- * theme instance rather than off a module-level singleton, which is only set in
- * the host's own copy of the coding-agent module.
  */
-export type Highlighter = (code: string, path: string, theme: Theme) => readonly string[] | undefined;
+export type Highlighter = (
+  code: string,
+  path: string,
+  themeName: HighlightThemeName,
+) => readonly string[] | undefined;
 
 /** The slice of OMP's coding-agent exports the highlighter needs. */
 export interface HighlightModule {
   readonly getLanguageFromPath: (path: string) => string | undefined;
+  readonly getThemeByName: (name: string) => Promise<Theme | undefined>;
   readonly highlightCode: (code: string, language?: string, theme?: Theme) => string[];
 }
 
 function isHighlightModule(value: unknown): value is HighlightModule {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<HighlightModule>;
-  return typeof candidate.getLanguageFromPath === "function" && typeof candidate.highlightCode === "function";
+  return (
+    typeof candidate.getLanguageFromPath === "function"
+    && typeof candidate.getThemeByName === "function"
+    && typeof candidate.highlightCode === "function"
+  );
 }
 
 /**
- * Resolve the highlighter, preferring `host` — the coding-agent namespace OMP
- * injects into extensions as `pi.pi`. A dynamic `import` resolves to the copy
- * in this plugin's own `node_modules`, a separate module instance whose theme
- * singleton is never initialized, so its highlighter silently returns plain
- * text. The import stays as a fallback for hosts that inject nothing.
+ * Resolve OMP's tokenizer and all supported themes once when the panel opens.
+ * Prefer the host namespace; fall back to the plugin-local dependency when the
+ * host does not expose the complete API.
  */
 export async function loadHighlighter(host?: unknown): Promise<Highlighter | undefined> {
   const module = await resolveModule(host);
   if (module === undefined) return undefined;
-  return (code, path, theme) => {
-    const language = module.getLanguageFromPath(path);
-    if (language === undefined) return undefined;
-    try {
-      return module.highlightCode(code, language, theme);
-    } catch {
-      return undefined;
-    }
-  };
+
+  try {
+    const loaded = await Promise.all(
+      HIGHLIGHT_THEMES.map(async ({ name, ompName }) => {
+        const theme = await module.getThemeByName(ompName);
+        return theme === undefined ? undefined : ([name, theme] as const);
+      }),
+    );
+    if (loaded.some(entry => entry === undefined)) return undefined;
+
+    const themes = Object.fromEntries(
+      loaded as ReadonlyArray<readonly [HighlightThemeName, Theme]>,
+    ) as Record<HighlightThemeName, Theme>;
+    return (code, path, themeName) => {
+      const language = module.getLanguageFromPath(path);
+      if (language === undefined) return undefined;
+      const theme = themes[themeName];
+      try {
+        return module.highlightCode(code, language, theme);
+      } catch {
+        return undefined;
+      }
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 async function resolveModule(host: unknown): Promise<HighlightModule | undefined> {

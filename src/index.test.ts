@@ -7,6 +7,7 @@ import type { ReviewSource } from "./contracts";
 import { createExtension, FILES_SHORTCUT, type ExtensionDependencies } from "./index";
 import type { PanelSettings, PanelSettingsStore } from "./settings";
 import type { FilesPanel, FilesPanelOptions } from "./ui/files-panel";
+import type { HighlightThemeName } from "./ui/highlight";
 
 type CommandRegistration = Parameters<ExtensionAPI["registerCommand"]>[1];
 type ShortcutRegistration = Parameters<ExtensionAPI["registerShortcut"]>[1];
@@ -122,8 +123,12 @@ function createSource(): ReviewSource {
 
 function createSettingsStore(overrides: Partial<PanelSettingsStore> = {}): PanelSettingsStore {
   return {
-    load: async (): Promise<PanelSettings> => ({ treeRatio: 0.3 }),
+    load: async (): Promise<PanelSettings> => ({
+      treeRatio: 0.3,
+      highlightTheme: "catppuccin",
+    }),
     saveTreeRatio: () => {},
+    saveHighlightTheme: () => {},
     flush: async () => {},
     ...overrides,
   };
@@ -282,11 +287,12 @@ test("mounts the panel as a fullscreen overlay with mouse tracking", async () =>
   ]);
 });
 
-test("restores the persisted width, persists changes, and flushes on close", async () => {
+test("restores panel settings, persists changes, and flushes on close", async () => {
   const api = createApiHarness();
   const context = createContextHarness();
   const panelOptions: FilesPanelOptions[] = [];
-  const saved: number[] = [];
+  const savedRatios: number[] = [];
+  const savedThemes: HighlightThemeName[] = [];
   let flushes = 0;
 
   createExtension(dependencies({
@@ -295,9 +301,12 @@ test("restores the persisted width, persists changes, and flushes on close", asy
       return createPanel();
     },
     settings: createSettingsStore({
-      load: async () => ({ treeRatio: 0.17 }),
+      load: async () => ({ treeRatio: 0.17, highlightTheme: "nord" }),
       saveTreeRatio: ratio => {
-        saved.push(ratio);
+        savedRatios.push(ratio);
+      },
+      saveHighlightTheme: theme => {
+        savedThemes.push(theme);
       },
       flush: async () => {
         flushes += 1;
@@ -308,8 +317,11 @@ test("restores the persisted width, persists changes, and flushes on close", asy
   await invokeCommand(api.commands.get("files"), context.ctx);
 
   expect(panelOptions[0]?.treeRatio).toBe(0.17);
+  expect(panelOptions[0]?.highlightTheme).toBe("nord");
   panelOptions[0]?.onTreeRatioChange?.(0.22);
-  expect(saved).toEqual([0.22]);
+  panelOptions[0]?.onHighlightThemeChange?.("tokyo-night");
+  expect(savedRatios).toEqual([0.22]);
+  expect(savedThemes).toEqual(["tokyo-night"]);
   expect(flushes).toBe(1);
 });
 

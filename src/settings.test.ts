@@ -30,30 +30,63 @@ describe("clampTreeRatio", () => {
 });
 
 describe("panel settings store", () => {
-  test("round-trips a width through the settings file", async () => {
+  test("round-trips width and theme through the settings file", async () => {
     const file = await settingsFile();
     const store = createPanelSettingsStore(async () => file);
 
     expect(await store.load()).toEqual(DEFAULT_PANEL_SETTINGS);
 
     store.saveTreeRatio(0.18);
+    store.saveHighlightTheme("nord");
     await store.flush();
 
-    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ treeRatio: 0.18 });
-    expect(await createPanelSettingsStore(async () => file).load()).toEqual({ treeRatio: 0.18 });
+    const expected = { treeRatio: 0.18, highlightTheme: "nord" } as const;
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual(expected);
+    expect(await createPanelSettingsStore(async () => file).load()).toEqual(expected);
   });
 
-  test("coalesces a burst of width changes into the last value", async () => {
+  test("coalesces mixed changes into the last complete state", async () => {
     const file = await settingsFile();
     const store = createPanelSettingsStore(async () => file);
 
-    for (const ratio of [0.1, 0.12, 0.14, 0.16]) store.saveTreeRatio(ratio);
+    store.saveTreeRatio(0.1);
+    store.saveHighlightTheme("nord");
+    store.saveTreeRatio(0.16);
+    store.saveHighlightTheme("tokyo-night");
     await store.flush();
 
-    expect(await store.load()).toEqual({ treeRatio: 0.16 });
+    expect(await store.load()).toEqual({
+      treeRatio: 0.16,
+      highlightTheme: "tokyo-night",
+    });
   });
 
-  test("falls back to the defaults for unreadable, invalid, or out-of-range files", async () => {
+  test("migrates old files and falls back invalid fields independently", async () => {
+    const file = await settingsFile();
+    const store = createPanelSettingsStore(async () => file);
+    store.saveTreeRatio(0.2);
+    await store.flush();
+
+    await writeFile(file, JSON.stringify({ treeRatio: 0.2 }), "utf8");
+    expect(await store.load()).toEqual({
+      treeRatio: 0.2,
+      highlightTheme: "catppuccin",
+    });
+
+    await writeFile(file, JSON.stringify({ treeRatio: 0.18, highlightTheme: "unknown" }), "utf8");
+    expect(await store.load()).toEqual({
+      treeRatio: 0.18,
+      highlightTheme: "catppuccin",
+    });
+
+    await writeFile(file, JSON.stringify({ treeRatio: "wide", highlightTheme: "nord" }), "utf8");
+    expect(await store.load()).toEqual({
+      treeRatio: DEFAULT_PANEL_SETTINGS.treeRatio,
+      highlightTheme: "nord",
+    });
+  });
+
+  test("falls back to defaults for unreadable files and clamps stored width", async () => {
     const missing = createPanelSettingsStore(async () => nodePath.join(tmpdir(), "pi-files-absent", "x.json"));
     expect(await missing.load()).toEqual(DEFAULT_PANEL_SETTINGS);
 
@@ -65,11 +98,11 @@ describe("panel settings store", () => {
     await writeFile(file, "{ not json", "utf8");
     expect(await store.load()).toEqual(DEFAULT_PANEL_SETTINGS);
 
-    await writeFile(file, JSON.stringify({ treeRatio: "wide" }), "utf8");
-    expect(await store.load()).toEqual(DEFAULT_PANEL_SETTINGS);
-
     await writeFile(file, JSON.stringify({ treeRatio: 0.75 }), "utf8");
-    expect(await store.load()).toEqual({ treeRatio: 0.3 });
+    expect(await store.load()).toEqual({
+      treeRatio: 0.3,
+      highlightTheme: "catppuccin",
+    });
   });
 
   test("ignores unwritable destinations and unsupported ratios", async () => {

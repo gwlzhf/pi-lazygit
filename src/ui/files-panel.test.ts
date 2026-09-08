@@ -10,6 +10,7 @@ import type {
   StatusCode,
 } from "../contracts";
 import { FilesPanel, type FilesPanelOptions } from "./files-panel";
+import type { HighlightThemeName } from "./highlight";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -553,12 +554,12 @@ describe("FilesPanel focus and tree width", () => {
 
 describe("FilesPanel syntax highlighting", () => {
   test("colors text previews through the injected highlighter", async () => {
-    const calls: Array<readonly [string, string]> = [];
-    const highlight = (code: string, path: string): readonly string[] => {
-      calls.push([code, path]);
+    const calls: Array<readonly [string, string, HighlightThemeName]> = [];
+    const highlight = (code: string, path: string, theme: HighlightThemeName): readonly string[] => {
+      calls.push([code, path, theme]);
       return code.split("\n").map(line => `\x1b[35m${line}\x1b[39m`);
     };
-    const { panel, source } = harness(60, 6, { highlight });
+    const { panel, source } = harness(60, 6, { highlight, highlightTheme: "nord" });
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
@@ -568,7 +569,7 @@ describe("FilesPanel syntax highlighting", () => {
     panel.handleInput("\r");
 
     const rendered = panel.render(60);
-    expect(calls).toEqual([["const x = 1;\nexport {};", "src/a.ts"]]);
+    expect(calls).toEqual([["const x = 1;\nexport {};", "src/a.ts", "nord"]]);
     expect(rendered[1]).toBe(`│1 \x1b[35mconst x = 1;\x1b[39m${" ".repeat(44)}\x1b[0m│`);
     expect(rendered[2]).toBe(`│2 \x1b[35mexport {};\x1b[39m${" ".repeat(46)}\x1b[0m│`);
     expectWidthSafe(rendered, 60);
@@ -576,6 +577,52 @@ describe("FilesPanel syntax highlighting", () => {
     // Highlighting a preview is memoized, not repeated per render.
     panel.render(60);
     expect(calls).toHaveLength(1);
+  });
+
+  test("cycles themes in tree and preview focus and invalidates highlighted lines", async () => {
+    const calls: HighlightThemeName[] = [];
+    const changes: HighlightThemeName[] = [];
+    const highlight = (
+      code: string,
+      _path: string,
+      theme: HighlightThemeName,
+    ): readonly string[] => {
+      calls.push(theme);
+      return code.split("\n");
+    };
+    const { panel, source, tui } = harness(120, 6, {
+      highlight,
+      onHighlightThemeChange: theme => changes.push(theme),
+    });
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["const x = 1;"]));
+    await settle();
+
+    expect(panel.render(120).at(-1)).toContain("theme Catppuccin · t theme");
+    expect(calls).toEqual(["catppuccin"]);
+
+    const beforeTreeSwitch = tui.renderRequests;
+    panel.handleInput("t");
+    expect(tui.renderRequests).toBe(beforeTreeSwitch + 1);
+    expect(changes).toEqual(["nord"]);
+    expect(panel.render(120).at(-1)).toContain("theme Nord · t theme");
+    expect(calls).toEqual(["catppuccin", "nord"]);
+
+    panel.handleInput("\r");
+    const beforePreviewSwitch = tui.renderRequests;
+    panel.handleInput("t");
+    expect(tui.renderRequests).toBe(beforePreviewSwitch + 1);
+    expect(changes).toEqual(["nord", "tokyo-night"]);
+    expect(panel.render(120).at(-1)).toContain("theme Tokyo Night · t theme");
+    expect(calls).toEqual(["catppuccin", "nord", "tokyo-night"]);
+
+    panel.handleInput("t");
+    expect(changes).toEqual(["nord", "tokyo-night", "catppuccin"]);
+    panel.render(120);
+    expect(calls).toEqual(["catppuccin", "nord", "tokyo-night", "catppuccin"]);
   });
 
   test("falls back to plain lines for diffs, unknown languages, and bad results", async () => {

@@ -76,8 +76,12 @@ export function createExtension(
               keybindings,
               ...(sessionName === undefined ? {} : { sessionName }),
               treeRatio: settings.treeRatio,
+              highlightTheme: settings.highlightTheme,
               onTreeRatioChange: ratio => {
                 dependencies.settings.saveTreeRatio(ratio);
+              },
+              onHighlightThemeChange: highlightTheme => {
+                dependencies.settings.saveHighlightTheme(highlightTheme);
               },
               ...(highlight === undefined ? {} : { highlight }),
               done,
