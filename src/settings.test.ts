@@ -70,13 +70,13 @@ describe("panel settings store", () => {
     await writeFile(file, JSON.stringify({ treeRatio: 0.2 }), "utf8");
     expect(await store.load()).toEqual({
       treeRatio: 0.2,
-      highlightTheme: "catppuccin",
+      highlightTheme: "pi",
     });
 
     await writeFile(file, JSON.stringify({ treeRatio: 0.18, highlightTheme: "unknown" }), "utf8");
     expect(await store.load()).toEqual({
       treeRatio: 0.18,
-      highlightTheme: "catppuccin",
+      highlightTheme: "pi",
     });
 
     await writeFile(file, JSON.stringify({ treeRatio: "wide", highlightTheme: "nord" }), "utf8");
@@ -101,7 +101,7 @@ describe("panel settings store", () => {
     await writeFile(file, JSON.stringify({ treeRatio: 0.75 }), "utf8");
     expect(await store.load()).toEqual({
       treeRatio: 0.3,
-      highlightTheme: "catppuccin",
+      highlightTheme: "pi",
     });
   });
 

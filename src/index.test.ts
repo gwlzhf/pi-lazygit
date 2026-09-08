@@ -125,7 +125,7 @@ function createSettingsStore(overrides: Partial<PanelSettingsStore> = {}): Panel
   return {
     load: async (): Promise<PanelSettings> => ({
       treeRatio: 0.3,
-      highlightTheme: "catppuccin",
+      highlightTheme: "pi",
     }),
     saveTreeRatio: () => {},
     saveHighlightTheme: () => {},

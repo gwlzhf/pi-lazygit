@@ -11,6 +11,7 @@
 import type { Theme } from "@oh-my-pi/pi-coding-agent";
 
 export const HIGHLIGHT_THEMES = [
+  { name: "pi", label: "Pi", ompName: undefined },
   { name: "catppuccin", label: "Catppuccin", ompName: "dark-catppuccin" },
   { name: "nord", label: "Nord", ompName: "dark-nord" },
   { name: "tokyo-night", label: "Tokyo Night", ompName: "dark-tokyo-night" },
@@ -18,7 +19,7 @@ export const HIGHLIGHT_THEMES = [
 
 export type HighlightThemeName = (typeof HIGHLIGHT_THEMES)[number]["name"];
 
-export const DEFAULT_HIGHLIGHT_THEME: HighlightThemeName = "catppuccin";
+export const DEFAULT_HIGHLIGHT_THEME: HighlightThemeName = "pi";
 
 export function getHighlightThemeLabel(name: HighlightThemeName): string {
   return HIGHLIGHT_THEMES.find(theme => theme.name === name)?.label ?? name;
@@ -36,6 +37,7 @@ export type Highlighter = (
   code: string,
   path: string,
   themeName: HighlightThemeName,
+  piTheme: Theme,
 ) => readonly string[] | undefined;
 
 /** The slice of OMP's coding-agent exports the highlighter needs. */
@@ -56,9 +58,10 @@ function isHighlightModule(value: unknown): value is HighlightModule {
 }
 
 /**
- * Resolve OMP's tokenizer and all supported themes once when the panel opens.
- * Prefer the host namespace; fall back to the plugin-local dependency when the
- * host does not expose the complete API.
+ * Resolve OMP's tokenizer and the three optional palettes once when the panel
+ * opens. Pi uses the active host theme passed at highlight time. Prefer the
+ * host namespace; fall back to the plugin-local dependency when the host does
+ * not expose the complete API.
  */
 export async function loadHighlighter(host?: unknown): Promise<Highlighter | undefined> {
   const module = await resolveModule(host);
@@ -66,20 +69,24 @@ export async function loadHighlighter(host?: unknown): Promise<Highlighter | und
 
   try {
     const loaded = await Promise.all(
-      HIGHLIGHT_THEMES.map(async ({ name, ompName }) => {
-        const theme = await module.getThemeByName(ompName);
-        return theme === undefined ? undefined : ([name, theme] as const);
-      }),
+      HIGHLIGHT_THEMES
+        .filter(theme => theme.ompName !== undefined)
+        .map(async ({ name, ompName }) => {
+          if (ompName === undefined) return undefined;
+          const theme = await module.getThemeByName(ompName);
+          return theme === undefined ? undefined : ([name, theme] as const);
+        }),
     );
     if (loaded.some(entry => entry === undefined)) return undefined;
 
     const themes = Object.fromEntries(
       loaded as ReadonlyArray<readonly [HighlightThemeName, Theme]>,
-    ) as Record<HighlightThemeName, Theme>;
-    return (code, path, themeName) => {
+    ) as Partial<Record<HighlightThemeName, Theme>>;
+    return (code, path, themeName, piTheme) => {
       const language = module.getLanguageFromPath(path);
       if (language === undefined) return undefined;
-      const theme = themes[themeName];
+      const theme = themeName === "pi" ? piTheme : themes[themeName];
+      if (theme === undefined) return undefined;
       try {
         return module.highlightCode(code, language, theme);
       } catch {

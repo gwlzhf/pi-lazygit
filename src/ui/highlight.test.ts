@@ -13,15 +13,17 @@ const THEMES = {
   "dark-nord": { name: "nord" } as unknown as Theme,
   "dark-tokyo-night": { name: "tokyo-night" } as unknown as Theme,
 } as const;
+const PI_THEME = { name: "pi" } as unknown as Theme;
 
 test("exposes the fixed theme catalog and default", () => {
   expect(HIGHLIGHT_THEMES.map(theme => theme.name)).toEqual([
+    "pi",
     "catppuccin",
     "nord",
     "tokyo-night",
   ]);
-  expect(DEFAULT_HIGHLIGHT_THEME).toBe("catppuccin");
-  expect(getHighlightThemeLabel("tokyo-night")).toBe("Tokyo Night");
+  expect(DEFAULT_HIGHLIGHT_THEME).toBe("pi");
+  expect(getHighlightThemeLabel("pi")).toBe("Pi");
   expect(isHighlightThemeName("nord")).toBe(true);
   expect(isHighlightThemeName("unknown")).toBe(false);
 });
@@ -46,13 +48,15 @@ test("loads each OMP theme once and forwards the selected theme", async () => {
     "dark-nord",
     "dark-tokyo-night",
   ]);
-  expect(highlight?.("a", "app.ts", "catppuccin")).toEqual(["<a>"]);
-  expect(highlight?.("b", "app.ts", "nord")).toEqual(["<b>"]);
-  expect(highlight?.("c", "app.ts", "tokyo-night")).toEqual(["<c>"]);
+  expect(highlight?.("a", "app.ts", "pi", PI_THEME)).toEqual(["<a>"]);
+  expect(highlight?.("b", "app.ts", "catppuccin", PI_THEME)).toEqual(["<b>"]);
+  expect(highlight?.("c", "app.ts", "nord", PI_THEME)).toEqual(["<c>"]);
+  expect(highlight?.("d", "app.ts", "tokyo-night", PI_THEME)).toEqual(["<d>"]);
   expect(highlightCalls).toEqual([
-    ["a", "typescript", THEMES["dark-catppuccin"]],
-    ["b", "typescript", THEMES["dark-nord"]],
-    ["c", "typescript", THEMES["dark-tokyo-night"]],
+    ["a", "typescript", PI_THEME],
+    ["b", "typescript", THEMES["dark-catppuccin"]],
+    ["c", "typescript", THEMES["dark-nord"]],
+    ["d", "typescript", THEMES["dark-tokyo-night"]],
   ]);
 });
 
@@ -65,8 +69,8 @@ test("reports no highlighting for unknown languages and tokenizer failures", asy
     },
   });
 
-  expect(highlight?.("a", "notes.unknown", "catppuccin")).toBeUndefined();
-  expect(highlight?.("a", "app.ts", "catppuccin")).toBeUndefined();
+  expect(highlight?.("a", "notes.unknown", "pi", PI_THEME)).toBeUndefined();
+  expect(highlight?.("a", "app.ts", "pi", PI_THEME)).toBeUndefined();
 });
 
 test("disables highlighting when a built-in theme cannot load", async () => {

@@ -783,7 +783,7 @@ export class FilesPanel implements Component {
       && this.#highlighted.theme === this.#highlightTheme
     ) return this.#highlighted.lines;
     const source = value.lines.map(line => sanitizeTerminalText(line).replaceAll("\n", " "));
-    const colored = this.#highlight(source.join("\n"), value.path, this.#highlightTheme);
+    const colored = this.#highlight(source.join("\n"), value.path, this.#highlightTheme, this.#theme);
     const lines = colored !== undefined && colored.length === source.length ? colored : undefined;
     this.#highlighted = { preview: value, theme: this.#highlightTheme, lines };
     return lines;

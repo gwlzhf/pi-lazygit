@@ -553,13 +553,14 @@ describe("FilesPanel focus and tree width", () => {
 });
 
 describe("FilesPanel syntax highlighting", () => {
-  test("colors text previews through the injected highlighter", async () => {
-    const calls: Array<readonly [string, string, HighlightThemeName]> = [];
-    const highlight = (code: string, path: string, theme: HighlightThemeName): readonly string[] => {
-      calls.push([code, path, theme]);
+  test("colors text previews with the active Pi theme by default", async () => {
+    const piTheme = plainTheme();
+    const calls: Array<readonly [string, string, HighlightThemeName, Theme]> = [];
+    const highlight = (code: string, path: string, theme: HighlightThemeName, activeTheme: Theme): readonly string[] => {
+      calls.push([code, path, theme, activeTheme]);
       return code.split("\n").map(line => `\x1b[35m${line}\x1b[39m`);
     };
-    const { panel, source } = harness(60, 6, { highlight, highlightTheme: "nord" });
+    const { panel, source } = harness(60, 6, { highlight, theme: piTheme });
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
@@ -569,7 +570,7 @@ describe("FilesPanel syntax highlighting", () => {
     panel.handleInput("\r");
 
     const rendered = panel.render(60);
-    expect(calls).toEqual([["const x = 1;\nexport {};", "src/a.ts", "nord"]]);
+    expect(calls).toEqual([["const x = 1;\nexport {};", "src/a.ts", "pi", piTheme]]);
     expect(rendered[1]).toBe(`│1 \x1b[35mconst x = 1;\x1b[39m${" ".repeat(44)}\x1b[0m│`);
     expect(rendered[2]).toBe(`│2 \x1b[35mexport {};\x1b[39m${" ".repeat(46)}\x1b[0m│`);
     expectWidthSafe(rendered, 60);
@@ -601,28 +602,33 @@ describe("FilesPanel syntax highlighting", () => {
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["const x = 1;"]));
     await settle();
 
-    expect(panel.render(120).at(-1)).toContain("theme Catppuccin · t theme");
-    expect(calls).toEqual(["catppuccin"]);
+    expect(panel.render(120).at(-1)).toContain("theme Pi · t theme");
+    expect(calls).toEqual(["pi"]);
 
     const beforeTreeSwitch = tui.renderRequests;
     panel.handleInput("t");
     expect(tui.renderRequests).toBe(beforeTreeSwitch + 1);
-    expect(changes).toEqual(["nord"]);
-    expect(panel.render(120).at(-1)).toContain("theme Nord · t theme");
-    expect(calls).toEqual(["catppuccin", "nord"]);
+    expect(changes).toEqual(["catppuccin"]);
+    expect(panel.render(120).at(-1)).toContain("theme Catppuccin · t theme");
+    expect(calls).toEqual(["pi", "catppuccin"]);
 
     panel.handleInput("\r");
     const beforePreviewSwitch = tui.renderRequests;
     panel.handleInput("t");
     expect(tui.renderRequests).toBe(beforePreviewSwitch + 1);
-    expect(changes).toEqual(["nord", "tokyo-night"]);
-    expect(panel.render(120).at(-1)).toContain("theme Tokyo Night · t theme");
-    expect(calls).toEqual(["catppuccin", "nord", "tokyo-night"]);
+    expect(changes).toEqual(["catppuccin", "nord"]);
+    expect(panel.render(120).at(-1)).toContain("theme Nord · t theme");
+    expect(calls).toEqual(["pi", "catppuccin", "nord"]);
 
     panel.handleInput("t");
-    expect(changes).toEqual(["nord", "tokyo-night", "catppuccin"]);
+    expect(changes).toEqual(["catppuccin", "nord", "tokyo-night"]);
     panel.render(120);
-    expect(calls).toEqual(["catppuccin", "nord", "tokyo-night", "catppuccin"]);
+    expect(calls).toEqual(["pi", "catppuccin", "nord", "tokyo-night"]);
+
+    panel.handleInput("t");
+    expect(changes).toEqual(["catppuccin", "nord", "tokyo-night", "pi"]);
+    panel.render(120);
+    expect(calls).toEqual(["pi", "catppuccin", "nord", "tokyo-night", "pi"]);
   });
 
   test("falls back to plain lines for diffs, unknown languages, and bad results", async () => {
