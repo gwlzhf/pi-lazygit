@@ -15,14 +15,14 @@ The extension targets the OMP 18.0.11 interactive TUI in Windows PowerShell and 
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.1.3
+omp plugin install github:gwlzhf/pi-lazygit#v0.1.4
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.1.3
+omp plugin install github:gwlzhf/pi-lazygit#v0.1.4
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
