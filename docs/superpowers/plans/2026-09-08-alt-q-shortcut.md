@@ -43,8 +43,8 @@ test("registers /files, Alt+Q, and session lifecycle handlers", () => {
   })(harness.api);
 
   expect(harness.commands.get("files")?.description).toContain("files");
-  expect(harness.shortcuts.get(FILES_SHORTCUT)).toBeDefined();
-  expect(FILES_SHORTCUT).toBe("alt+q");
+  expect(harness.shortcuts.get("alt+q")).toBeDefined();
+  expect(harness.shortcuts.get("ctrl+shift+g")).toBeUndefined();
   expect(harness.lifecycle.get("session_start")).toBeDefined();
   expect(harness.lifecycle.get("session_shutdown")).toBeDefined();
 });
@@ -58,7 +58,7 @@ Run:
 bun test src/index.test.ts --test-name-pattern "registers /files, Alt\\+Q"
 ```
 
-Expected: FAIL because `FILES_SHORTCUT` is still `"ctrl+shift+g"` instead of `"alt+q"`.
+Expected: FAIL because the extension still registers `ctrl+shift+g`, so the `alt+q` lookup is undefined and the old shortcut remains present.
 
 - [ ] **Step 3: Change the registered shortcut**
 
@@ -88,7 +88,7 @@ Run:
 bun test src/index.test.ts --test-name-pattern "registers /files, Alt\\+Q"
 ```
 
-Expected: PASS; the extension registration map contains `alt+q` through `FILES_SHORTCUT`.
+Expected: PASS; the extension registration map contains `alt+q` and does not contain `ctrl+shift+g`.
 
 - [ ] **Step 6: Run complete verification**
 
