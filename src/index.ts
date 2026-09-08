@@ -18,7 +18,7 @@ export interface ExtensionDependencies {
   readonly clearSession: () => void;
   readonly createPanel: (options: FilesPanelOptions) => FilesPanel;
   readonly settings: PanelSettingsStore;
-  readonly loadHighlighter: () => Promise<Highlighter | undefined>;
+  readonly loadHighlighter: (host?: unknown) => Promise<Highlighter | undefined>;
 }
 
 export const FILES_SHORTCUT = "alt+q";
@@ -61,7 +61,10 @@ export function createExtension(
         const sessionName = pi.getSessionName();
         const [settings, highlight] = await Promise.all([
           dependencies.settings.load(),
-          dependencies.loadHighlighter(),
+          // `pi.pi` is the host's own coding-agent namespace; its theme
+          // singleton is initialized, unlike the copy a plugin-local import
+          // would resolve to.
+          dependencies.loadHighlighter(pi.pi),
         ]);
         await ctx.ui.custom<undefined>(
           (tui, theme, keybindings, done) => {

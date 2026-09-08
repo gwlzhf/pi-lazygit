@@ -18,6 +18,9 @@ interface Deferred<T> {
   reject(error: unknown): void;
 }
 
+/** Stand-in for the coding-agent namespace OMP injects as `pi.pi`. */
+const HOST_MODULE = { marker: "host-coding-agent" };
+
 interface ApiHarness {
   readonly api: ExtensionAPI;
   readonly commands: Map<string, CommandRegistration>;
@@ -48,6 +51,7 @@ function createApiHarness(): ApiHarness {
   const lifecycle = new Map<string, LifecycleHandler>();
 
   const api = {
+    pi: HOST_MODULE,
     registerCommand(name: string, options: CommandRegistration) {
       commands.set(name, options);
     },
@@ -335,6 +339,22 @@ test("passes a highlighter to the panel only when one loads", async () => {
   await invokeCommand(withoutHighlighter.commands.get("files"), context.ctx);
 
   expect(panelOptions.map(options => options.highlight)).toEqual([highlighter, undefined]);
+});
+
+test("resolves the highlighter against the host's injected coding-agent module", async () => {
+  const api = createApiHarness();
+  const context = createContextHarness();
+  const hosts: unknown[] = [];
+
+  createExtension(dependencies({
+    loadHighlighter: async host => {
+      hosts.push(host);
+      return undefined;
+    },
+  }))(api.api);
+  await invokeCommand(api.commands.get("files"), context.ctx);
+
+  expect(hosts).toEqual([HOST_MODULE]);
 });
 
 test("does not mount a second panel while the first custom UI is open", async () => {
