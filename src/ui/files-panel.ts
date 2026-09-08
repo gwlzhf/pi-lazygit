@@ -32,6 +32,7 @@ import {
   getHighlightThemeLabel,
   HIGHLIGHT_THEMES,
   type Highlighter,
+  type HighlighterStream,
   type HighlightThemeName,
 } from "./highlight";
 import {
@@ -141,7 +142,11 @@ export class FilesPanel implements Component {
   #highlighted: {
     readonly preview: FilePreview;
     readonly theme: HighlightThemeName;
-    readonly lines: readonly string[] | undefined;
+    stream: HighlighterStream | undefined;
+    readonly lines: string[];
+    windowStart: number;
+    windowEnd: number;
+    windowLines: readonly string[] | undefined;
   } | undefined;
   #revision = 0;
   #cache: RenderCache | undefined;
@@ -759,10 +764,10 @@ export class FilesPanel implements Component {
     if (value.kind === "diff") {
       return value.lines.slice(start, start + height).map(line => renderDiffLine(line, width, this.#theme));
     }
-    const colored = this.#highlightedLines(value);
+    const colored = this.#highlightedWindow(value, start, start + height);
     return value.lines.slice(start, start + height).map((line, offset) => {
       const number = start + offset + 1;
-      const highlighted = colored?.[start + offset];
+      const highlighted = colored?.[offset];
       return highlighted === undefined
         ? renderNumberedLine(line, number, width, this.#theme, gutter)
         : renderHighlightedLine(highlighted, number, width, this.#theme, gutter);
@@ -770,23 +775,72 @@ export class FilesPanel implements Component {
   }
 
   /**
-   * Syntax-highlighted copy of a text preview, computed once per preview.
-   * Content is sanitized before it is colored, so the highlighter only ever
-   * adds escape sequences to inert text. Returns undefined when no highlighter
-   * is installed, the language is unknown, or the result does not line up with
-   * the source.
+   * Incrementally highlights sequentially revealed lines so multiline parser
+   * state survives normal scrolling. A non-sequential jump highlights only its
+   * visible window rather than synchronously parsing every skipped line.
    */
-  #highlightedLines(value: FilePreview): readonly string[] | undefined {
+  #highlightedWindow(
+    value: FilePreview,
+    start: number,
+    end: number,
+  ): readonly string[] | undefined {
     if (this.#highlight === undefined || value.kind !== "text" || value.lines.length === 0) return undefined;
+    let cached = this.#highlighted;
+    if (cached?.preview !== value || cached.theme !== this.#highlightTheme) {
+      let stream: HighlighterStream | undefined;
+      try {
+        stream = this.#highlight.createStream?.(value.path, this.#highlightTheme, this.#theme);
+      } catch {
+        stream = undefined;
+      }
+      cached = {
+        preview: value,
+        theme: this.#highlightTheme,
+        stream,
+        lines: [],
+        windowStart: -1,
+        windowEnd: -1,
+        windowLines: undefined,
+      };
+      this.#highlighted = cached;
+    }
+
+    if (cached.stream !== undefined && start <= cached.lines.length) {
+      if (end > cached.lines.length) {
+        const source = value.lines
+          .slice(cached.lines.length, end)
+          .map(line => sanitizeTerminalText(line).replaceAll("\n", " "));
+        try {
+          const colored = cached.stream.push(`${source.join("\n")}\n`).split("\n");
+          colored.pop();
+          if (colored.length === source.length) cached.lines.push(...colored);
+          else cached.stream = undefined;
+        } catch {
+          cached.stream = undefined;
+        }
+      }
+      if (cached.stream !== undefined) return cached.lines.slice(start, end);
+    }
+
     if (
-      this.#highlighted?.preview === value
-      && this.#highlighted.theme === this.#highlightTheme
-    ) return this.#highlighted.lines;
-    const source = value.lines.map(line => sanitizeTerminalText(line).replaceAll("\n", " "));
-    const colored = this.#highlight(source.join("\n"), value.path, this.#highlightTheme, this.#theme);
-    const lines = colored !== undefined && colored.length === source.length ? colored : undefined;
-    this.#highlighted = { preview: value, theme: this.#highlightTheme, lines };
-    return lines;
+      cached.windowStart === start
+      && cached.windowEnd === end
+    ) return cached.windowLines;
+    const source = value.lines
+      .slice(start, end)
+      .map(line => sanitizeTerminalText(line).replaceAll("\n", " "));
+    const colored = this.#highlight(
+      source.join("\n"),
+      value.path,
+      this.#highlightTheme,
+      this.#theme,
+    );
+    cached.windowStart = start;
+    cached.windowEnd = end;
+    cached.windowLines = colored !== undefined && colored.length === source.length
+      ? colored
+      : undefined;
+    return cached.windowLines;
   }
 
   #footer(): string {

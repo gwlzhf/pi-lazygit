@@ -251,6 +251,7 @@ function boundedLogicalLines(text: string): { lines: string[]; truncated: boolea
 
 export class GitRepository {
   private rootPath: string | undefined;
+  private latestInspection: RepositoryInspection | undefined;
 
   constructor(private readonly runner: ProcessRunner = new BunProcessRunner()) {}
 
@@ -385,7 +386,7 @@ export class GitRepository {
       insertions += pathSummary.insertions;
       deletions += pathSummary.deletions;
     }
-    return {
+    const inspection = {
       root: this.root(),
       hasHead,
       allFiles: parseNulPaths(filesOutput.stdout),
@@ -393,6 +394,8 @@ export class GitRepository {
       summaryByPath,
       summary: { files: changes.size, insertions, deletions },
     };
+    this.latestInspection = inspection;
+    return inspection;
   }
 
   async contentHash(path: string, signal: AbortSignal): Promise<string | null> {
@@ -427,10 +430,13 @@ export class GitRepository {
     let displayPath = normalizeProjectPath(path);
     try {
       displayPath = validateProjectPath(this.root(), path);
-      const [hasHead, changes] = await Promise.all([
-        this.detectHead(signal),
-        this.readStatus(signal),
-      ]);
+      const cached = this.latestInspection;
+      const [hasHead, changes] = cached === undefined
+        ? await Promise.all([
+            this.detectHead(signal),
+            this.readStatus(signal),
+          ])
+        : [cached.hasHead, cached.changes] as const;
       const change = changes.get(displayPath);
       if (!hasHead || change === undefined || change.status === "?") {
         return await readProjectFilePreview(this.root(), displayPath, signal);

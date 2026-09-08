@@ -580,6 +580,45 @@ describe("FilesPanel syntax highlighting", () => {
     expect(calls).toHaveLength(1);
   });
 
+  test("highlights only the visible prefix and extends it incrementally while scrolling", async () => {
+    const fallbackCalls: string[] = [];
+    const pushedChunks: string[] = [];
+    const highlight = Object.assign(
+      (code: string): readonly string[] => {
+        fallbackCalls.push(code);
+        return code.split("\n");
+      },
+      {
+        createStream: () => ({
+          push(chunk: string): string {
+            pushedChunks.push(chunk);
+            return chunk;
+          },
+        }),
+      },
+    );
+    const lines = Array.from({ length: 100 }, (_, index) => `line ${index + 1}`);
+    const { panel, source } = harness(60, 6, { highlight });
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", lines));
+    await settle();
+    panel.handleInput("\r");
+
+    panel.render(60);
+    expect(pushedChunks).toEqual(["line 1\nline 2\nline 3\nline 4\n"]);
+    expect(fallbackCalls).toEqual([]);
+
+    panel.handleInput("j");
+    panel.render(60);
+    expect(pushedChunks).toEqual([
+      "line 1\nline 2\nline 3\nline 4\n",
+      "line 5\n",
+    ]);
+  });
+
   test("cycles themes in tree and preview focus and invalidates highlighted lines", async () => {
     const calls: HighlightThemeName[] = [];
     const changes: HighlightThemeName[] = [];

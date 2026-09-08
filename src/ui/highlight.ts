@@ -33,18 +33,34 @@ export function isHighlightThemeName(value: unknown): value is HighlightThemeNam
  * Highlight `code` for the language implied by `path`, returning one entry per
  * input line, or `undefined` when the language is unknown or unsupported.
  */
-export type Highlighter = (
-  code: string,
-  path: string,
-  themeName: HighlightThemeName,
-  piTheme: Theme,
-) => readonly string[] | undefined;
+export interface HighlighterStream {
+  push(chunk: string): string;
+}
+
+export interface Highlighter {
+  (
+    code: string,
+    path: string,
+    themeName: HighlightThemeName,
+    piTheme: Theme,
+  ): readonly string[] | undefined;
+  readonly createStream?: (
+    path: string,
+    themeName: HighlightThemeName,
+    piTheme: Theme,
+  ) => HighlighterStream | undefined;
+}
 
 /** The slice of OMP's coding-agent exports the highlighter needs. */
 export interface HighlightModule {
   readonly getLanguageFromPath: (path: string) => string | undefined;
   readonly getThemeByName: (name: string) => Promise<Theme | undefined>;
   readonly highlightCode: (code: string, language?: string, theme?: Theme) => string[];
+  readonly createHighlightStream?: (
+    language: string | undefined,
+    theme?: Theme,
+  ) => HighlighterStream | null;
+  readonly warmHighlighter?: () => Promise<void>;
 }
 
 function isHighlightModule(value: unknown): value is HighlightModule {
@@ -68,21 +84,23 @@ export async function loadHighlighter(host?: unknown): Promise<Highlighter | und
   if (module === undefined) return undefined;
 
   try {
-    const loaded = await Promise.all(
-      HIGHLIGHT_THEMES
-        .filter(theme => theme.ompName !== undefined)
-        .map(async ({ name, ompName }) => {
-          if (ompName === undefined) return undefined;
-          const theme = await module.getThemeByName(ompName);
-          return theme === undefined ? undefined : ([name, theme] as const);
-        }),
-    );
+    const [loaded] = await Promise.all([
+      Promise.all(
+        HIGHLIGHT_THEMES
+          .filter(theme => theme.ompName !== undefined)
+          .map(async ({ name, ompName }) => {
+            if (ompName === undefined) return undefined;
+            const theme = await module.getThemeByName(ompName);
+            return theme === undefined ? undefined : ([name, theme] as const);
+          }),
+      ),
+      module.warmHighlighter?.().catch(() => undefined),
+    ]);
     if (loaded.some(entry => entry === undefined)) return undefined;
-
     const themes = Object.fromEntries(
       loaded as ReadonlyArray<readonly [HighlightThemeName, Theme]>,
     ) as Partial<Record<HighlightThemeName, Theme>>;
-    return (code, path, themeName, piTheme) => {
+    const highlight: Highlighter = (code, path, themeName, piTheme) => {
       const language = module.getLanguageFromPath(path);
       if (language === undefined) return undefined;
       const theme = themeName === "pi" ? piTheme : themes[themeName];
@@ -93,6 +111,24 @@ export async function loadHighlighter(host?: unknown): Promise<Highlighter | und
         return undefined;
       }
     };
+    if (module.createHighlightStream === undefined) return highlight;
+    return Object.assign(highlight, {
+      createStream(
+        path: string,
+        themeName: HighlightThemeName,
+        piTheme: Theme,
+      ): HighlighterStream | undefined {
+        const language = module.getLanguageFromPath(path);
+        if (language === undefined) return undefined;
+        const theme = themeName === "pi" ? piTheme : themes[themeName];
+        if (theme === undefined) return undefined;
+        try {
+          return module.createHighlightStream?.(language, theme) ?? undefined;
+        } catch {
+          return undefined;
+        }
+      },
+    });
   } catch {
     return undefined;
   }

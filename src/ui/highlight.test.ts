@@ -60,6 +60,46 @@ test("loads each OMP theme once and forwards the selected theme", async () => {
   ]);
 });
 
+test("warms native grammars while loading themes", async () => {
+  let warmCalls = 0;
+
+  await loadHighlighter({
+    getLanguageFromPath: () => "typescript",
+    getThemeByName: async (name: string) => THEMES[name as keyof typeof THEMES],
+    highlightCode: (code: string) => [code],
+    warmHighlighter: async () => {
+      warmCalls += 1;
+    },
+  });
+
+  expect(warmCalls).toBe(1);
+});
+
+test("creates a stateful stream with the selected language and theme", async () => {
+  const streamCalls: Array<readonly [string | undefined, Theme | undefined]> = [];
+  const pushed: string[] = [];
+  const highlight = await loadHighlighter({
+    getLanguageFromPath: (path: string) => (path.endsWith(".ts") ? "typescript" : undefined),
+    getThemeByName: async (name: string) => THEMES[name as keyof typeof THEMES],
+    highlightCode: (code: string) => [code],
+    createHighlightStream: (language: string | undefined, theme?: Theme) => {
+      streamCalls.push([language, theme]);
+      return {
+        push(chunk: string): string {
+          pushed.push(chunk);
+          return `<${chunk}>`;
+        },
+      };
+    },
+  });
+
+  const stream = highlight?.createStream?.("app.ts", "nord", PI_THEME);
+
+  expect(stream?.push("const x = 1;\n")).toBe("<const x = 1;\n>");
+  expect(streamCalls).toEqual([["typescript", THEMES["dark-nord"]]]);
+  expect(pushed).toEqual(["const x = 1;\n"]);
+});
+
 test("reports no highlighting for unknown languages and tokenizer failures", async () => {
   const highlight = await loadHighlighter({
     getLanguageFromPath: (path: string) => (path.endsWith(".ts") ? "typescript" : undefined),
