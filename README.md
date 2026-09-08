@@ -18,26 +18,26 @@ From the repository root, install dependencies:
 bun install
 ```
 
-Link the checkout as an OMP plugin. This is the primary local installation path:
+Install the checkout as an OMP plugin. This copies the plugin into OMP's user plugin directory:
 
 ```powershell
-omp plugin link .
+omp plugin install . --force
 ```
 
-OMP reads the extension entry from the package manifest. Restart OMP after linking so the plugin is loaded and the session baseline is established.
+Restart OMP after installation so the plugin is loaded and the session baseline is established.
 
 ## Install a release package
 
-Download the Windows ZIP package, extract it with PowerShell, then link the extracted directory:
+Download the release archive, then install it directly:
 
 ```powershell
-Expand-Archive -LiteralPath .\pi-lazygit-0.1.0.zip -DestinationPath .\pi-lazygit-0.1.0
-omp plugin link .\pi-lazygit-0.1.0
+Invoke-WebRequest -Uri https://github.com/gwlzhf/pi-lazygit/releases/download/v0.1.1/pi-lazygit-0.1.1.tgz -OutFile .\pi-lazygit-0.1.1.tgz
+omp plugin install .\pi-lazygit-0.1.1.tgz --force
 ```
 
-Restart OMP after linking. The release package contains only the manifest, README, and production extension sources.
+Restart OMP after installation. The release package contains only the manifest, README, and production extension sources.
 
-For a one-run development session without linking the plugin, run this from the repository root:
+For a one-run development session without installing the plugin, run this from the repository root:
 
 ```powershell
 omp --extension ./src/index.ts
