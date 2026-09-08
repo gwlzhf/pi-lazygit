@@ -10,32 +10,22 @@ Pi Files Review is a read-only Oh My Pi extension for reviewing project files an
 
 The extension targets the OMP 18.0.11 interactive TUI in Windows PowerShell and Windows Terminal. Git repositories without an initial commit are supported. A non-Git directory uses the read-only filesystem fallback.
 
-## Install locally
+## Install
 
-From the repository root, install dependencies:
+Install the published Git tag through OMP:
 
 ```powershell
-bun install
+omp plugin install github:gwlzhf/pi-lazygit#v0.1.1
 ```
 
-Install the checkout as an OMP plugin. This copies the plugin into OMP's user plugin directory:
+When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
-omp plugin install . --force
+omp plugin uninstall pi-lazygit
+omp plugin install github:gwlzhf/pi-lazygit#v0.1.1
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
-
-## Install a release package
-
-Download the release archive, then install it directly:
-
-```powershell
-Invoke-WebRequest -Uri https://github.com/gwlzhf/pi-lazygit/releases/download/v0.1.1/pi-lazygit-0.1.1.tgz -OutFile .\pi-lazygit-0.1.1.tgz
-omp plugin install .\pi-lazygit-0.1.1.tgz --force
-```
-
-Restart OMP after installation. The release package contains only the manifest, README, and production extension sources.
 
 For a one-run development session without installing the plugin, run this from the repository root:
 
