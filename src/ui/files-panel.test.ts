@@ -393,6 +393,124 @@ describe("FilesPanel state machine", () => {
   });
 });
 
+/** Column index of the wide-layout divider, or -1 when the row has none. */
+function dividerColumn(lines: readonly string[]): number {
+  return (lines[1] ?? "").indexOf("│", 1);
+}
+
+describe("FilesPanel focus and tree width", () => {
+  test("Tab and Shift+Tab switch focus between the tree and the preview", async () => {
+    const { panel, source } = harness(60, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["alpha"]));
+    await settle();
+
+    panel.handleInput("\t");
+    expect(panel.render(60)[0]).toContain("File: src/a.ts");
+    panel.handleInput("\x1b[Z");
+    expect(panel.render(60)[0]).toContain("Project [modified · workspace]");
+    panel.handleInput("\x1b[Z");
+    expect(panel.render(60)[0]).toContain("File: src/a.ts");
+    panel.handleInput("\t");
+    expect(panel.render(60)[0]).toContain("Project [modified · workspace]");
+  });
+
+  test("[ and ] resize the tree pane between the minimum and the 30% cap", async () => {
+    const { panel, source, tui } = harness(100, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    // 100 columns leave 97 interior columns; the cap is floor(97 * 0.3) = 29.
+    expect(dividerColumn(panel.render(100))).toBe(30);
+    const atCap = tui.renderRequests;
+    panel.handleInput("]");
+    expect(dividerColumn(panel.render(100))).toBe(30);
+    expect(tui.renderRequests).toBe(atCap);
+
+    panel.handleInput("[");
+    expect(dividerColumn(panel.render(100))).toBe(29);
+    panel.handleInput("\x1b[1;5D");
+    expect(dividerColumn(panel.render(100))).toBe(28);
+    panel.handleInput("\x1b[1;5C");
+    expect(dividerColumn(panel.render(100))).toBe(29);
+
+    for (let press = 0; press < 40; press += 1) panel.handleInput("[");
+    expect(dividerColumn(panel.render(100))).toBe(13);
+    for (let press = 0; press < 40; press += 1) panel.handleInput("]");
+    expect(dividerColumn(panel.render(100))).toBe(30);
+  });
+
+  test("the width ratio survives a terminal width change", async () => {
+    const { panel, source } = harness(100, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.render(100);
+    for (let press = 0; press < 9; press += 1) panel.handleInput("[");
+    // 20 of 97 interior columns ≈ 20.6% of the 137 interior columns at width 140.
+    expect(dividerColumn(panel.render(100))).toBe(21);
+    expect(dividerColumn(panel.render(140))).toBe(29);
+  });
+
+  test("dragging the divider resizes the tree pane and stops on release", async () => {
+    const { panel, source } = harness(100, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.render(100);
+
+    panel.handleInput("\x1b[<0;31;3M");
+    panel.handleInput("\x1b[<32;21;3M");
+    expect(dividerColumn(panel.render(100))).toBe(20);
+    panel.handleInput("\x1b[<32;91;3M");
+    expect(dividerColumn(panel.render(100))).toBe(30);
+    panel.handleInput("\x1b[<32;3;3M");
+    expect(dividerColumn(panel.render(100))).toBe(13);
+
+    panel.handleInput("\x1b[<0;13;3m");
+    panel.handleInput("\x1b[<32;61;3M");
+    expect(dividerColumn(panel.render(100))).toBe(13);
+  });
+
+  test("a press away from the divider never starts a drag", async () => {
+    const { panel, source } = harness(100, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.render(100);
+
+    panel.handleInput("\x1b[<0;10;3M");
+    panel.handleInput("\x1b[<32;61;3M");
+    expect(dividerColumn(panel.render(100))).toBe(30);
+  });
+
+  test("the wheel moves the tree selection and scrolls the preview", async () => {
+    const { panel, source } = harness(100, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.render(100);
+
+    panel.handleInput("\x1b[<65;5;3M");
+    expect(source.previewCalls.at(-1)?.path).toBe("src/b.ts");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/b.ts", "text", Array.from({ length: 10 }, (_, index) => `line ${index + 1}`)));
+    await settle();
+    expect(panel.render(100).join("\n")).toContain(">   A  b.ts");
+
+    panel.handleInput("\x1b[<65;60;3M");
+    expect(panel.render(100)[1]).toContain(" 4 line 4");
+    panel.handleInput("\x1b[<64;60;3M");
+    expect(panel.render(100)[1]).toContain(" 1 line 1");
+
+    panel.handleInput("\x1b[<64;5;3M");
+    expect(panel.render(100).join("\n")).toContain("> ▼ src/");
+  });
+});
+
 describe("FilesPanel deterministic rendering", () => {
   test("renders exact wide, narrow tree, and narrow preview arrays", async () => {
     const wide = harness(100, 6);
@@ -404,12 +522,12 @@ describe("FilesPanel deterministic rendering", () => {
     await settle();
     const wideLines = wide.panel.render(100);
     expect(wideLines).toEqual([
-      `┌─ Project [modified · workspace] ${"─".repeat(7)}┬─ Diff: src/a.ts ${"─".repeat(40)}┐`,
-      `│${"  ▼ src/".padEnd(40)}│${"diff --git a/src/a.ts b/src/a.ts".padEnd(57)}│`,
-      `│${">   M  a.ts".padEnd(40)}│${"@@ -1 +1 @@".padEnd(57)}│`,
-      `│${"    A  b.ts".padEnd(40)}│${"-old".padEnd(57)}│`,
-      `│${"".padEnd(40)}│${"+new".padEnd(57)}│`,
-      `└─ demo · modified · workspace · +3 -1 · 2 files · ↑↓ move · ↵ open · m/a · s · r · esc ${"─".repeat(11)}┘`,
+      `┌─ Project [modified · workspa┬─ Diff: src/a.ts ${"─".repeat(51)}┐`,
+      `│${"  ▼ src/".padEnd(29)}│${"diff --git a/src/a.ts b/src/a.ts".padEnd(68)}│`,
+      `│${">   M  a.ts".padEnd(29)}│${"@@ -1 +1 @@".padEnd(68)}│`,
+      `│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`,
+      `│${"".padEnd(29)}│${"+new".padEnd(68)}│`,
+      "└─ demo · modified · workspace · +3 -1 · 2 files · ↑↓ move · ↵ open · tab · [ ] width · m/a · s · r┘",
     ]);
 
     const narrow = harness(60, 6);

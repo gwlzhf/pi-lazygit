@@ -27,6 +27,7 @@ interface ApiHarness {
 interface ContextHarness {
   readonly ctx: ExtensionContext;
   readonly customCalls: Array<unknown>;
+  readonly customOptions: Array<unknown>;
   readonly notifications: Array<readonly [string, string | undefined]>;
 }
 
@@ -70,6 +71,7 @@ function createContextHarness(options?: {
   readonly customResult?: Promise<undefined>;
 }): ContextHarness {
   const customCalls: Array<unknown> = [];
+  const customOptions: Array<unknown> = [];
   const notifications: Array<readonly [string, string | undefined]> = [];
 
   const ui = {
@@ -83,8 +85,10 @@ function createContextHarness(options?: {
         keybindings: unknown,
         done: (result: undefined) => void,
       ) => unknown,
+      customOptionsArgument?: unknown,
     ) {
       customCalls.push(factory);
+      customOptions.push(customOptionsArgument);
       factory({}, {}, {}, () => {});
       return options?.customResult ?? Promise.resolve(undefined);
     },
@@ -97,7 +101,7 @@ function createContextHarness(options?: {
     ui,
   } as unknown as ExtensionContext;
 
-  return { ctx, customCalls, notifications };
+  return { ctx, customCalls, customOptions, notifications };
 }
 
 function createSource(): ReviewSource {
@@ -218,6 +222,34 @@ test("command and shortcut route through the same panel opener", async () => {
   expect(panelOptions.map(options => options.sessionName)).toEqual([
     "review-session",
     "review-session",
+  ]);
+});
+
+test("mounts the panel as a fullscreen overlay with mouse tracking", async () => {
+  const api = createApiHarness();
+  const context = createContextHarness();
+
+  createExtension({
+    createReviewSource: () => createSource(),
+    prepareSession: async () => {},
+    clearSession: () => {},
+    createPanel: () => createPanel(),
+  })(api.api);
+
+  await invokeCommand(api.commands.get("files"), context.ctx);
+
+  expect(context.customOptions).toEqual([
+    {
+      overlay: true,
+      overlayOptions: {
+        anchor: "top-left",
+        width: "100%",
+        maxHeight: "100%",
+        margin: 0,
+        fullscreen: true,
+        mouseTracking: true,
+      },
+    },
   ]);
 });
 

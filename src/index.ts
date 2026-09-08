@@ -53,19 +53,35 @@ export function createExtension(
       try {
         const source = dependencies.createReviewSource(ctx.cwd);
         const sessionName = pi.getSessionName();
-        await ctx.ui.custom<undefined>((tui, theme, keybindings, done) => {
-          const panel = dependencies.createPanel({
-            cwd: ctx.cwd,
-            source,
-            tui,
-            theme,
-            keybindings,
-            ...(sessionName === undefined ? {} : { sessionName }),
-            done,
-          });
-          panel.start();
-          return panel;
-        });
+        await ctx.ui.custom<undefined>(
+          (tui, theme, keybindings, done) => {
+            const panel = dependencies.createPanel({
+              cwd: ctx.cwd,
+              source,
+              tui,
+              theme,
+              keybindings,
+              ...(sessionName === undefined ? {} : { sessionName }),
+              done,
+            });
+            panel.start();
+            return panel;
+          },
+          // A fullscreen overlay paints from screen row 0 and is the only OMP
+          // surface that turns on terminal mouse reporting, which the panel
+          // needs for wheel scrolling and divider drag-resize.
+          {
+            overlay: true,
+            overlayOptions: {
+              anchor: "top-left",
+              width: "100%",
+              maxHeight: "100%",
+              margin: 0,
+              fullscreen: true,
+              mouseTracking: true,
+            },
+          },
+        );
       } catch (error) {
         ctx.ui.notify(
           `Unable to open files review: ${errorMessage(error)}`,

@@ -1,8 +1,10 @@
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import {
   matchesKey,
+  routeSgrMouseInput,
   type Component,
   type KeybindingsManager,
+  type SgrMouseEvent,
   type TUI,
 } from "@oh-my-pi/pi-tui";
 import type {
@@ -54,6 +56,15 @@ const EMPTY_CHANGES: ReadonlyMap<string, ChangeRecord> = new Map();
 
 const WIDE_LAYOUT_MINIMUM = 80;
 
+/** Largest share of the panel interior the project tree may occupy. */
+const TREE_MAX_RATIO = 0.3;
+/** Smallest tree pane width, unless the panel interior is narrower than this. */
+const TREE_MIN_COLUMNS = 12;
+/** Rows moved or scrolled per mouse wheel notch. */
+const WHEEL_STEP = 3;
+/** Prefix of an SGR mouse report. */
+const MOUSE_REPORT_PREFIX = "\x1b[<";
+
 function errorMessage(error: unknown): string {
   return sanitizeTerminalText(error instanceof Error ? error.message : String(error)).replaceAll("\n", " ");
 }
@@ -102,6 +113,9 @@ export class FilesPanel implements Component {
   #previewController: AbortController | undefined;
   #refreshGeneration = 0;
   #previewGeneration = 0;
+  #treeRatio = TREE_MAX_RATIO;
+  #lastWidth = 0;
+  #dividerDrag = false;
   #revision = 0;
   #cache: RenderCache | undefined;
   #started = false;
@@ -126,6 +140,10 @@ export class FilesPanel implements Component {
 
   handleInput(data: string): void {
     if (this.#disposed || this.#doneCalled) return;
+    if (data.startsWith(MOUSE_REPORT_PREFIX)) {
+      routeSgrMouseInput(data, event => this.#routeMouse(event));
+      return;
+    }
     const interrupted = this.#keybindings.matches(data, "app.interrupt");
     if (interrupted || matchesKey(data, "escape")) {
       if (this.#focus === "preview") {
@@ -134,6 +152,20 @@ export class FilesPanel implements Component {
       } else {
         this.#finish();
       }
+      return;
+    }
+
+    if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
+      this.#focus = this.#focus === "tree" ? "preview" : "tree";
+      this.#requestRender();
+      return;
+    }
+    if (matchesKey(data, "[") || matchesKey(data, "ctrl+left")) {
+      this.#resizeTree(-1);
+      return;
+    }
+    if (matchesKey(data, "]") || matchesKey(data, "ctrl+right")) {
+      this.#resizeTree(1);
       return;
     }
 
@@ -146,6 +178,7 @@ export class FilesPanel implements Component {
 
   render(width: number): readonly string[] {
     const safeWidth = Math.max(1, Math.floor(width));
+    this.#lastWidth = safeWidth;
     const reportedRows = Math.floor(this.#tui.terminal.rows);
     const terminalRows = Number.isFinite(reportedRows) ? Math.max(0, reportedRows) : 0;
     const cached = this.#cache;
@@ -164,7 +197,7 @@ export class FilesPanel implements Component {
       lines = Object.freeze([]);
     } else if (terminalRows <= 2) {
       const wide = safeWidth >= WIDE_LAYOUT_MINIMUM;
-      const leftWidth = Math.max(0, Math.floor((safeWidth - 3) * 0.42));
+      const leftWidth = this.#treeWidth(safeWidth);
       const header = wide
         ? renderSplitBorder(this.#treeTitle(), this.#previewTitle(), safeWidth, leftWidth, "top", this.#theme)
         : renderSingleBorder(this.#focus === "preview" ? this.#previewTitle() : this.#treeTitle(), safeWidth, "top", this.#theme);
@@ -196,6 +229,7 @@ export class FilesPanel implements Component {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#dividerDrag = false;
     this.#refreshGeneration += 1;
     this.#previewGeneration += 1;
     this.#refreshController?.abort();
@@ -259,7 +293,7 @@ export class FilesPanel implements Component {
       this.#requestRender();
       return;
     }
-    const height = Math.max(1, Math.max(3, Math.floor(this.#tui.terminal.rows)) - 2);
+    const height = this.#previewViewportHeight();
     if (matchesKey(data, "home")) {
       this.#setPreviewScroll(0, height);
     } else if (matchesKey(data, "end")) {
@@ -273,6 +307,61 @@ export class FilesPanel implements Component {
     } else if (matchesKey(data, "pageDown")) {
       this.#setPreviewScroll(this.#previewScroll + height, height);
     }
+  }
+
+  /**
+   * Route a decoded mouse report: wheel scrolls the pane under the pointer and
+   * a left press on the wide-layout divider starts a width drag.
+   */
+  #routeMouse(event: SgrMouseEvent): boolean {
+    const wide = this.#lastWidth >= WIDE_LAYOUT_MINIMUM;
+    const treeWidth = this.#treeWidth(this.#lastWidth);
+    if (event.release) {
+      this.#dividerDrag = false;
+      return true;
+    }
+    if (event.wheel !== null) {
+      const overTree = wide ? event.col <= treeWidth : this.#focus === "tree";
+      if (overTree) this.#moveSelection(event.wheel * WHEEL_STEP);
+      else this.#setPreviewScroll(this.#previewScroll + event.wheel * WHEEL_STEP, this.#previewViewportHeight());
+      return true;
+    }
+    if (event.leftClick) {
+      this.#dividerDrag = wide && event.col === treeWidth + 1;
+      return true;
+    }
+    // Motion with the left button held (low button bits clear) is a drag.
+    if (event.motion && this.#dividerDrag && wide && (event.button & 3) === 0) {
+      this.#setTreeColumns(event.col - 1);
+    }
+    return true;
+  }
+
+  /** Tree pane columns for a panel width, clamped to the resize bounds. */
+  #treeWidth(width: number): number {
+    const available = Math.max(0, Math.floor(width) - 3);
+    const maximum = Math.floor(available * TREE_MAX_RATIO);
+    const minimum = Math.min(maximum, TREE_MIN_COLUMNS);
+    return Math.max(minimum, Math.min(maximum, Math.round(available * this.#treeRatio)));
+  }
+
+  #resizeTree(deltaColumns: number): void {
+    this.#setTreeColumns(this.#treeWidth(this.#lastWidth) + deltaColumns);
+  }
+
+  #setTreeColumns(columns: number): void {
+    const available = Math.max(0, this.#lastWidth - 3);
+    if (available === 0) return;
+    const maximum = Math.floor(available * TREE_MAX_RATIO);
+    const minimum = Math.min(maximum, TREE_MIN_COLUMNS);
+    const clamped = Math.max(minimum, Math.min(maximum, Math.round(columns)));
+    if (clamped === this.#treeWidth(this.#lastWidth)) return;
+    this.#treeRatio = clamped / available;
+    this.#requestRender();
+  }
+
+  #previewViewportHeight(): number {
+    return Math.max(1, Math.max(3, Math.floor(this.#tui.terminal.rows)) - 2);
   }
 
   #beginRefresh(): void {
@@ -512,9 +601,8 @@ export class FilesPanel implements Component {
   }
 
   #renderWide(width: number, height: number): readonly string[] {
-    const available = width - 3;
-    const leftWidth = Math.max(0, Math.floor(available * 0.42));
-    const rightWidth = Math.max(0, available - leftWidth);
+    const leftWidth = this.#treeWidth(width);
+    const rightWidth = Math.max(0, width - 3 - leftWidth);
     const tree = this.#renderTreeRows(leftWidth, height);
     const preview = this.#renderPreviewRows(rightWidth, height);
     const result: string[] = [
@@ -652,10 +740,10 @@ export class FilesPanel implements Component {
     else if (project?.baselineEstablishedAt !== undefined) pieces.push(`baseline ${new Date(project.baselineEstablishedAt).toISOString()}`);
 
     pieces.push(this.#focus === "preview"
-      ? "↑↓ scroll · pgup/dn · h/esc tree"
+      ? "↑↓ scroll · pgup/dn · tab/h/esc tree · [ ] width"
       : project?.kind === "filesystem"
-        ? "↑↓ move · ↵ open · r · esc"
-        : "↑↓ move · ↵ open · m/a · s · r · esc");
+        ? "↑↓ move · ↵ open · tab · [ ] width · r · esc"
+        : "↑↓ move · ↵ open · tab · [ ] width · m/a · s · r · esc");
     return pieces.join(" · ");
   }
 }
