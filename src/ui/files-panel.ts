@@ -48,6 +48,14 @@ import {
   type HighlightThemeName,
 } from "./highlight";
 import {
+  encodeOsc52,
+  highlightSelection,
+  isEmptySelection,
+  selectionText,
+  type PreviewSelection,
+  type SelectionPoint,
+} from "./selection";
+import {
   renderDiffLine,
   renderDiffSplitRow,
   renderHighlightedLine,
@@ -172,6 +180,11 @@ export class FilesPanel implements Component {
   #lastWidth = 0;
   #lastPreviewWidth = 0;
   #dividerDrag = false;
+  /** Preview rows of the last render, before selection highlighting. */
+  #previewRows: readonly string[] = [];
+  #selection: PreviewSelection | undefined;
+  #selectionDrag = false;
+  #copyNotice: string | undefined;
   #diffRows: {
     readonly preview: FilePreview;
     readonly rows: readonly DiffRow[] | undefined;
@@ -249,6 +262,7 @@ export class FilesPanel implements Component {
       return;
     }
     if (matchesKey(data, "d")) {
+      this.#clearSelection();
       this.#diffLayout = this.#diffLayout === "unified" ? "split" : "unified";
       this.#onDiffLayoutChange?.(this.#diffLayout);
       this.#requestRender();
@@ -338,6 +352,10 @@ export class FilesPanel implements Component {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#dividerDrag = false;
+    this.#selectionDrag = false;
+    this.#selection = undefined;
+    this.#copyNotice = undefined;
+    this.#previewRows = [];
     this.#refreshGeneration += 1;
     this.#previewGeneration += 1;
     this.#refreshController?.abort();
@@ -391,7 +409,10 @@ export class FilesPanel implements Component {
       return;
     }
     if (matchesKey(data, "right") || matchesKey(data, "l")) {
-      this.#expandOrChild();
+      // A file has nothing to expand, so the key crosses into the preview;
+      // a directory keeps the familiar expand/descend behavior.
+      if (this.#selectedRow()?.node.kind === "file") this.#focusPreview();
+      else this.#expandOrChild();
       return;
     }
     if (matchesKey(data, "enter")) this.#openSelection();
@@ -407,8 +428,16 @@ export class FilesPanel implements Component {
     this.#requestRender();
   }
 
+  /** Move the operating focus to the preview pane. */
+  #focusPreview(): void {
+    if (this.#focus === "preview") return;
+    this.#focus = "preview";
+    this.#requestRender();
+  }
+
   #setTreeCollapsed(collapsed: boolean): void {
     if (this.#treeCollapsed === collapsed) return;
+    this.#clearSelection();
     this.#treeCollapsed = collapsed;
     // A hidden tree cannot hold focus, and revealing it hands focus back.
     this.#focus = collapsed ? "preview" : "tree";
@@ -421,6 +450,7 @@ export class FilesPanel implements Component {
    * file. The diff itself comes from Git, so the preview is refetched.
    */
   #cycleDiffContext(): void {
+    this.#clearSelection();
     this.#diffContext = nextDiffContext(this.#diffContext);
     this.#onDiffContextChange?.(this.#diffContext);
     const path = this.#previewPath;
@@ -461,6 +491,8 @@ export class FilesPanel implements Component {
     const wide = this.#isWideLayout(this.#lastWidth);
     const treeWidth = this.#treeWidth(this.#lastWidth);
     if (event.release) {
+      if (this.#selectionDrag) this.#copySelection();
+      this.#selectionDrag = false;
       this.#dividerDrag = false;
       return true;
     }
@@ -470,15 +502,81 @@ export class FilesPanel implements Component {
       else this.#setPreviewScroll(this.#previewScroll + event.wheel * WHEEL_STEP, this.#previewViewportHeight());
       return true;
     }
+    const point = this.#previewPoint(event, wide, treeWidth);
     if (event.leftClick) {
       this.#dividerDrag = wide && event.col === treeWidth + 1;
+      this.#clearSelection();
+      if (this.#dividerDrag || point === undefined) return true;
+      // A press inside the preview both takes focus and anchors a text drag.
+      this.#focusPreview();
+      this.#selectionDrag = true;
+      this.#selection = { anchor: point, head: point };
+      this.#requestRender();
       return true;
     }
     // Motion with the left button held (low button bits clear) is a drag.
-    if (event.motion && this.#dividerDrag && wide && (event.button & 3) === 0) {
-      this.#setTreeColumns(event.col - 1);
+    if (event.motion && (event.button & 3) === 0) {
+      if (this.#dividerDrag && wide) {
+        this.#setTreeColumns(event.col - 1);
+        return true;
+      }
+      const selection = this.#selection;
+      if (this.#selectionDrag && selection !== undefined && point !== undefined) {
+        if (selection.head.row === point.row && selection.head.col === point.col) return true;
+        this.#selection = { anchor: selection.anchor, head: point };
+        this.#requestRender();
+      }
     }
     return true;
+  }
+
+  /**
+   * Translate a mouse report into preview-pane coordinates, or `undefined` when
+   * the pointer is outside the preview content area.
+   */
+  #previewPoint(event: SgrMouseEvent, wide: boolean, treeWidth: number): SelectionPoint | undefined {
+    const terminalRows = Math.floor(this.#tui.terminal.rows);
+    if (!Number.isFinite(terminalRows) || terminalRows <= 2) return undefined;
+    // Row 0 is the top border and the last row is the footer border.
+    const row = event.row - 1;
+    if (row < 0 || row >= terminalRows - 2) return undefined;
+    const previewWidth = wide
+      ? Math.max(0, this.#lastWidth - 3 - treeWidth)
+      : Math.max(0, this.#lastWidth - 2);
+    if (previewWidth === 0) return undefined;
+    if (wide) {
+      const col = event.col - treeWidth - 2;
+      return col < 0 || col >= previewWidth ? undefined : { row, col };
+    }
+    if (this.#focus !== "preview") return undefined;
+    const col = event.col - 1;
+    return col < 0 || col >= previewWidth ? undefined : { row, col };
+  }
+
+  #clearSelection(): void {
+    this.#selectionDrag = false;
+    if (this.#selection === undefined && this.#copyNotice === undefined) return;
+    this.#selection = undefined;
+    this.#copyNotice = undefined;
+    this.#requestRender();
+  }
+
+  /** Copy the dragged text with OSC 52 and report the result in the footer. */
+  #copySelection(): void {
+    const selection = this.#selection;
+    if (selection === undefined || isEmptySelection(selection)) return;
+    const text = selectionText(this.#previewRows, selection, this.#lastPreviewWidth);
+    if (text.length === 0) return;
+    try {
+      this.#tui.terminal.write(encodeOsc52(text));
+    } catch {
+      this.#copyNotice = "copy failed";
+      this.#requestRender();
+      return;
+    }
+    const lines = text.split("\n").length;
+    this.#copyNotice = `copied ${lines} ${lines === 1 ? "line" : "lines"}`;
+    this.#requestRender();
   }
 
   /** Whether both panes are shown: the panel is wide enough and the tree is out. */
@@ -510,6 +608,7 @@ export class FilesPanel implements Component {
     const minimum = Math.min(maximum, TREE_MIN_COLUMNS);
     const clamped = Math.max(minimum, Math.min(maximum, Math.round(columns)));
     if (clamped === this.#treeWidth(this.#lastWidth)) return;
+    this.#clearSelection();
     this.#treeRatio = clamped / available;
     this.#onTreeRatioChange?.(this.#treeRatio);
     this.#requestRender();
@@ -675,6 +774,7 @@ export class FilesPanel implements Component {
       return;
     }
     const samePath = this.#previewPath === path;
+    this.#clearSelection();
     const generation = ++this.#previewGeneration;
     this.#previewController?.abort();
     const controller = new AbortController();
@@ -716,6 +816,7 @@ export class FilesPanel implements Component {
   }
 
   #cancelPreview(): void {
+    this.#clearSelection();
     this.#previewGeneration += 1;
     this.#previewController?.abort();
     this.#previewController = undefined;
@@ -732,6 +833,8 @@ export class FilesPanel implements Component {
     const clamped = Math.max(0, Math.min(maximum, next));
     if (clamped === this.#previewScroll) return;
     this.#previewScroll = clamped;
+    // The selection is anchored to viewport rows, so scrolling retires it.
+    this.#clearSelection();
     this.#requestRender();
   }
 
@@ -874,6 +977,13 @@ export class FilesPanel implements Component {
   }
 
   #renderPreviewRows(width: number, height: number): readonly string[] {
+    const rows = this.#buildPreviewRows(width, height);
+    this.#previewRows = rows;
+    const selection = this.#selection;
+    return selection === undefined ? rows : highlightSelection(rows, selection, width);
+  }
+
+  #buildPreviewRows(width: number, height: number): readonly string[] {
     this.#lastPreviewWidth = width;
     if (this.#previewLoading && this.#preview === undefined) return [this.#theme.fg("accent", "Loading preview…")];
     const value = this.#preview;
@@ -1013,11 +1123,13 @@ export class FilesPanel implements Component {
       pieces.push(`${this.#diffLayout} diff`, `ctx ${diffContextLabel(this.#diffContext)}`);
     }
 
+    if (this.#copyNotice !== undefined) pieces.push(this.#copyNotice);
+
     pieces.push(this.#focus === "preview"
-      ? "↑↓ scroll · pgup/dn · d/c diff · \\ tree · tab/h/esc tree · [ ] width"
+      ? "↑↓ scroll · pgup/dn · d/c diff · \\ tree · ←/h/tab/esc tree · drag copy · [ ] width"
       : project?.kind === "filesystem"
-        ? "↑↓ move · ↵ open · tab · \\ tree · [ ] width · r · esc"
-        : "↑↓ move · ↵ open · tab · \\ tree · [ ] width · m/a · s · r · esc");
+        ? "↑↓ move · →/l preview · ↵ open · tab · \\ tree · [ ] width · r · esc"
+        : "↑↓ move · →/l preview · ↵ open · tab · \\ tree · [ ] width · m/a · s · r · esc");
     return pieces.join(" · ");
   }
 }

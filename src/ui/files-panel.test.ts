@@ -103,12 +103,21 @@ function plainTheme(): Theme {
 
 interface FakeTui extends TUI {
   renderRequests: number;
+  writes: string[];
   setRows(rows: number): void;
 }
 
 function fakeTui(columns = 100, rows = 7): FakeTui {
+  const writes: string[] = [];
   const value = {
-    terminal: { columns, rows },
+    terminal: {
+      columns,
+      rows,
+      write(data: string): void {
+        writes.push(data);
+      },
+    },
+    writes,
     renderRequests: 0,
     requestRender(): void {
       this.renderRequests += 1;
@@ -559,6 +568,116 @@ describe("FilesPanel focus and tree width", () => {
     await settle();
     expect(dividerColumn(narrow.panel.render(100))).toBe(13);
   });
+
+  test("Right and l cross into the preview from a file and expand a directory", async () => {
+    const { panel, source } = harness(60, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    // The selection starts on the src/ directory, where Right still collapses
+    // and expands instead of switching panes.
+    panel.handleInput("\x1b[D");
+    expect(panel.render(60).join("\n")).not.toContain("a.ts");
+    panel.handleInput("\x1b[C");
+    expect(panel.render(60).join("\n")).toContain("M  a.ts");
+    expect(panel.render(60)[0]).toContain("Project [modified · workspace]");
+
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["alpha"]));
+    await settle();
+    panel.handleInput("\x1b[C");
+    expect(panel.render(60)[0]).toContain("File: src/a.ts");
+
+    panel.handleInput("\x1b[D");
+    expect(panel.render(60)[0]).toContain("Project [modified · workspace]");
+    panel.handleInput("l");
+    expect(panel.render(60)[0]).toContain("File: src/a.ts");
+    panel.handleInput("h");
+    expect(panel.render(60)[0]).toContain("Project [modified · workspace]");
+  });
+});
+
+describe("FilesPanel preview selection", () => {
+  async function previewHarness(lines: readonly string[]): Promise<ReturnType<typeof harness>> {
+    const value = harness(100, 6);
+    value.panel.start();
+    value.source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    value.panel.render(100);
+    value.panel.handleInput("\x1b[B");
+    value.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", lines));
+    await settle();
+    value.panel.render(100);
+    return value;
+  }
+
+  // The preview pane of a 100-column panel starts at 0-based column 31, so an
+  // SGR column field of 32 is its first column; row field 2 is its first row.
+  test("dragging over the preview copies the selected text with OSC 52", async () => {
+    const { panel, tui } = await previewHarness(["alpha", "bravo"]);
+
+    panel.handleInput("\x1b[<0;34;2M");
+    panel.handleInput("\x1b[<32;38;2M");
+    expect(panel.render(100)[1]).toContain("1 \x1b[7malpha\x1b[27m");
+    expect(tui.writes).toEqual([]);
+
+    panel.handleInput("\x1b[<0;38;2m");
+    expect(tui.writes).toEqual([`\x1b]52;c;${Buffer.from("alpha", "utf8").toString("base64")}\x07`]);
+    expect(panel.render(100).at(-1)).toContain("copied 1 line");
+  });
+
+  test("a drag across rows copies every selected row", async () => {
+    const { panel, tui } = await previewHarness(["alpha", "bravo"]);
+
+    panel.handleInput("\x1b[<0;34;2M");
+    panel.handleInput("\x1b[<32;38;3M");
+    panel.handleInput("\x1b[<0;38;3m");
+    expect(tui.writes).toEqual([
+      `\x1b]52;c;${Buffer.from("alpha\n2 bravo", "utf8").toString("base64")}\x07`,
+    ]);
+    expect(panel.render(100).at(-1)).toContain("copied 2 lines");
+  });
+
+  test("a press without a drag focuses the preview without copying", async () => {
+    const { panel, tui } = await previewHarness(
+      Array.from({ length: 10 }, (_, index) => `line ${index + 1}`),
+    );
+
+    panel.handleInput("\x1b[<0;34;2M");
+    panel.handleInput("\x1b[<0;34;2m");
+    expect(tui.writes).toEqual([]);
+    // Focus moved with the press, so Down scrolls the preview instead of
+    // moving the tree selection.
+    panel.handleInput("\x1b[B");
+    expect(panel.render(100)[1]).toContain(" 2 line 2");
+  });
+
+  test("scrolling retires the selection and its footer notice", async () => {
+    const { panel } = await previewHarness(
+      Array.from({ length: 10 }, (_, index) => `line ${index + 1}`),
+    );
+
+    panel.handleInput("\x1b[<0;34;2M");
+    panel.handleInput("\x1b[<32;38;2M");
+    panel.handleInput("\x1b[<0;38;2m");
+    expect(panel.render(100).at(-1)).toContain("copied 1 line");
+
+    panel.handleInput("\x1b[<65;60;3M");
+    const scrolled = panel.render(100);
+    expect(scrolled.at(-1)).not.toContain("copied");
+    expect(scrolled.join("\n")).not.toContain("\x1b[7m");
+  });
+
+  test("a press on the divider drags the width instead of selecting text", async () => {
+    const { panel, tui } = await previewHarness(["alpha", "bravo"]);
+
+    panel.handleInput("\x1b[<0;31;3M");
+    panel.handleInput("\x1b[<32;21;3M");
+    panel.handleInput("\x1b[<0;21;3m");
+    expect(dividerColumn(panel.render(100))).toBe(20);
+    expect(tui.writes).toEqual([]);
+  });
 });
 
 describe("FilesPanel syntax highlighting", () => {
@@ -740,7 +859,7 @@ describe("FilesPanel deterministic rendering", () => {
       `│${">   M  a.ts".padEnd(29)}│${"@@ -1 +1 @@".padEnd(68)}│`,
       `│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`,
       `│${"".padEnd(29)}│${"+new".padEnd(68)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · unified diff · ctx 3 · ↑↓ move · ↵ open · tab · ┘",
+      "└─ demo · modified · workspace · +3 -1 · 2 files · unified diff · ctx 3 · ↑↓ move · →/l preview · ↵┘",
     ]);
 
     const narrow = harness(60, 6);

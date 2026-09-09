@@ -18,7 +18,8 @@
     "src/ui/diff-view.ts",
     "src/ui/files-panel.ts",
     "src/ui/highlight.ts",
-    "src/ui/render.ts"
+    "src/ui/render.ts",
+    "src/ui/selection.ts"
   ],
   "engines": {
     "bun": ">=1.3.14"

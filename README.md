@@ -44,11 +44,13 @@ Both open the same review panel. Only one panel can be open at a time. Headless,
 
 At wide terminal widths the project tree and preview appear side by side. At narrow widths, or with the tree collapsed, the tree and preview use a single pane.
 
-The panel opens as a fullscreen overlay on the terminal's alternate screen, so the OMP transcript stays intact underneath and the terminal reports mouse events to the panel. While the panel is open, the terminal's own text selection is unavailable.
+The panel opens as a fullscreen overlay on the terminal's alternate screen, so the OMP transcript stays intact underneath and the terminal reports mouse events to the panel. The terminal's own text selection is unavailable while the panel is open; the preview pane provides its own (see [Copying preview text](#copying-preview-text)).
 
 ## Layout
 
 `Tab` and `Shift+Tab` move the operating focus between the project tree and the preview. In the side-by-side layout both panes stay visible and only the focused pane consumes keys; in the single-pane layout the focused pane is the one shown.
+
+`Right` / `l` and `Left` / `h` move focus the same way, one pane at a time: from a selected file `Right` enters the preview, and `Left` returns to the tree. On a directory `Right` keeps its tree meaning — expand it, or descend into an already expanded one — because a directory has no preview to enter. In the side-by-side layout a left click anywhere in the preview also takes focus.
 
 The tree pane width is adjustable. Drag the divider between the panes with the left mouse button, or use `[` / `]` (also `Ctrl+Left` / `Ctrl+Right`) to change it one column at a time. The width is capped at 30% of the panel interior and never falls below 12 columns, unless the 30% cap is itself below 12 columns, in which case the cap wins.
 
@@ -57,6 +59,14 @@ The tree pane width is adjustable. Drag the divider between the panes with the l
 The width, collapsed state, syntax theme, and diff view settings are stored in `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden), so they survive panel closes and OMP restarts. Width is stored as a ratio of the panel interior. Rapid changes are coalesced into a single write; unreadable, invalid, or unwritable settings fall back to the 30% width, expanded tree, Pi syntax theme, and unified 3-line diff without interrupting the session.
 
 The mouse wheel moves the selection in the tree pane and scrolls the preview pane, following the pointer in the side-by-side layout and the focused pane in the single-pane layout.
+
+## Copying preview text
+
+Drag with the left mouse button inside the preview pane to select text. The selection is painted in reverse video, spans whole rows between its first and last row, and includes the cell under the pointer. Releasing the button copies the selected text and reports, for example, `copied 3 lines` in the footer.
+
+The copy is an OSC 52 clipboard write, so it reaches the system clipboard of the terminal you are sitting at, including across SSH. Terminals that do not implement OSC 52, or that disable it by default, ignore the write; nothing else in the panel changes. Copied lines carry the rendered text of the pane, so a selection that starts left of the code includes the line-number gutter, and trailing row padding is trimmed.
+
+The selection is cleared by scrolling, by selecting another file, and by any change to the pane geometry — resizing or collapsing the tree, or switching the diff layout or context.
 
 ## Syntax highlighting
 
@@ -85,8 +95,8 @@ The footer reports the active layout and context, for example `split diff · ctx
 | --- | --- |
 | `Up` / `Down` | Move the selection |
 | `j` / `k` | Move the selection down/up |
-| `Left` / `Right` | Collapse/expand a directory |
-| `h` / `l` | Collapse/expand a directory |
+| `Left` / `h` | Collapse a directory, or move to its parent |
+| `Right` / `l` | Expand or descend a directory; move focus to the preview from a file |
 | `Enter` | Toggle a directory, or open/focus the selected file preview |
 | `Tab` / `Shift+Tab` | Move focus to the preview |
 | `[` / `]` or `Ctrl+Left` / `Ctrl+Right` | Narrow/widen the tree pane |
@@ -116,6 +126,7 @@ The footer reports the active layout and context, for example `split diff · ctx
 | `d` | Switch the diff preview between unified and split columns |
 | `c` | Cycle the diff context: 3, 10, 25, full file |
 | `Left` or `h` | Return focus to the project tree |
+| Left-button drag | Select preview text; release copies it |
 | `Esc` | Return focus to the project tree |
 | configured OMP `app.interrupt` key | Return to the tree; invoke it again from the tree to close |
 
