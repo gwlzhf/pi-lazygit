@@ -1,6 +1,6 @@
 {
   "name": "pi-lazygit",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Review project files and Git diffs inside Oh My Pi",
   "type": "module",
   "private": true,
