@@ -247,6 +247,10 @@ export class FilesPanel implements Component {
       }
       return;
     }
+    if (matchesKey(data, "f5") || matchesKey(data, "r")) {
+      this.#beginRefresh();
+      return;
+    }
 
     if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
       if (this.#treeCollapsed) {
@@ -390,10 +394,6 @@ export class FilesPanel implements Component {
         this.#rebuildRows();
         this.#requestRender();
       }
-      return;
-    }
-    if (matchesKey(data, "r")) {
-      this.#beginRefresh();
       return;
     }
     if (matchesKey(data, "up") || matchesKey(data, "k")) {
@@ -1126,10 +1126,10 @@ export class FilesPanel implements Component {
     if (this.#copyNotice !== undefined) pieces.push(this.#copyNotice);
 
     pieces.push(this.#focus === "preview"
-      ? "↑↓ scroll · pgup/dn · d/c diff · \\ tree · ←/h/tab/esc tree · drag copy · [ ] width"
+      ? "F5/r refresh · ↑↓ scroll · pgup/dn · d/c diff · \\ tree · ←/h/tab/esc tree · drag copy · [ ] width"
       : project?.kind === "filesystem"
-        ? "↑↓ move · →/l preview · ↵ open · tab · \\ tree · [ ] width · r · esc"
-        : "↑↓ move · →/l preview · ↵ open · tab · \\ tree · [ ] width · m/a · s · r · esc");
+        ? "F5/r refresh · ↑↓ move · →/l preview · ↵ open · tab · \\ tree · [ ] width · esc"
+        : "F5/r refresh · ↑↓ move · →/l preview · ↵ open · tab · \\ tree · [ ] width · m/a · s · esc");
     return pieces.join(" · ");
   }
 }

@@ -257,7 +257,7 @@ describe("FilesPanel state machine", () => {
       `│${" 1 line 1".padEnd(58)}│`,
       `│${" 2 line 2".padEnd(58)}│`,
       `│${" 3 line 3".padEnd(58)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · ↑↓ scrol┘",
+      "└─ demo · modified · workspace · +3 -1 · 2 files · F5/r ref┘",
     ]);
     panel.handleInput("\x1b[F");
     panel.handleInput("\x1b[B");
@@ -305,7 +305,7 @@ describe("FilesPanel state machine", () => {
     expect(source.previewCalls.at(-1)?.path).toBe("src/b.ts");
   });
 
-  test("refresh keeps the resolved preview visible while loading its replacement", async () => {
+  test("F5 refreshes the change list and selected code from the preview", async () => {
     const { panel, source } = harness(100, 6);
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
@@ -313,12 +313,22 @@ describe("FilesPanel state machine", () => {
     panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["before refresh"]));
     await settle();
+    panel.handleInput("\r");
 
-    panel.handleInput("r");
+    panel.handleInput("\x1b[15~");
     expect(panel.render(100).join("\n")).toContain("before refresh");
-    source.refreshCalls[1]?.value.resolve(snapshot());
+    source.refreshCalls[1]?.value.resolve(snapshot({
+      allFiles: ["src/a.ts", "src/b.ts", "src/c.ts", "README.md"],
+      workspaceChanges: new Map([
+        ["src/a.ts", change("src/a.ts", "M")],
+        ["src/b.ts", change("src/b.ts", "A")],
+        ["src/c.ts", change("src/c.ts", "M")],
+      ]),
+      workspaceSummary: { files: 3, insertions: 5, deletions: 2 },
+    }));
     await settle();
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
+    expect(panel.render(100).join("\n")).toContain("c.ts");
     expect(panel.render(100).join("\n")).toContain("before refresh");
 
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["after refresh"]));
@@ -859,7 +869,7 @@ describe("FilesPanel deterministic rendering", () => {
       `│${">   M  a.ts".padEnd(29)}│${"@@ -1 +1 @@".padEnd(68)}│`,
       `│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`,
       `│${"".padEnd(29)}│${"+new".padEnd(68)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · unified diff · ctx 3 · ↑↓ move · →/l preview · ↵┘",
+      "└─ demo · modified · workspace · +3 -1 · 2 files · unified diff · ctx 3 · F5/r refresh · ↑↓ move · ┘",
     ]);
 
     const narrow = harness(60, 6);
@@ -873,7 +883,7 @@ describe("FilesPanel deterministic rendering", () => {
       `│${"    M  a.ts".padEnd(58)}│`,
       `│${"    A  b.ts".padEnd(58)}│`,
       `│${"".padEnd(58)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · ↑↓ move ┘",
+      "└─ demo · modified · workspace · +3 -1 · 2 files · F5/r ref┘",
     ]);
     narrow.panel.handleInput("\x1b[B");
     narrow.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["alpha", "猫"]));
@@ -886,7 +896,7 @@ describe("FilesPanel deterministic rendering", () => {
       `│2 猫${" ".repeat(54)}│`,
       `│${"".padEnd(58)}│`,
       `│${"".padEnd(58)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · ↑↓ scrol┘",
+      "└─ demo · modified · workspace · +3 -1 · 2 files · F5/r ref┘",
     ]);
     for (const lines of [wideLines, tree, file]) expectWidthSafe(lines, lines === wideLines ? 100 : 60);
     for (let width = 1; width <= 120; width += 1) {
@@ -910,7 +920,7 @@ describe("FilesPanel deterministic rendering", () => {
       `┌─ Project [modified · workspace] ${"─".repeat(25)}┐`,
       `│${"No workspace changes — press a for all files".padEnd(58)}│`,
       `│${"".padEnd(58)}│`,
-      "└─ demo · modified · workspace · +0 -0 · 0 files · ↑↓ move ┘",
+      "└─ demo · modified · workspace · +0 -0 · 0 files · F5/r ref┘",
     ]);
 
     const special = harness(60, 5);

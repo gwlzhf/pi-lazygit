@@ -107,7 +107,7 @@ The footer reports the active layout and context, for example `split diff · ctx
 | `m` | Show modified files |
 | `a` | Show all visible files |
 | `s` | Toggle workspace/session scope |
-| `r` | Refresh status, tree, summary, and selected preview |
+| `F5` / `r` | Refresh Git status, change list, summary, and selected diff or code |
 | `Esc` | Close the panel from the tree |
 | configured OMP `app.interrupt` key | Close the panel from the tree |
 
@@ -125,12 +125,15 @@ The footer reports the active layout and context, for example `split diff · ctx
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `d` | Switch the diff preview between unified and split columns |
 | `c` | Cycle the diff context: 3, 10, 25, full file |
+| `F5` / `r` | Refresh Git status, change list, summary, and selected diff or code |
 | `Left` or `h` | Return focus to the project tree |
 | Left-button drag | Select preview text; release copies it |
 | `Esc` | Return focus to the project tree |
 | configured OMP `app.interrupt` key | Return to the tree; invoke it again from the tree to close |
 
 Selecting a file begins loading its preview immediately. `Enter` transfers focus to the preview.
+
+Press `F5` from either pane to reload repository status and the selected file together. The refreshed tree preserves the selected path when it still exists; otherwise it moves to the nearest surviving row.
 
 ## Review modes and scopes
 
