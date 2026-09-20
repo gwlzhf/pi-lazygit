@@ -122,6 +122,7 @@ History is limited to the 200 most recent commits, and the footer reports `histo
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `d` | Switch the diff preview between unified and split columns |
 | `c` | Cycle the diff context: 3, 10, 25, full file |
+| `v` | Toggle between the directory tree and the staged/unstaged change list |
 | `m` | Show modified files |
 | `a` | Show all visible files |
 | `s` | Toggle workspace/session scope |
@@ -173,6 +174,7 @@ Replaces the project tree keys while the history is shown (`g`).
 The view mode and change scope are independent:
 
 - **Modified mode** (`m`) shows only files changed in the active scope.
+- **Change list** (`v`) drops the directory nesting and lists full project paths the way `git diff` and `git diff --cached` split them: an `Unstaged changes` divider above the files with worktree changes, then a `Staged changes` divider above the files with index changes. A file changed in both places is listed under both dividers, and an empty group is omitted. The dividers are labels only — the cursor steps over them. Press `v` again to return to the tree. The list is unavailable outside a Git repository.
 - **All-files mode** (`a`) shows the complete Git-visible project tree. Status markers and totals still reflect the active scope.
 - **Workspace scope** shows current working-tree changes relative to `HEAD`, including staged and unstaged changes.
 - **Session scope** (`s`) shows changes that differ from the repository snapshot captured for the current OMP session.

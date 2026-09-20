@@ -1,8 +1,14 @@
 import type { ChangeRecord, StatusCode, ViewMode } from "../contracts";
 import { normalizeProjectPath } from "../contracts";
 
+/**
+ * `section` marks a non-selectable divider row the change list draws above each
+ * group of files; it never appears in a directory tree.
+ */
+export type TreeNodeKind = "directory" | "file" | "section";
+
 export interface TreeNode {
-  readonly kind: "directory" | "file";
+  readonly kind: TreeNodeKind;
   readonly name: string;
   readonly path: string;
   readonly status?: StatusCode;
@@ -182,6 +188,91 @@ export function visiblePaths(
     result.push(normalized);
   }
   return Object.freeze(result);
+}
+
+export const UNSTAGED_SECTION_PATH = "section:unstaged";
+export const STAGED_SECTION_PATH = "section:staged";
+
+/** Translates one porcelain status column into the letter the tree displays. */
+function columnStatus(column: string): StatusCode {
+  switch (column) {
+    case "?":
+      return "?";
+    case "R":
+    case "C":
+      return "R";
+    case "D":
+      return "D";
+    case "A":
+      return "A";
+    case "U":
+      return "U";
+    default:
+      return "M";
+  }
+}
+
+function changeNode(path: string, status: StatusCode): TreeNode {
+  return Object.freeze({
+    kind: "file" as const,
+    name: path,
+    path,
+    status,
+    children: Object.freeze([]),
+  });
+}
+
+function sectionNode(path: string, label: string): TreeNode {
+  return Object.freeze({
+    kind: "section" as const,
+    name: label,
+    path,
+    children: Object.freeze([]),
+  });
+}
+
+function comparePaths(left: string, right: string): number {
+  const folded = left.toLowerCase().localeCompare(right.toLowerCase());
+  return folded || left.localeCompare(right);
+}
+
+/**
+ * Lays the changes out the way `git diff` and `git diff --cached` split them: a
+ * flat list of full project paths under an unstaged section and a staged one.
+ * Sections with no files are omitted, so an all-staged repository shows one
+ * divider. A file changed in both the index and the worktree appears twice,
+ * matching what the two diffs would each report.
+ */
+export function buildChangeList(
+  changes: ReadonlyMap<string, ChangeRecord>,
+): readonly TreeRow[] {
+  const unstaged: TreeNode[] = [];
+  const staged: TreeNode[] = [];
+
+  const records = [...changes.values()].sort((left, right) => comparePaths(left.path, right.path));
+  for (const record of records) {
+    const path = normalizeTreePath(record.path);
+    if (record.status === "U") {
+      // A conflict is neither staged nor unstaged; it needs resolving first.
+      unstaged.push(changeNode(path, "U"));
+      continue;
+    }
+    if (record.worktree !== " ") unstaged.push(changeNode(path, columnStatus(record.worktree)));
+    if (record.index !== " " && record.index !== "?") {
+      staged.push(changeNode(path, columnStatus(record.index)));
+    }
+  }
+
+  const rows: TreeRow[] = [];
+  const appendSection = (path: string, label: string, nodes: readonly TreeNode[]): void => {
+    if (nodes.length === 0) return;
+    rows.push(Object.freeze({ node: sectionNode(path, label), depth: 0, expanded: false }));
+    for (const node of nodes) rows.push(Object.freeze({ node, depth: 0, expanded: false }));
+  };
+
+  appendSection(UNSTAGED_SECTION_PATH, "Unstaged changes", unstaged);
+  appendSection(STAGED_SECTION_PATH, "Staged changes", staged);
+  return Object.freeze(rows);
 }
 
 export function recoverSelection(

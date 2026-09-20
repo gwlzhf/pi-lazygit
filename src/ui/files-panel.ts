@@ -30,6 +30,7 @@ import {
   type ViewMode,
 } from "../contracts";
 import {
+  buildChangeList,
   buildTree,
   flattenTree,
   recoverSelection,
@@ -107,6 +108,12 @@ type PanelFocus = "tree" | "preview";
 
 type LeftMode = "files" | "log";
 
+/**
+ * How the left pane lists files: as a directory tree, or as the flat staged and
+ * unstaged change list.
+ */
+type ListLayout = "tree" | "changes";
+
 interface RenderCache {
   readonly width: number;
   readonly rows: number;
@@ -160,6 +167,7 @@ export class FilesPanel implements Component {
 
   #leftMode: LeftMode = "files";
   #viewMode: ViewMode = "modified";
+  #listLayout: ListLayout = "tree";
   #scope: ChangeScope = "workspace";
   #focus: PanelFocus = "tree";
   #snapshot: ProjectSnapshot | undefined;
@@ -443,6 +451,16 @@ export class FilesPanel implements Component {
     if (matchesKey(data, "m")) {
       if (this.#snapshot?.kind === "git" && this.#viewMode !== "modified") {
         this.#viewMode = "modified";
+        this.#rebuildRows();
+        this.#requestRender();
+      }
+      return;
+    }
+    if (matchesKey(data, "v")) {
+      // The change list has nothing to show outside a repository, so the key is
+      // inert on the filesystem fallback, like m and a.
+      if (this.#snapshot?.kind === "git") {
+        this.#listLayout = this.#listLayout === "changes" ? "tree" : "changes";
         this.#rebuildRows();
         this.#requestRender();
       }
@@ -941,6 +959,19 @@ export class FilesPanel implements Component {
     const previousPath = this.#selectedRow()?.node.path;
     const previousIndex = this.#selectedIndex;
     const changes = this.#activeChanges();
+    if (this.#usesChangeList()) {
+      this.#rows = buildChangeList(changes);
+      this.#selectedIndex = this.#skipSections(
+        recoverSelection(this.#rows, previousPath, previousIndex),
+        1,
+      );
+      this.#treeOffset = Math.min(this.#treeOffset, Math.max(0, this.#rows.length - 1));
+      const selectedChange = this.#selectedRow();
+      if (selectedChange?.node.kind === "file") {
+        this.#beginPreview(selectedChange.node.path, forcePreview);
+      } else this.#cancelPreview();
+      return;
+    }
     const mode: ViewMode = project.kind === "filesystem" ? "all" : this.#viewMode;
     const paths = visiblePaths(project.allFiles, changes, mode);
     const root = buildTree(paths, changes);
@@ -960,14 +991,33 @@ export class FilesPanel implements Component {
     return this.#selectedIndex >= 0 ? this.#rows[this.#selectedIndex] : undefined;
   }
 
+  #usesChangeList(): boolean {
+    return this.#listLayout === "changes" && this.#snapshot?.kind === "git";
+  }
+
+  /**
+   * Walks past divider rows so the cursor always lands on a file, searching the
+   * other direction when the preferred one runs out of rows.
+   */
+  #skipSections(index: number, step: 1 | -1): number {
+    if (index < 0 || this.#rows.length === 0) return this.#rows.length === 0 ? -1 : index;
+    for (const direction of [step, -step] as const) {
+      for (let cursor = index; cursor >= 0 && cursor < this.#rows.length; cursor += direction) {
+        if (this.#rows[cursor]?.node.kind !== "section") return cursor;
+      }
+    }
+    return -1;
+  }
+
   #moveSelection(delta: number): void {
     if (this.#leftMode === "log") {
       this.#moveLogSelection(delta);
       return;
     }
     if (this.#rows.length === 0) return;
-    const next = Math.max(0, Math.min(this.#rows.length - 1, this.#selectedIndex + delta));
-    if (next === this.#selectedIndex) return;
+    const clamped = Math.max(0, Math.min(this.#rows.length - 1, this.#selectedIndex + delta));
+    const next = this.#skipSections(clamped, delta < 0 ? -1 : 1);
+    if (next < 0 || next === this.#selectedIndex) return;
     this.#selectedIndex = next;
     this.#selectionChanged();
   }
@@ -1188,7 +1238,8 @@ export class FilesPanel implements Component {
   #treeTitle(): string {
     if (this.#leftMode === "log") return "History";
     if (this.#snapshot?.kind === "filesystem") return "Project [filesystem]";
-    return `Project [${this.#viewMode} · ${this.#scope}]`;
+    const listing = this.#usesChangeList() ? "changes" : this.#viewMode;
+    return `Project [${listing} · ${this.#scope}]`;
   }
 
   #previewTitle(): string {
@@ -1223,9 +1274,11 @@ export class FilesPanel implements Component {
     if (this.#rows.length === 0) {
       const message = this.#snapshot.kind === "filesystem"
         ? "No project files found"
-        : this.#viewMode === "modified"
-          ? `No ${this.#scope} changes — press a for all files`
-          : "No project files found";
+        : this.#usesChangeList()
+          ? `No ${this.#scope} changes — press v for the file tree`
+          : this.#viewMode === "modified"
+            ? `No ${this.#scope} changes — press a for all files`
+            : "No project files found";
       return [this.#theme.fg("muted", message)];
     }
     if (this.#selectedIndex < this.#treeOffset) this.#treeOffset = this.#selectedIndex;
@@ -1253,6 +1306,11 @@ export class FilesPanel implements Component {
   }
 
   #renderTreeRow(row: TreeRow, index: number, width: number): string {
+    if (row.node.kind === "section") {
+      const label = `── ${sanitizeTerminalText(row.node.name).replaceAll("\n", " ")} `;
+      const fill = Math.max(0, width - label.length);
+      return this.#theme.fg("muted", `${label}${"─".repeat(fill)}`);
+    }
     const selected = index === this.#selectedIndex;
     const cursor = selected ? ">" : " ";
     const indent = "  ".repeat(row.depth);
@@ -1426,7 +1484,12 @@ export class FilesPanel implements Component {
         : this.#scope === "workspace"
           ? project.workspaceSummary
           : project.sessionSummary;
-      pieces.push(this.#viewMode, this.#scope, `+${summary.insertions} -${summary.deletions}`, pluralFiles(summary.files));
+      pieces.push(
+        this.#usesChangeList() ? "changes" : this.#viewMode,
+        this.#scope,
+        `+${summary.insertions} -${summary.deletions}`,
+        pluralFiles(summary.files),
+      );
     }
 
     if (this.#refreshLoading) pieces.push("refreshing");
@@ -1457,7 +1520,7 @@ export class FilesPanel implements Component {
         ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "\\ tree", "←/h/tab/esc tree", "drag copy", width]
         : project?.kind === "filesystem"
           ? ["F5/r refresh", "↑↓ move", "→/l preview", "↵ open", "tab", "\\ tree", width, "esc"]
-          : ["F5/r refresh", "↑↓ move", "→/l preview", "↵ open", "tab", "\\ tree", "g log", width, "m/a", "s", "esc"];
+          : ["F5/r refresh", "↑↓ move", "→/l preview", "↵ open", "tab", "\\ tree", "g log", width, "v list", "m/a", "s", "esc"];
     pieces.push(hints.filter(hint => hint !== undefined).join(" · "));
     return pieces.join(" · ");
   }

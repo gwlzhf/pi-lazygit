@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
 import type { ChangeRecord, StatusCode } from "../contracts";
 import {
+  buildChangeList,
   buildTree,
   flattenTree,
   recoverSelection,
+  STAGED_SECTION_PATH,
+  UNSTAGED_SECTION_PATH,
   visiblePaths,
 } from "./tree";
 
@@ -161,4 +164,69 @@ test("recoverSelection prefers a surviving path and otherwise clamps the old ind
   expect(recoverSelection(rows, "missing.ts", 99)).toBe(2);
   expect(recoverSelection(rows, undefined, -4)).toBe(0);
   expect(recoverSelection([], "a.ts", 0)).toBe(-1);
+});
+
+function record(
+  path: string,
+  index: string,
+  worktree: string,
+  status: StatusCode,
+): ChangeRecord {
+  return { path, index, worktree, status };
+}
+
+function describeRows(
+  rows: ReturnType<typeof buildChangeList>,
+): readonly string[] {
+  return rows.map(({ node }) =>
+    node.kind === "section" ? `-- ${node.name}` : `${node.status} ${node.path}`
+  );
+}
+
+test("buildChangeList splits unstaged and staged files into flat sections", () => {
+  const rows = buildChangeList(changes(
+    record("src/b.ts", " ", "M", "M"),
+    record("src/a.ts", "A", " ", "A"),
+    record("notes.txt", "?", "?", "?"),
+    record("src/both.ts", "M", "M", "M"),
+    record("gone.ts", "D", " ", "D"),
+  ));
+
+  expect(describeRows(rows)).toEqual([
+    "-- Unstaged changes",
+    "? notes.txt",
+    "M src/b.ts",
+    "M src/both.ts",
+    "-- Staged changes",
+    "D gone.ts",
+    "A src/a.ts",
+    "M src/both.ts",
+  ]);
+  expect(rows.every(row => row.depth === 0 && !row.expanded)).toBe(true);
+  expect(rows[0]?.node.path).toBe(UNSTAGED_SECTION_PATH);
+  expect(rows[4]?.node.path).toBe(STAGED_SECTION_PATH);
+  expect(Object.isFrozen(rows)).toBe(true);
+});
+
+test("buildChangeList omits empty sections and keeps conflicts unstaged", () => {
+  expect(describeRows(buildChangeList(changes(record("src/a.ts", "A", " ", "A"))))).toEqual([
+    "-- Staged changes",
+    "A src/a.ts",
+  ]);
+  expect(describeRows(buildChangeList(changes(record("src/c.ts", "U", "U", "U"))))).toEqual([
+    "-- Unstaged changes",
+    "U src/c.ts",
+  ]);
+  expect(buildChangeList(new Map())).toEqual([]);
+});
+
+test("buildChangeList maps rename and copy columns onto the R status", () => {
+  expect(describeRows(buildChangeList(changes(
+    { path: "src/new.ts", oldPath: "src/old.ts", index: "R", worktree: " ", status: "R" },
+    record("src/copy.ts", "C", " ", "A"),
+  )))).toEqual([
+    "-- Staged changes",
+    "R src/copy.ts",
+    "R src/new.ts",
+  ]);
 });

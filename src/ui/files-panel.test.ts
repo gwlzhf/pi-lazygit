@@ -257,6 +257,40 @@ describe("FilesPanel state machine", () => {
     expect(modifiedSession).toContain("b.ts");
   });
 
+  test("v toggles between the directory tree and the staged/unstaged change list", async () => {
+    const { panel, source } = harness(60, 9);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot({
+      workspaceChanges: new Map([
+        ["src/a.ts", { path: "src/a.ts", index: " ", worktree: "M", status: "M" }],
+        ["src/b.ts", { path: "src/b.ts", index: "A", worktree: " ", status: "A" }],
+      ]),
+    }));
+    await settle();
+
+    panel.handleInput("v");
+    const list = panel.render(60);
+    expect(list[0]).toContain("Project [changes · workspace]");
+    const body = list.join("\n");
+    expect(body).toContain("── Unstaged changes ─");
+    expect(body).toContain("M  src/a.ts");
+    expect(body).toContain("── Staged changes ─");
+    expect(body).toContain("A  src/b.ts");
+    expectWidthSafe(list, 60);
+
+    // The cursor starts on the first file and steps over the dividers.
+    expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
+    panel.handleInput("j");
+    expect(source.previewCalls.at(-1)?.path).toBe("src/b.ts");
+    panel.handleInput("k");
+    expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
+
+    panel.handleInput("v");
+    const tree = panel.render(60).join("\n");
+    expect(tree).not.toContain("Unstaged changes");
+    expect(tree).toContain("M  a.ts");
+  });
+
   test("ignores mode and scope keys for filesystem snapshots", async () => {
     const { panel, source, tui } = harness(60, 6);
     panel.start();
@@ -273,6 +307,7 @@ describe("FilesPanel state machine", () => {
     const requests = tui.renderRequests;
     panel.handleInput("m");
     panel.handleInput("s");
+    panel.handleInput("v");
     expect(panel.render(60)).toBe(rendered);
     expect(tui.renderRequests).toBe(requests);
     expect(rendered[0]).toContain("Project [filesystem]");
