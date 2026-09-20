@@ -4,9 +4,9 @@ import {
   buildChangeList,
   buildTree,
   flattenTree,
+  MODIFIED_SECTION_PATH,
   recoverSelection,
-  STAGED_SECTION_PATH,
-  UNSTAGED_SECTION_PATH,
+  UNVERSIONED_SECTION_PATH,
   visiblePaths,
 } from "./tree";
 
@@ -183,50 +183,51 @@ function describeRows(
   );
 }
 
-test("buildChangeList splits unstaged and staged files into flat sections", () => {
+test("buildChangeList splits tracked changes from untracked files", () => {
   const rows = buildChangeList(changes(
     record("src/b.ts", " ", "M", "M"),
     record("src/a.ts", "A", " ", "A"),
     record("notes.txt", "?", "?", "?"),
     record("src/both.ts", "M", "M", "M"),
+    record("build/out.js", "?", "?", "?"),
     record("gone.ts", "D", " ", "D"),
+    record("src/c.ts", "U", "U", "U"),
   ));
 
   expect(describeRows(rows)).toEqual([
-    "-- Unstaged changes",
-    "? notes.txt",
-    "M src/b.ts",
-    "M src/both.ts",
-    "-- Staged changes",
+    "-- Modified files",
     "D gone.ts",
     "A src/a.ts",
+    "M src/b.ts",
     "M src/both.ts",
+    "U src/c.ts",
+    "-- No version files",
+    "? build/out.js",
+    "? notes.txt",
   ]);
   expect(rows.every(row => row.depth === 0 && !row.expanded)).toBe(true);
-  expect(rows[0]?.node.path).toBe(UNSTAGED_SECTION_PATH);
-  expect(rows[4]?.node.path).toBe(STAGED_SECTION_PATH);
+  expect(rows[0]?.node.path).toBe(MODIFIED_SECTION_PATH);
+  expect(rows[6]?.node.path).toBe(UNVERSIONED_SECTION_PATH);
   expect(Object.isFrozen(rows)).toBe(true);
 });
 
-test("buildChangeList omits empty sections and keeps conflicts unstaged", () => {
+test("buildChangeList omits empty sections", () => {
   expect(describeRows(buildChangeList(changes(record("src/a.ts", "A", " ", "A"))))).toEqual([
-    "-- Staged changes",
+    "-- Modified files",
     "A src/a.ts",
   ]);
-  expect(describeRows(buildChangeList(changes(record("src/c.ts", "U", "U", "U"))))).toEqual([
-    "-- Unstaged changes",
-    "U src/c.ts",
+  expect(describeRows(buildChangeList(changes(record("notes.txt", "?", "?", "?"))))).toEqual([
+    "-- No version files",
+    "? notes.txt",
   ]);
   expect(buildChangeList(new Map())).toEqual([]);
 });
 
-test("buildChangeList maps rename and copy columns onto the R status", () => {
+test("buildChangeList lists a renamed file once under its display status", () => {
   expect(describeRows(buildChangeList(changes(
     { path: "src/new.ts", oldPath: "src/old.ts", index: "R", worktree: " ", status: "R" },
-    record("src/copy.ts", "C", " ", "A"),
   )))).toEqual([
-    "-- Staged changes",
-    "R src/copy.ts",
+    "-- Modified files",
     "R src/new.ts",
   ]);
 });

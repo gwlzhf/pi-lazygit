@@ -257,13 +257,13 @@ describe("FilesPanel state machine", () => {
     expect(modifiedSession).toContain("b.ts");
   });
 
-  test("v toggles between the directory tree and the staged/unstaged change list", async () => {
+  test("v toggles between the directory tree and the modified/untracked change list", async () => {
     const { panel, source } = harness(60, 9);
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot({
       workspaceChanges: new Map([
         ["src/a.ts", { path: "src/a.ts", index: " ", worktree: "M", status: "M" }],
-        ["src/b.ts", { path: "src/b.ts", index: "A", worktree: " ", status: "A" }],
+        ["notes.txt", { path: "notes.txt", index: "?", worktree: "?", status: "?" }],
       ]),
     }));
     await settle();
@@ -272,22 +272,22 @@ describe("FilesPanel state machine", () => {
     const list = panel.render(60);
     expect(list[0]).toContain("Project [changes · workspace]");
     const body = list.join("\n");
-    expect(body).toContain("── Unstaged changes ─");
+    expect(body).toContain("── Modified files ─");
     expect(body).toContain("M  src/a.ts");
-    expect(body).toContain("── Staged changes ─");
-    expect(body).toContain("A  src/b.ts");
+    expect(body).toContain("── No version files ─");
+    expect(body).toContain("?  notes.txt");
     expectWidthSafe(list, 60);
 
     // The cursor starts on the first file and steps over the dividers.
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
     panel.handleInput("j");
-    expect(source.previewCalls.at(-1)?.path).toBe("src/b.ts");
+    expect(source.previewCalls.at(-1)?.path).toBe("notes.txt");
     panel.handleInput("k");
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
 
     panel.handleInput("v");
     const tree = panel.render(60).join("\n");
-    expect(tree).not.toContain("Unstaged changes");
+    expect(tree).not.toContain("Modified files");
     expect(tree).toContain("M  a.ts");
   });
 
