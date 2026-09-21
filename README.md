@@ -16,7 +16,7 @@ The extension targets the OMP 18.0.11 interactive TUI and OpenCode 1.18.31+ in W
 Install the published Git tag through OpenCode:
 
 ```powershell
-opencode plugin github:gwlzhf/opencode-lazygit#v0.5.0
+opencode plugin github:gwlzhf/opencode-lazygit#v0.5.1
 ```
 
 The plugin is also installable by adding the same Git reference to the OpenCode `tui.json` plugin configuration:
@@ -25,7 +25,7 @@ The plugin is also installable by adding the same Git reference to the OpenCode 
 {
   "$schema": "https://opencode.ai/tui.json",
   "plugin": [
-    "github:gwlzhf/opencode-lazygit#v0.5.0"
+    "github:gwlzhf/opencode-lazygit#v0.5.1"
   ]
 }
 ```
@@ -78,7 +78,7 @@ The mouse wheel moves the selection in the tree pane and scrolls the preview pan
 
 Left-clicking a visible row in the left pane focuses that pane and selects the row. In the project tree a file click starts its preview immediately, and a directory click selects it without expanding or collapsing it — expansion stays on the keyboard. History and branch rows behave the same way: a click selects only. Clicks on the overview header, the pane-title row, the footer, the padding below the last row, and the divider select nothing; divider dragging and preview text selection keep their existing meaning.
 
-Selected rows are painted across the full pane width using the host theme's selection colors — `selectedBg` in OMP, `backgroundElement` with `selectedListItemText` in OpenCode. Diff previews mask whole rows as well: OMP uses the theme's success and error backgrounds for added and removed lines, and OpenCode uses `diffAddedBg`, `diffRemovedBg`, and `diffContextBg` with their matching foreground tokens. In the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. Hunk and context rows keep ordinary theme colors. No color is hardcoded, and the masks change neither the visible width nor the text that a selection copies.
+Selected rows are painted across the full pane width using the host theme's selection colors — `selectedBg` in OMP, `backgroundElement` with `selectedListItemText` in OpenCode. OMP runtimes older than the `Theme.fgOnBg` helper fall back to a plain foreground over the same background token instead of failing to render. Diff previews mask whole rows as well: OMP uses the theme's success and error backgrounds for added and removed lines, and OpenCode uses `diffAddedBg`, `diffRemovedBg`, and `diffContextBg` with their matching foreground tokens. In the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. Hunk and context rows keep ordinary theme colors. No color is hardcoded, and the masks change neither the visible width nor the text that a selection copies.
 
 ## Copying preview text
 
