@@ -8,12 +8,27 @@ import {
   renderDiffSplitRow,
   renderHighlightedLine,
   renderNumberedLine,
+  renderSelectedRow,
   renderSingleBorder,
   renderSingleRow,
   renderSplitBorder,
   renderSplitRow,
   sanitizeTerminalText,
 } from "./render";
+
+/** An older OMP runtime: `fg` and `bg` exist, `fgOnBg` does not. */
+function legacyTheme(calls: string[] = []): Theme {
+  return {
+    fg(color: ThemeColor, text: string): string {
+      calls.push(color);
+      return text;
+    },
+    bg(background: string, text: string): string {
+      calls.push(`bg:${background}`);
+      return text;
+    },
+  } as unknown as Theme;
+}
 
 function plainTheme(calls: string[] = []): Theme {
   return {
@@ -110,6 +125,20 @@ describe("width-safe cells", () => {
 });
 
 describe("preview line rendering", () => {
+  test("falls back to fg over bg on hosts whose theme has no fgOnBg", () => {
+    const calls: string[] = [];
+    const theme = legacyTheme(calls);
+
+    // These crashed with "theme.fgOnBg is not a function" on OMP 18.0.3.
+    expect(renderSelectedRow("src/a.ts", 12, theme)).toBe("src/a.ts    ");
+    expect(renderDiffLine("+added", 8, theme)).toBe("+added  ");
+    expect(renderDiffLine("-gone", 8, theme)).toBe("-gone   ");
+
+    expect(calls).toContain("bg:selectedBg");
+    expect(calls).toContain("bg:toolSuccessBg");
+    expect(calls).toContain("bg:toolErrorBg");
+  });
+
   test("uses file, hunk, addition, deletion, then context precedence", () => {
     const calls: string[] = [];
     const theme = plainTheme(calls);

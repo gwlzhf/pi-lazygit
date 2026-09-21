@@ -93,11 +93,21 @@ export function renderSplitBorder(
   return truncateToWidth(row, safeWidth, "");
 }
 
+/**
+ * `Theme.fgOnBg` only exists in newer OMP runtimes. Older hosts still expose
+ * `fg` and `bg`, so compose the same result there instead of crashing the panel.
+ */
+function fgOnBg(theme: Theme, color: ThemeColor, background: ThemeBg, text: string): string {
+  if (typeof theme.fgOnBg === "function") return theme.fgOnBg(color, background, text);
+  if (typeof theme.bg === "function") return theme.bg(background, theme.fg(color, text));
+  return theme.fg(color, text);
+}
+
 /** Paint one full padded row with the selected-item background, regardless of content color. */
 export function renderSelectedRow(text: string, width: number, theme: Theme): string {
   const safeWidth = Math.max(0, Math.floor(width));
   if (safeWidth === 0) return "";
-  return theme.fgOnBg("text", "selectedBg", fitCell(safeLine(text), safeWidth));
+  return fgOnBg(theme, "text", "selectedBg", fitCell(safeLine(text), safeWidth));
 }
 
 export function renderSingleRow(content: string, width: number, theme: Theme): string {
@@ -150,7 +160,7 @@ export function renderDiffLine(line: string, width: number, theme: Theme): strin
   const background = diffBackground(clean);
   return background === undefined
     ? theme.fg(diffColor(clean), cell)
-    : theme.fgOnBg(diffColor(clean), background, cell);
+    : fgOnBg(theme, diffColor(clean), background, cell);
 }
 
 /** Smallest preview width that still fits two readable diff columns. */
