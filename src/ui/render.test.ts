@@ -248,14 +248,14 @@ describe("preview line rendering", () => {
     ]);
     expect(calls).toEqual([
       "dim",
-      "toolDiffRemoved",
+      "toolDiffRemoved/toolErrorBg",
       "borderMuted",
       "dim",
-      "toolDiffAdded",
+      "toolDiffAdded/toolSuccessBg",
       "dim",
       "borderMuted",
       "dim",
-      "toolDiffAdded",
+      "toolDiffAdded/toolSuccessBg",
     ]);
   });
 

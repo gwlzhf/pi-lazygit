@@ -254,6 +254,7 @@ export function createFilesRouteBindings(handleKey: (key: string) => void) {
     { key: "ctrl+b", cmd: () => handleKey("ctrl+b") }, { key: "d", cmd: () => handleKey("d") },
     { key: "c", cmd: () => handleKey("c") }, { key: "m", cmd: () => handleKey("m") },
     { key: "a", cmd: () => handleKey("a") }, { key: "s", cmd: () => handleKey("s") },
+    { key: "v", cmd: () => handleKey("v") },
     { key: "g", cmd: () => handleKey("g") }, { key: "f5", cmd: () => handleKey("f5") },
     { key: "r", cmd: () => handleKey("r") }, { key: "pageup", cmd: () => handleKey("pageup") },
     { key: "pagedown", cmd: () => handleKey("pagedown") }, { key: "home", cmd: () => handleKey("home") },
@@ -318,6 +319,7 @@ export function createFilesRouteKeyHandler(context: FilesRouteInputContext): (ke
     }
     if (key === "a" && state.leftMode === "files") { context.clearSelection(); active.setViewMode("all"); return; }
     if (key === "m" && state.leftMode === "files") { context.clearSelection(); active.setViewMode("modified"); return; }
+    if (key === "v" && state.leftMode === "files") { context.clearSelection(); active.toggleListLayout(); return; }
     if (key === "s" && state.leftMode === "files") { context.clearSelection(); active.toggleScope(); return; }
     if (key === "n" || key === "down") { context.clearSelection(); active.movePrimarySelection(1); return; }
     if (key === "p" || key === "up") { context.clearSelection(); active.movePrimarySelection(-1); return; }
@@ -710,6 +712,10 @@ export function FilesRoute(props: FilesRouteProps) {
       const index = treeOffset + offset();
       const selected = index === state.selectedIndex;
       const node = row.node;
+      if (node.kind === "section") {
+        const label = `── ${safeText(node.name)} `;
+        return <text content={`${label}${"─".repeat(Math.max(0, width - label.length))}`} fg={theme.textMuted} />;
+      }
       const cursor = selected ? ">" : " ";
       const indent = "  ".repeat(row.depth);
       const text = node.kind === "directory"

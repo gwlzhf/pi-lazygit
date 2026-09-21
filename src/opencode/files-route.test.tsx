@@ -235,6 +235,7 @@ describe("FilesRoute", () => {
       toggleDiffLayout: () => calls.push("diff"),
       cycleDiffContext: () => calls.push("context"),
       toggleScope: () => calls.push("scope"),
+      toggleListLayout: () => calls.push("list-layout"),
       collapseOrParent: () => calls.push("parent"),
       expandOrChild: () => calls.push("child"),
       openSelection: () => calls.push("open"),
@@ -273,6 +274,10 @@ describe("FilesRoute", () => {
     expect(calls).toHaveLength(beforeFilesJk);
     invoke("n"); invoke("p");
     expect(calls.slice(-2)).toEqual(["move:1", "move:-1"]);
+
+    // v swaps the directory tree for the change list, and only in the files pane.
+    invoke("v");
+    expect(calls.at(-1)).toBe("list-layout");
 
     state.leftMode = "log";
     const beforeLogJk = calls.length;

@@ -140,6 +140,7 @@ export const PANEL_HELP_GROUPS: readonly {
       { key: "r", label: "refresh" },
       { key: "s", label: "scope" },
       { key: "a", label: "view mode" },
+      { key: "v", label: "change list" },
     ],
   },
   {

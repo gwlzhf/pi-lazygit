@@ -1,8 +1,10 @@
 import type { ChangeRecord, StatusCode, ViewMode } from "../contracts";
 import { normalizeProjectPath } from "../contracts";
 
+export type TreeNodeKind = "directory" | "file" | "section";
+
 export interface TreeNode {
-  readonly kind: "directory" | "file";
+  readonly kind: TreeNodeKind;
   readonly name: string;
   readonly path: string;
   readonly status?: StatusCode;
@@ -199,4 +201,63 @@ export function recoverSelection(
 
   const finiteIndex = Number.isFinite(previousIndex) ? Math.trunc(previousIndex) : 0;
   return Math.min(Math.max(finiteIndex, 0), rows.length - 1);
+}
+
+export const MODIFIED_SECTION_PATH = "section:modified";
+export const UNVERSIONED_SECTION_PATH = "section:unversioned";
+
+function changeNode(path: string, status: StatusCode): TreeNode {
+  return Object.freeze({
+    kind: "file" as const,
+    name: path,
+    path,
+    status,
+    children: Object.freeze([]),
+  });
+}
+
+function sectionNode(path: string, label: string): TreeNode {
+  return Object.freeze({
+    kind: "section" as const,
+    name: label,
+    path,
+    children: Object.freeze([]),
+  });
+}
+
+function comparePaths(left: string, right: string): number {
+  const folded = left.toLowerCase().localeCompare(right.toLowerCase());
+  return folded || left.localeCompare(right);
+}
+
+/**
+ * Lists every change as a flat full project path under one of two dividers:
+ * tracked files Git reports as changed, then the files Git does not track at
+ * all. Each file appears once, under its display status. A section with no
+ * files is omitted, so a repository with nothing untracked shows one divider.
+ */
+export function buildChangeList(
+  changes: ReadonlyMap<string, ChangeRecord>,
+): readonly TreeRow[] {
+  const modified: TreeNode[] = [];
+  const unversioned: TreeNode[] = [];
+
+  const records = [...changes.values()].sort((left, right) => comparePaths(left.path, right.path));
+  for (const record of records) {
+    const path = normalizeTreePath(record.path);
+    const node = changeNode(path, record.status);
+    if (record.status === "?") unversioned.push(node);
+    else modified.push(node);
+  }
+
+  const rows: TreeRow[] = [];
+  const appendSection = (path: string, label: string, nodes: readonly TreeNode[]): void => {
+    if (nodes.length === 0) return;
+    rows.push(Object.freeze({ node: sectionNode(path, label), depth: 0, expanded: false }));
+    for (const node of nodes) rows.push(Object.freeze({ node, depth: 0, expanded: false }));
+  };
+
+  appendSection(MODIFIED_SECTION_PATH, "Modified files", modified);
+  appendSection(UNVERSIONED_SECTION_PATH, "No version files", unversioned);
+  return Object.freeze(rows);
 }

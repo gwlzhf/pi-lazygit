@@ -39,6 +39,7 @@ function sanitizeError(text: string): string {
     .replace(UNSAFE_CONTROLS, "");
 }
 import {
+  buildChangeList,
   buildTree,
   flattenTree,
   recoverSelection,
@@ -51,10 +52,12 @@ import { type HighlightThemeName, DEFAULT_HIGHLIGHT_THEME } from "../highlight-t
 
 export type PanelFocus = "tree" | "preview";
 export type LeftMode = "files" | "log" | "branches";
+export type ListLayout = "tree" | "changes";
 
 export interface ReviewControllerState {
   readonly revision: number;
   readonly leftMode: LeftMode;
+  readonly listLayout: ListLayout;
   readonly viewMode: ViewMode;
   readonly scope: ChangeScope;
   readonly focus: PanelFocus;
@@ -133,6 +136,7 @@ export class ReviewController {
   readonly #onChange: () => void;
 
   #leftMode: LeftMode = "files";
+  #listLayout: ListLayout = "tree";
   #viewMode: ViewMode = "modified";
   #scope: ChangeScope = "workspace";
   #focus: PanelFocus;
@@ -206,6 +210,7 @@ export class ReviewController {
     return {
       revision: this.#revision,
       leftMode: this.#leftMode,
+      listLayout: this.#listLayout,
       viewMode: this.#viewMode,
       scope: this.#scope,
       focus: this.#focus,
@@ -340,6 +345,17 @@ export class ReviewController {
     this.#changed();
   }
 
+  /**
+   * Swaps the directory tree for the flat modified/untracked change list. The
+   * list needs Git status, so the key is inert on the filesystem fallback.
+   */
+  toggleListLayout(): void {
+    if (this.#disposed || this.#snapshot?.kind !== "git") return;
+    this.#listLayout = this.#listLayout === "changes" ? "tree" : "changes";
+    this.#rebuildRows();
+    this.#changed();
+  }
+
   toggleScope(): void {
     if (this.#disposed || this.#snapshot?.kind !== "git") return;
     this.#scope = this.#scope === "workspace" ? "session" : "workspace";
@@ -379,8 +395,9 @@ export class ReviewController {
       return;
     }
     if (this.#rows.length === 0) return;
-    const next = Math.max(0, Math.min(this.#rows.length - 1, this.#selectedIndex + delta));
-    if (next === this.#selectedIndex) return;
+    const clamped = Math.max(0, Math.min(this.#rows.length - 1, this.#selectedIndex + delta));
+    const next = this.#skipSections(clamped, delta < 0 ? -1 : 1);
+    if (next < 0 || next === this.#selectedIndex) return;
     this.#selectedIndex = next;
     this.#selectionChanged();
   }
@@ -408,7 +425,8 @@ export class ReviewController {
       this.#changed();
       return;
     }
-    if (next === this.#selectedIndex) return;
+    // A divider is a label, so clicking one keeps the current file selected.
+    if (next === this.#selectedIndex || this.#rows[next]?.node.kind === "section") return;
     this.#selectedIndex = next;
     this.#selectionChanged();
   }
@@ -541,7 +559,7 @@ export class ReviewController {
       return;
     }
     const selected = this.#selectedRow();
-    if (selected === undefined) return;
+    if (selected === undefined || selected.node.kind === "section") return;
     if (selected.node.kind === "directory") {
       if (selected.expanded) this.collapseOrParent();
       else this.expandOrChild();
@@ -922,6 +940,17 @@ export class ReviewController {
     const previousPath = this.#selectedRow()?.node.path;
     const previousIndex = this.#selectedIndex;
     const changes = this.#activeChanges();
+    if (this.#usesChangeList()) {
+      this.#rows = buildChangeList(changes);
+      this.#selectedIndex = this.#skipSections(
+        recoverSelection(this.#rows, previousPath, previousIndex),
+        1,
+      );
+      const selectedChange = this.#selectedRow();
+      if (selectedChange?.node.kind === "file") this.#beginPreview(selectedChange.node.path, forcePreview);
+      else this.#cancelPreview();
+      return;
+    }
     const mode: ViewMode = project.kind === "filesystem" ? "all" : this.#viewMode;
     const paths = visiblePaths(project.allFiles, changes, mode);
     const root = buildTree(paths, changes);
@@ -938,6 +967,24 @@ export class ReviewController {
 
   #selectedRow(): TreeRow | undefined {
     return this.#selectedIndex >= 0 ? this.#rows[this.#selectedIndex] : undefined;
+  }
+
+  #usesChangeList(): boolean {
+    return this.#listLayout === "changes" && this.#snapshot?.kind === "git";
+  }
+
+  /**
+   * Walks past divider rows so the cursor always lands on a file, searching the
+   * other direction when the preferred one runs out of rows.
+   */
+  #skipSections(index: number, step: 1 | -1): number {
+    if (index < 0 || this.#rows.length === 0) return this.#rows.length === 0 ? -1 : index;
+    for (const direction of [step, -step] as const) {
+      for (let cursor = index; cursor >= 0 && cursor < this.#rows.length; cursor += direction) {
+        if (this.#rows[cursor]?.node.kind !== "section") return cursor;
+      }
+    }
+    return -1;
   }
 
   #selectionChanged(): void {

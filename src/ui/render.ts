@@ -172,6 +172,13 @@ function diffCellColor(kind: DiffCell["kind"]): ThemeColor {
   return "toolDiffContext";
 }
 
+/** Added and removed halves of a split row carry the same masks as the unified view. */
+function diffCellBackground(kind: DiffCell["kind"]): ThemeBg | undefined {
+  if (kind === "add") return "toolSuccessBg";
+  if (kind === "remove") return "toolErrorBg";
+  return undefined;
+}
+
 function renderDiffCell(cell: DiffCell, width: number, theme: Theme, gutterWidth: number): string {
   if (width <= 0) return "";
   // Padding opposite an unpaired removal or addition: blank, but still filled so
@@ -182,7 +189,12 @@ function renderDiffCell(cell: DiffCell, width: number, theme: Theme, gutterWidth
   if (width <= numberWidth) return theme.fg("dim", fitCell(number, width));
   const marker = cell.kind === "add" ? "+" : cell.kind === "remove" ? "-" : " ";
   const body = fitCell(`${marker}${safeLine(cell.text)}`, width - numberWidth - 1);
-  return `${theme.fg("dim", `${number} `)}${theme.fg(diffCellColor(cell.kind), body)}`;
+  const dimPrefix = theme.fg("dim", `${number} `);
+  const background = diffCellBackground(cell.kind);
+  const painted = background === undefined
+    ? theme.fg(diffCellColor(cell.kind), body)
+    : fgOnBg(theme, diffCellColor(cell.kind), background, body);
+  return `${dimPrefix}${painted}`;
 }
 
 /**

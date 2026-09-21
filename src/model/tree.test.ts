@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
 import type { ChangeRecord, StatusCode } from "../contracts";
 import {
+  buildChangeList,
   buildTree,
   flattenTree,
+  MODIFIED_SECTION_PATH,
   recoverSelection,
+  UNVERSIONED_SECTION_PATH,
   visiblePaths,
 } from "./tree";
 
@@ -161,4 +164,70 @@ test("recoverSelection prefers a surviving path and otherwise clamps the old ind
   expect(recoverSelection(rows, "missing.ts", 99)).toBe(2);
   expect(recoverSelection(rows, undefined, -4)).toBe(0);
   expect(recoverSelection([], "a.ts", 0)).toBe(-1);
+});
+
+function record(
+  path: string,
+  index: string,
+  worktree: string,
+  status: StatusCode,
+): ChangeRecord {
+  return { path, index, worktree, status };
+}
+
+function describeRows(
+  rows: ReturnType<typeof buildChangeList>,
+): readonly string[] {
+  return rows.map(({ node }) =>
+    node.kind === "section" ? `-- ${node.name}` : `${node.status} ${node.path}`
+  );
+}
+
+test("buildChangeList splits tracked changes from untracked files", () => {
+  const rows = buildChangeList(changes(
+    record("src/b.ts", " ", "M", "M"),
+    record("src/a.ts", "A", " ", "A"),
+    record("notes.txt", "?", "?", "?"),
+    record("src/both.ts", "M", "M", "M"),
+    record("build/out.js", "?", "?", "?"),
+    record("gone.ts", "D", " ", "D"),
+    record("src/c.ts", "U", "U", "U"),
+  ));
+
+  expect(describeRows(rows)).toEqual([
+    "-- Modified files",
+    "D gone.ts",
+    "A src/a.ts",
+    "M src/b.ts",
+    "M src/both.ts",
+    "U src/c.ts",
+    "-- No version files",
+    "? build/out.js",
+    "? notes.txt",
+  ]);
+  expect(rows.every(row => row.depth === 0 && !row.expanded)).toBe(true);
+  expect(rows[0]?.node.path).toBe(MODIFIED_SECTION_PATH);
+  expect(rows[6]?.node.path).toBe(UNVERSIONED_SECTION_PATH);
+  expect(Object.isFrozen(rows)).toBe(true);
+});
+
+test("buildChangeList omits empty sections", () => {
+  expect(describeRows(buildChangeList(changes(record("src/a.ts", "A", " ", "A"))))).toEqual([
+    "-- Modified files",
+    "A src/a.ts",
+  ]);
+  expect(describeRows(buildChangeList(changes(record("notes.txt", "?", "?", "?"))))).toEqual([
+    "-- No version files",
+    "? notes.txt",
+  ]);
+  expect(buildChangeList(new Map())).toEqual([]);
+});
+
+test("buildChangeList lists a renamed file once under its display status", () => {
+  expect(describeRows(buildChangeList(changes(
+    { path: "src/new.ts", oldPath: "src/old.ts", index: "R", worktree: " ", status: "R" },
+  )))).toEqual([
+    "-- Modified files",
+    "R src/new.ts",
+  ]);
 });

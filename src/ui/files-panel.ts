@@ -352,6 +352,11 @@ export class FilesPanel implements Component {
       this.#controller.setViewMode("modified");
       return;
     }
+    if (matchesKey(data, "v")) {
+      this.#clearSelection();
+      this.#controller.toggleListLayout();
+      return;
+    }
     if (matchesKey(data, "s")) {
       this.#clearSelection();
       this.#controller.toggleScope();
@@ -753,6 +758,10 @@ export class FilesPanel implements Component {
 
   #renderTreeRow(row: TreeRow, index: number, width: number): string {
     const state = this.#state;
+    if (row.node.kind === "section") {
+      const label = `── ${sanitizeTerminalText(row.node.name).replaceAll("\n", " ")} `;
+      return this.#theme.fg("muted", `${label}${"─".repeat(Math.max(0, width - label.length))}`);
+    }
     const selected = index === state.selectedIndex;
     const cursor = selected ? ">" : " ";
     const indent = "  ".repeat(row.depth);

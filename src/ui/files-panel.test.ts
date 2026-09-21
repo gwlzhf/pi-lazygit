@@ -282,6 +282,37 @@ describe("FilesPanel state machine", () => {
     expect(modifiedSession).toContain("b.ts");
   });
 
+  test("v toggles between the directory tree and the modified/untracked change list", async () => {
+    const { panel, source } = harness(60, 9);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot({
+      workspaceChanges: new Map([
+        ["src/a.ts", change("src/a.ts", "M")],
+        ["notes.txt", change("notes.txt", "?")],
+      ]),
+    }));
+    await settle();
+
+    panel.handleInput("v");
+    const list = panel.render(60).join("\n");
+    expect(list).toContain("── Modified files ─");
+    expect(list).toContain("M  src/a.ts");
+    expect(list).toContain("── No version files ─");
+    expect(list).toContain("?  notes.txt");
+
+    // The cursor starts on the first file and steps over the dividers.
+    expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
+    panel.handleInput("n");
+    expect(source.previewCalls.at(-1)?.path).toBe("notes.txt");
+    panel.handleInput("p");
+    expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
+
+    panel.handleInput("v");
+    const tree = panel.render(60).join("\n");
+    expect(tree).not.toContain("Modified files");
+    expect(tree).toContain("M  a.ts");
+  });
+
   test("ignores mode and scope keys for filesystem snapshots", async () => {
     const { panel, source, tui } = harness(60, 6);
     panel.start();

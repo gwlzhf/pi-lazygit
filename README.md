@@ -158,6 +158,7 @@ All controls below apply to OMP and OpenCode except the `t` syntax-palette contr
 | `t` (Pi only) | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `d` | Switch the diff preview between unified and split columns |
 | `c` | Cycle the diff context: 3, 10, 25, full file |
+| `v` | Toggle between the directory tree and the modified/untracked change list |
 | `m` | Show modified files |
 | `a` | Show all visible files |
 | `s` | Toggle workspace/session scope |
@@ -232,6 +233,7 @@ Replaces the project tree keys while the branch list is shown (`b`).
 The view mode and change scope are independent:
 
 - **Modified mode** (`m`) shows only files changed in the active scope.
+- **Change list** (`v`) drops the directory nesting and lists full project paths under two dividers: `Modified files` for the tracked files Git reports as changed, then `No version files` for the files Git does not track. Each file is listed once under its status letter, and an empty group is omitted. The dividers are labels only — the cursor steps over them. Press `v` again to return to the tree. The list is unavailable outside a Git repository.
 - **All-files mode** (`a`) shows the complete Git-visible project tree. Status markers and totals still reflect the active scope.
 - **Workspace scope** shows current working-tree changes relative to `HEAD`, including staged and unstaged changes.
 - **Session scope** (`s`) shows changes that differ from the repository snapshot captured for the current host session.
