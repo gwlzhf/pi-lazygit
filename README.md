@@ -15,14 +15,14 @@ The extension targets the OMP 18.0.11 interactive TUI in Windows PowerShell and 
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.5.0
+omp plugin install github:gwlzhf/pi-lazygit#v0.5.1
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.5.0
+omp plugin install github:gwlzhf/pi-lazygit#v0.5.1
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
@@ -66,7 +66,7 @@ The mouse wheel moves the selection in the tree pane and scrolls the preview pan
 
 Left-clicking a visible row in the left pane focuses that pane and selects the row. In the project tree a file click starts its preview immediately, and a directory click selects it without expanding or collapsing it — expansion stays on the keyboard. History and branch rows behave the same way: a click selects only. Clicks on the overview header, the pane-title row, the footer, the padding below the last row, and the divider select nothing; divider dragging and preview text selection keep their existing meaning.
 
-Selected rows are painted across the full pane width using the active OMP theme's selection background. Diff previews mask whole rows as well: added lines use the theme's success background, removed lines its error background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. Hunk and context rows keep ordinary theme colors. No color is hardcoded, and the masks change neither the visible width nor the text that a selection copies.
+Selected rows are painted across the full pane width using the active OMP theme's selection background. Runtimes older than the `Theme.fgOnBg` helper fall back to a plain foreground over the same background token instead of failing to render. Diff previews mask whole rows as well: added lines use the theme's success background, removed lines its error background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. Hunk and context rows keep ordinary theme colors. No color is hardcoded, and the masks change neither the visible width nor the text that a selection copies.
 
 ## Copying preview text
 
