@@ -16,7 +16,7 @@ The extension targets the OMP 18.0.11 interactive TUI and OpenCode 1.18.31+ in W
 Install the published Git tag through OpenCode:
 
 ```powershell
-opencode plugin github:gwlzhf/opencode-lazygit#v0.4.2
+opencode plugin github:gwlzhf/opencode-lazygit#v0.5.0
 ```
 
 The plugin is also installable by adding the same Git reference to the OpenCode `tui.json` plugin configuration:
@@ -25,7 +25,7 @@ The plugin is also installable by adding the same Git reference to the OpenCode 
 {
   "$schema": "https://opencode.ai/tui.json",
   "plugin": [
-    "github:gwlzhf/opencode-lazygit#v0.4.2"
+    "github:gwlzhf/opencode-lazygit#v0.5.0"
   ]
 }
 ```
