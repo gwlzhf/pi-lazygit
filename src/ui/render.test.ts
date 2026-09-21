@@ -8,12 +8,27 @@ import {
   renderDiffSplitRow,
   renderHighlightedLine,
   renderNumberedLine,
+  renderSelectedRow,
   renderSingleBorder,
   renderSingleRow,
   renderSplitBorder,
   renderSplitRow,
   sanitizeTerminalText,
 } from "./render";
+
+/** An older OMP runtime: `fg` and `bg` exist, `fgOnBg` does not. */
+function legacyTheme(calls: string[] = []): Theme {
+  return {
+    fg(color: ThemeColor, text: string): string {
+      calls.push(color);
+      return text;
+    },
+    bg(background: string, text: string): string {
+      calls.push(`bg:${background}`);
+      return text;
+    },
+  } as unknown as Theme;
+}
 
 function plainTheme(calls: string[] = []): Theme {
   return {
@@ -267,6 +282,23 @@ describe("preview line rendering", () => {
         expect(visibleWidth(split)).toBe(width);
       }
     }
+  });
+
+  test("falls back to fg over bg on hosts whose theme has no fgOnBg", () => {
+    const calls: string[] = [];
+    const theme = legacyTheme(calls);
+
+    // These crashed with "theme.fgOnBg is not a function" on OMP 18.0.3.
+    expect(renderSelectedRow("src/a.ts", 12, theme)).toBe("src/a.ts    ");
+    expect(renderDiffLine("+added", 8, theme)).toBe("+added  ");
+    expect(renderDiffLine("-gone", 8, theme)).toBe("-gone   ");
+    const rows = parseUnifiedDiff(["@@ -1 +1 @@", "-old", "+new"]) ?? [];
+    const pair = rows.find(value => value.kind === "pair") as DiffRow;
+    expect(visibleWidth(renderDiffSplitRow(pair, 24, theme, 1))).toBe(24);
+
+    expect(calls).toContain("bg:selectedBg");
+    expect(calls).toContain("bg:toolSuccessBg");
+    expect(calls).toContain("bg:toolErrorBg");
   });
 
   test("keeps highlight colors, closes them, and stays width safe", () => {

@@ -1,4 +1,4 @@
-import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
+import type { Theme, ThemeBg, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import { replaceTabs, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { DiffCell, DiffRow } from "./diff-view";
 
@@ -131,12 +131,22 @@ function diffColor(line: string): ThemeColor {
   return "toolDiffContext";
 }
 
+/**
+ * `Theme.fgOnBg` only exists in newer OMP runtimes. Older hosts still expose
+ * `fg` and `bg`, so compose the same result there instead of crashing the panel.
+ */
+function fgOnBg(theme: Theme, color: ThemeColor, background: ThemeBg, text: string): string {
+  if (typeof theme.fgOnBg === "function") return theme.fgOnBg(color, background, text);
+  if (typeof theme.bg === "function") return theme.bg(background, theme.fg(color, text));
+  return theme.fg(color, text);
+}
+
 export function renderDiffLine(line: string, width: number, theme: Theme): string {
   const clean = safeLine(line);
   const cell = fitCell(clean, width);
   const color = diffColor(clean);
-  if (color === "toolDiffAdded") return theme.fgOnBg(color, "toolSuccessBg", cell);
-  if (color === "toolDiffRemoved") return theme.fgOnBg(color, "toolErrorBg", cell);
+  if (color === "toolDiffAdded") return fgOnBg(theme, color, "toolSuccessBg", cell);
+  if (color === "toolDiffRemoved") return fgOnBg(theme, color, "toolErrorBg", cell);
   return theme.fg(color, cell);
 }
 
@@ -162,9 +172,9 @@ function renderDiffCell(cell: DiffCell, width: number, theme: Theme, gutterWidth
   const color = diffCellColor(cell.kind);
   const dimPrefix = theme.fg("dim", `${number} `);
   const styledBody = cell.kind === "add"
-    ? theme.fgOnBg(color, "toolSuccessBg", body)
+    ? fgOnBg(theme, color, "toolSuccessBg", body)
     : cell.kind === "remove"
-      ? theme.fgOnBg(color, "toolErrorBg", body)
+      ? fgOnBg(theme, color, "toolErrorBg", body)
       : theme.fg(color, body);
   return `${dimPrefix}${styledBody}`;
 }
@@ -194,7 +204,7 @@ export function renderDiffSplitRow(
 
 /** Pad trusted, single-line text to width, then paint the whole row as selected. */
 export function renderSelectedRow(text: string, width: number, theme: Theme): string {
-  return theme.fgOnBg("text", "selectedBg", fitCell(text, width));
+  return fgOnBg(theme, "text", "selectedBg", fitCell(text, width));
 }
 
 export function renderNumberedLine(
