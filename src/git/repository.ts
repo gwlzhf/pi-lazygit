@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { open } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import * as nodePath from "node:path";
 import {
   DEFAULT_DIFF_CONTEXT,
@@ -10,6 +10,7 @@ import {
   type ChangeSummary,
   type CommitDiffPreview,
   type FilePreview,
+  type GitBranchSnapshot,
   type GitLogEntry,
   type GitLogSnapshot,
   normalizeProjectPath,
@@ -34,6 +35,9 @@ const HASH_BUFFER_BYTES = 64 * 1024;
 export interface RepositoryInspection {
   readonly root: string;
   readonly hasHead: boolean;
+  readonly headIdentity: string;
+  readonly currentBranch?: string;
+  readonly detachedAt?: string;
   readonly allFiles: readonly string[];
   readonly changes: ReadonlyMap<string, ChangeRecord>;
   readonly summaryByPath: ReadonlyMap<
@@ -303,6 +307,31 @@ function parseGitLog(bytes: Uint8Array): GitLogEntry[] {
   return entries;
 }
 
+/**
+ * Reads the symbolic branch name straight from `.git/HEAD` on disk. This
+ * avoids a second `git` invocation for the common attached-HEAD case; a
+ * failure (missing/unreadable file, unusual worktree layout) is treated as
+ * "unknown" rather than spending another process on a fallback query.
+ */
+async function readHeadBranchFromDisk(root: string): Promise<string | undefined> {
+  try {
+    let gitDir = nodePath.join(root, ".git");
+    const pointerText = await readFile(gitDir, "utf8").catch(() => undefined);
+    if (pointerText !== undefined) {
+      const match = /^gitdir:\s*(.+)$/mu.exec(pointerText);
+      if (match?.[1] === undefined) return undefined;
+      gitDir = nodePath.resolve(root, match[1].trim());
+    }
+    const head = (await readFile(nodePath.join(gitDir, "HEAD"), "utf8")).trim();
+    const match = /^ref:\s*(.+)$/u.exec(head);
+    if (match?.[1] === undefined) return undefined;
+    const ref = match[1].trim();
+    return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+  } catch {
+    return undefined;
+  }
+}
+
 function validateCommitOid(oid: string): void {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(oid)) {
     throw new GitOutputError("Invalid commit object ID");
@@ -356,22 +385,65 @@ export class GitRepository {
     return parsePorcelainV1Z(output.stdout);
   }
 
-  private async detectHead(signal: AbortSignal): Promise<boolean> {
-    const verifyArgs = ["rev-parse", "--verify", "HEAD"] as const;
-    const verification = await this.run(verifyArgs, signal, SMALL_GIT_OUTPUT);
-    if (verification.truncated) {
-      throw new GitOutputError("git rev-parse HEAD output exceeded its output limit");
-    }
-    if (verification.exitCode === 0) return true;
+  private branchNameFromRef(ref: string): string {
+    return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+  }
 
+  private async readSymbolicHeadBranch(signal: AbortSignal): Promise<
+    { readonly exitCode: number; readonly branch?: string; readonly args: readonly string[]; readonly output: CommandOutput }
+  > {
     const symbolicArgs = ["symbolic-ref", "-q", "HEAD"] as const;
     const symbolic = await this.run(symbolicArgs, signal, SMALL_GIT_OUTPUT);
     if (symbolic.truncated) {
       throw new GitOutputError("git symbolic-ref HEAD output exceeded its output limit");
     }
-    if (symbolic.exitCode === 0) return false;
+    if (symbolic.exitCode !== 0) {
+      return { exitCode: symbolic.exitCode, args: symbolicArgs, output: symbolic };
+    }
+    const ref = stripGitLineTerminator(decodeGitOutput(symbolic.stdout, "git symbolic-ref output"));
+    return { exitCode: 0, branch: this.branchNameFromRef(ref), args: symbolicArgs, output: symbolic };
+  }
+
+  private async inspectHead(signal: AbortSignal): Promise<{
+    readonly hasHead: boolean;
+    readonly headIdentity: string;
+    readonly currentBranch?: string;
+    readonly detachedAt?: string;
+  }> {
+    const verifyArgs = ["rev-parse", "--verify", "HEAD"] as const;
+    const verification = await this.run(verifyArgs, signal, SMALL_GIT_OUTPUT);
+    if (verification.truncated) {
+      throw new GitOutputError("git rev-parse HEAD output exceeded its output limit");
+    }
+
+    if (verification.exitCode === 0) {
+      const oid = stripGitLineTerminator(decodeGitOutput(verification.stdout, "git rev-parse HEAD output"));
+      const branch = await readHeadBranchFromDisk(this.root());
+      if (branch !== undefined) {
+        return {
+          hasHead: true,
+          headIdentity: `branch:${branch}`,
+          currentBranch: branch,
+        };
+      }
+      return {
+        hasHead: true,
+        headIdentity: `detached:${oid}`,
+        detachedAt: oid.slice(0, 7),
+      };
+    }
+
+    const symbolic = await this.readSymbolicHeadBranch(signal);
+    if (symbolic.exitCode === 0 && symbolic.branch !== undefined) {
+      const branch = symbolic.branch;
+      return {
+        hasHead: false,
+        headIdentity: `branch:${branch}`,
+        currentBranch: branch,
+      };
+    }
     if (symbolic.exitCode === 1) throw commandFailure(verifyArgs, verification);
-    throw commandFailure(symbolicArgs, symbolic);
+    throw commandFailure(symbolic.args, symbolic.output);
   }
 
   private async addContentSummaries(
@@ -405,7 +477,8 @@ export class GitRepository {
 
   async inspect(signal: AbortSignal): Promise<RepositoryInspection> {
     throwIfAborted(signal);
-    const hasHead = await this.detectHead(signal);
+    const head = await this.inspectHead(signal);
+    const hasHead = head.hasHead;
     const statusArgs = ["status", "--porcelain=v1", "-z", "--untracked-files=all"] as const;
     const filesArgs = ["ls-files", "-z", "--cached", "--others", "--exclude-standard"] as const;
     const numstatArgs = ["diff", "--no-ext-diff", "--no-color", "--numstat", "-z", "HEAD", "--", "."] as const;
@@ -451,6 +524,9 @@ export class GitRepository {
     const inspection = {
       root: this.root(),
       hasHead,
+      headIdentity: head.headIdentity,
+      ...(head.currentBranch === undefined ? {} : { currentBranch: head.currentBranch }),
+      ...(head.detachedAt === undefined ? {} : { detachedAt: head.detachedAt }),
       allFiles: parseNulPaths(filesOutput.stdout),
       changes,
       summaryByPath,
@@ -458,6 +534,41 @@ export class GitRepository {
     };
     this.latestInspection = inspection;
     return inspection;
+  }
+
+  async branches(signal: AbortSignal): Promise<GitBranchSnapshot> {
+    throwIfAborted(signal);
+    const head = await this.inspectHead(signal);
+    const args = ["for-each-ref", "--format=%(refname:short)%00", "refs/heads"] as const;
+    const output = await this.run(args, signal, SMALL_GIT_OUTPUT);
+    ensureComplete(args, output);
+    const text = decodeGitOutput(output.stdout, "git for-each-ref output");
+    const names = text
+      .split("\0")
+      .map(name => name.replace(/^\n/, ""))
+      .filter(name => name.length > 0);
+    const branches = names
+      .slice()
+      .sort(compareCaseInsensitive)
+      .map(name => ({ name, current: name === head.currentBranch }));
+    return {
+      branches,
+      ...(head.currentBranch === undefined ? {} : { current: head.currentBranch }),
+      ...(head.detachedAt === undefined ? {} : { detachedAt: head.detachedAt }),
+    };
+  }
+
+  async switchBranch(name: string, signal: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    const snapshot = await this.branches(signal);
+    const match = snapshot.branches.find(branch => branch.name === name);
+    if (match === undefined) {
+      throw new GitOutputError(`Unknown local branch: ${name}`);
+    }
+    const args = ["switch", "--no-guess", name] as const;
+    const output = await this.run(args, signal, SMALL_GIT_OUTPUT);
+    if (output.exitCode !== 0) throw commandFailure(args, output);
+    this.latestInspection = undefined;
   }
 
   async history(signal: AbortSignal): Promise<GitLogSnapshot> {
@@ -524,7 +635,7 @@ export class GitRepository {
       const cached = this.latestInspection;
       const [hasHead, changes] = cached === undefined
         ? await Promise.all([
-            this.detectHead(signal),
+            this.inspectHead(signal).then(head => head.hasHead),
             this.readStatus(signal),
           ])
         : [cached.hasHead, cached.changes] as const;

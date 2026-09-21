@@ -3,11 +3,13 @@ import type {
   ChangeRecord,
   CommitDiffPreview,
   FilePreview,
+  GitBranchSnapshot,
   GitLogSnapshot,
   PreviewOptions,
   ProjectSnapshot,
   ReviewSource,
   StatusCode,
+  SwitchBranchOptions,
 } from "../contracts";
 import { ReviewController } from "./review-controller";
 
@@ -32,6 +34,8 @@ class ControlledSource implements ReviewSource {
   readonly previews: { path: string; signal: AbortSignal; deferred: Deferred<FilePreview> }[] = [];
   readonly histories: { signal: AbortSignal; deferred: Deferred<GitLogSnapshot> }[] = [];
   readonly commitDiffs: { oid: string; signal: AbortSignal; deferred: Deferred<CommitDiffPreview> }[] = [];
+  readonly branchesCalls: { signal: AbortSignal; deferred: Deferred<GitBranchSnapshot> }[] = [];
+  readonly switches: { name: string; signal: AbortSignal; deferred: Deferred<void> }[] = [];
   readonly watches: ({ signal: AbortSignal; onChange: () => void; onError: (error: unknown) => void; deferred: Deferred<void> })[] = [];
 
   refresh({ signal }: { signal: AbortSignal }): Promise<ProjectSnapshot> {
@@ -58,6 +62,18 @@ class ControlledSource implements ReviewSource {
     return value.promise;
   }
 
+  branches({ signal }: { signal: AbortSignal }): Promise<GitBranchSnapshot> {
+    const value = deferred<GitBranchSnapshot>();
+    this.branchesCalls.push({ signal, deferred: value });
+    return value.promise;
+  }
+
+  switchBranch(name: string, { signal }: SwitchBranchOptions): Promise<void> {
+    const value = deferred<void>();
+    this.switches.push({ name, signal, deferred: value });
+    return value.promise;
+  }
+
   watch(options: { signal: AbortSignal; onChange: () => void; onError: (error: unknown) => void }): Promise<void> {
     const value = deferred<void>();
     this.watches.push({ ...options, deferred: value });
@@ -69,11 +85,12 @@ function change(path: string, status: StatusCode): ChangeRecord {
   return { path, index: " ", worktree: status, status };
 }
 
-function snapshot(): ProjectSnapshot {
+function snapshot(overrides: Partial<ProjectSnapshot> = {}): ProjectSnapshot {
   return {
     kind: "git",
     root: "C:/repo",
     hasHead: true,
+    currentBranch: "main",
     allFiles: ["src/a.ts", "src/b.ts", "README.md"],
     workspaceChanges: new Map([
       ["src/a.ts", change("src/a.ts", "M")],
@@ -81,8 +98,13 @@ function snapshot(): ProjectSnapshot {
     ]),
     sessionChanges: new Map([["src/b.ts", change("src/b.ts", "A")]]),
     workspaceSummary: { files: 2, insertions: 1, deletions: 1 },
+    workspaceSummaryByPath: new Map([
+      ["src/a.ts", { insertions: 1, deletions: 1 }],
+      ["src/b.ts", { insertions: 1, deletions: 0 }],
+    ]),
     sessionSummary: { files: 1, insertions: 1, deletions: 0 },
     truncated: false,
+    ...overrides,
   };
 }
 
@@ -237,5 +259,132 @@ describe("ReviewController", () => {
     controller.focusPreview();
     controller.setTreeCollapsed(true);
     expect(changes).toBe(afterDispose);
+  });
+  test("loads branches, switches once in order, refreshes the new branch, and restarts its watcher", async () => {
+    const source = new ControlledSource();
+    const controller = new ReviewController({ cwd: "C:/repo", source, onChange: () => undefined });
+    controller.start();
+    source.refreshes[0]?.deferred.resolve(snapshot());
+    await settle();
+    const oldWatch = source.watches[0];
+
+    controller.toggleBranches();
+    expect(controller.state.leftMode).toBe("branches");
+    expect(controller.state.branchLoading).toBe(true);
+    expect(source.branchesCalls).toHaveLength(1);
+    source.branchesCalls[0]?.deferred.resolve({
+      branches: [
+        { name: "main", current: true },
+        { name: "feature/ui", current: false },
+      ],
+      current: "main",
+    });
+    await settle();
+    expect(controller.state.branchSelectedIndex).toBe(0);
+    controller.movePrimarySelection(1);
+    expect(controller.state.branchSelectedIndex).toBe(1);
+
+    controller.switchSelectedBranch();
+    expect(oldWatch?.signal.aborted).toBe(true);
+    expect(controller.state.branchSwitching).toBe("feature/ui");
+    expect(source.switches).toHaveLength(1);
+    controller.switchSelectedBranch();
+    expect(source.switches).toHaveLength(1);
+
+    source.switches[0]?.deferred.resolve();
+    await settle();
+    expect(controller.state.leftMode).toBe("files");
+    expect(controller.state.refreshLoading).toBe(true);
+    expect(source.refreshes).toHaveLength(2);
+    source.refreshes[1]?.deferred.resolve(snapshot({ currentBranch: "feature/ui" }));
+    await settle();
+    expect(controller.state.snapshot?.currentBranch).toBe("feature/ui");
+    expect(source.watches).toHaveLength(2);
+    controller.dispose();
+  });
+
+  test("current branch Enter is a no-op and switch failure preserves branch selection", async () => {
+    const source = new ControlledSource();
+    const controller = new ReviewController({ cwd: "C:/repo", source, onChange: () => undefined });
+    controller.start();
+    source.refreshes[0]?.deferred.resolve(snapshot());
+    await settle();
+    controller.toggleBranches();
+    source.branchesCalls[0]?.deferred.resolve({
+      branches: [
+        { name: "main", current: true },
+        { name: "feature/ui", current: false },
+      ],
+      current: "main",
+    });
+    await settle();
+
+    controller.switchSelectedBranch();
+    expect(source.switches).toHaveLength(0);
+    expect(controller.state.leftMode).toBe("files");
+
+    controller.toggleBranches();
+    source.branchesCalls[1]?.deferred.resolve({
+      branches: [
+        { name: "main", current: true },
+        { name: "feature/ui", current: false },
+      ],
+      current: "main",
+    });
+    await settle();
+    controller.movePrimarySelection(1);
+    controller.switchSelectedBranch();
+    source.switches[0]?.deferred.reject(new Error("\x1b[31mrefused\x1b[0m"));
+    await settle();
+
+    expect(controller.state.leftMode).toBe("branches");
+    expect(controller.state.branchSelectedIndex).toBe(1);
+    expect(controller.state.branchSwitching).toBeUndefined();
+    expect(controller.state.branchError).toBe("refused");
+    expect(source.watches).toHaveLength(2);
+    controller.dispose();
+  });
+
+  test("stale branch, refresh, and watcher callbacks cannot replace the new branch state", async () => {
+    const source = new ControlledSource();
+    const controller = new ReviewController({ cwd: "C:/repo", source, onChange: () => undefined });
+    controller.start();
+    source.refreshes[0]?.deferred.resolve(snapshot());
+    await settle();
+    const oldWatch = source.watches[0];
+
+    controller.refresh();
+    const staleRefresh = source.refreshes[1];
+    controller.toggleBranches();
+    const staleBranches = source.branchesCalls[0];
+    controller.toggleBranches();
+    controller.toggleBranches();
+    const freshBranches = source.branchesCalls[1];
+    freshBranches?.deferred.resolve({
+      branches: [
+        { name: "main", current: true },
+        { name: "feature/ui", current: false },
+      ],
+      current: "main",
+    });
+    staleBranches?.deferred.resolve({
+      branches: [{ name: "stale", current: true }],
+      current: "stale",
+    });
+    await settle();
+    expect(controller.state.branches?.branches.map(branch => branch.name)).toEqual(["main", "feature/ui"]);
+    controller.movePrimarySelection(1);
+    controller.switchSelectedBranch();
+    const staleSnapshot = snapshot({ currentBranch: "stale" });
+    staleRefresh?.deferred.resolve(staleSnapshot);
+    oldWatch?.onChange();
+    source.switches[0]?.deferred.resolve();
+    await settle();
+    expect(source.refreshes).toHaveLength(3);
+    source.refreshes[2]?.deferred.resolve(snapshot({ currentBranch: "feature/ui" }));
+    await settle();
+    expect(controller.state.snapshot?.currentBranch).toBe("feature/ui");
+    expect(controller.state.snapshot).not.toBe(staleSnapshot);
+    controller.dispose();
   });
 });

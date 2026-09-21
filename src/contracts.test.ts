@@ -9,6 +9,11 @@ import {
   nextDiffContext,
   normalizeDiffContext,
 } from "./contracts";
+import type {
+  FileLineSummary,
+  GitBranchSnapshot,
+  ProjectSnapshot,
+} from "./contracts";
 
 test("changeMap normalizes separators and keys by current path", () => {
   const map = changeMap([
@@ -46,4 +51,34 @@ test("isDiffLayout accepts only the two supported layouts", () => {
   expect(isDiffLayout("split")).toBe(true);
   expect(isDiffLayout("columns")).toBe(false);
   expect(isDiffLayout(undefined)).toBe(false);
+});
+test("shared branch and snapshot contracts retain current identity and per-file summaries", () => {
+  const summary: FileLineSummary = { insertions: 3, deletions: 1 };
+  const branches: GitBranchSnapshot = {
+    branches: [
+      { name: "feature/ui", current: false },
+      { name: "main", current: true },
+    ],
+    current: "main",
+  };
+  const snapshot: ProjectSnapshot = {
+    kind: "git",
+    root: "C:/repo",
+    hasHead: true,
+    currentBranch: branches.current as string,
+    allFiles: ["src/a.ts"],
+    workspaceChanges: new Map(),
+    sessionChanges: new Map(),
+    workspaceSummary: { files: 1, insertions: 3, deletions: 1 },
+    workspaceSummaryByPath: new Map([["src/a.ts", summary]]),
+    sessionSummary: emptySummary(),
+    truncated: false,
+  };
+
+  expect(branches.branches).toEqual([
+    { name: "feature/ui", current: false },
+    { name: "main", current: true },
+  ]);
+  expect(snapshot.currentBranch).toBe("main");
+  expect(snapshot.workspaceSummaryByPath.get("src/a.ts")).toEqual(summary);
 });

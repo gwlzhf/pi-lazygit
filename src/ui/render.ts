@@ -1,4 +1,4 @@
-import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
+import type { Theme, ThemeBg, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import { replaceTabs, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { DiffCell, DiffRow } from "./diff-view";
 
@@ -93,6 +93,13 @@ export function renderSplitBorder(
   return truncateToWidth(row, safeWidth, "");
 }
 
+/** Paint one full padded row with the selected-item background, regardless of content color. */
+export function renderSelectedRow(text: string, width: number, theme: Theme): string {
+  const safeWidth = Math.max(0, Math.floor(width));
+  if (safeWidth === 0) return "";
+  return theme.fgOnBg("text", "selectedBg", fitCell(safeLine(text), safeWidth));
+}
+
 export function renderSingleRow(content: string, width: number, theme: Theme): string {
   const safeWidth = Math.max(0, Math.floor(width));
   if (safeWidth === 0) return "";
@@ -131,10 +138,19 @@ function diffColor(line: string): ThemeColor {
   return "toolDiffContext";
 }
 
+function diffBackground(line: string): ThemeBg | undefined {
+  if (line.startsWith("+") && !line.startsWith("+++")) return "toolSuccessBg";
+  if (line.startsWith("-") && !line.startsWith("---")) return "toolErrorBg";
+  return undefined;
+}
+
 export function renderDiffLine(line: string, width: number, theme: Theme): string {
   const clean = safeLine(line);
   const cell = fitCell(clean, width);
-  return theme.fg(diffColor(clean), cell);
+  const background = diffBackground(clean);
+  return background === undefined
+    ? theme.fg(diffColor(clean), cell)
+    : theme.fgOnBg(diffColor(clean), background, cell);
 }
 
 /** Smallest preview width that still fits two readable diff columns. */

@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 
-import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { type MouseEvent } from "@opentui/core";
 import { useTerminalDimensions, type JSX } from "@opentui/solid";
 import type { TuiPluginApi, TuiThemeCurrent } from "@opencode-ai/plugin/tui";
@@ -14,6 +14,7 @@ import {
   type ChangeSummary,
   type CommitDiffPreview,
   type FilePreview,
+  type GitBranch,
   type GitLogEntry,
   type ProjectSnapshot,
   type ReviewSource,
@@ -25,6 +26,7 @@ import {
   type PanelSettingsStore,
 } from "../settings";
 import { diffGutterWidth, parseUnifiedDiff, type DiffRow } from "../ui/diff-view";
+import { panelPresentation, PANEL_HELP_GROUPS, type PanelPresentationInput } from "../ui/presentation";
 import {
   ReviewController,
   type LeftMode,
@@ -46,7 +48,7 @@ import {
 
 const WIDE_LAYOUT_MINIMUM = 80;
 const WHEEL_STEP = 3;
-const BODY_TOP = 1;
+const BODY_TOP = 2;
 const FOOTER_ROWS = 1;
 const SPLIT_DIFF_MINIMUM_WIDTH = 40;
 const SPLIT_DIFF_SEPARATOR = "│";
@@ -92,27 +94,32 @@ function treeWidth(width: number, ratio: number): number {
   return Math.max(minimum, Math.min(maximum, Math.round(available * Math.max(TREE_MIN_RATIO, Math.min(TREE_MAX_RATIO, ratio)))));
 }
 
+// The pane border stays a static, generic "Preview" label (mirroring the static "Files" /
+// "History" / "Switch branch" left-pane labels). The selected path and its +N -N summary live
+// in the overview row instead, so this title never echoes row text that a viewport row-scan
+// (mouse mapping, selected-row lookup) could otherwise collide with.
 function previewTitle(state: ReviewControllerState | undefined): string {
   if (state === undefined) return "Preview";
   if (state.leftMode === "log") {
     const entry = state.logSelectedIndex >= 0 ? state.history?.entries[state.logSelectedIndex] : undefined;
-    if (entry === undefined) return "Commit preview";
-    if (state.commitDiffLoading) return `Loading commit: ${safeText(entry.shortOid)}`;
-    return state.commitDiff?.kind === "error" ? `Error: ${safeText(entry.shortOid)}` : `Commit: ${safeText(entry.shortOid)}`;
+    if (entry === undefined) return "Preview";
+    if (state.commitDiffLoading) return "Preview (loading)";
+    return state.commitDiff?.kind === "error" ? "Preview (error)" : "Preview";
   }
   const selected = state.rows[state.selectedIndex];
   const path = state.previewPath ?? (selected?.node.kind === "file" ? selected.node.path : undefined);
   if (path === undefined) return "Preview";
-  if (state.previewLoading) return `Loading: ${safeText(path)}`;
+  if (state.previewLoading) return "Preview (loading)";
   switch (state.preview?.kind) {
-    case "diff": return `Diff: ${safeText(path)}`;
-    case "binary": return `Binary: ${safeText(path)}`;
-    case "error": return `Error: ${safeText(path)}`;
-    default: return `File: ${safeText(path)}`;
+    case "diff": return "Preview (diff)";
+    case "binary": return "Preview (binary)";
+    case "error": return "Preview (error)";
+    default: return "Preview";
   }
 }
 
 function treeTitle(state: ReviewControllerState | undefined): string {
+  if (state?.leftMode === "branches") return "Switch branch";
   if (state?.leftMode === "log") return "History";
   if (state?.snapshot?.kind === "filesystem") return "Project [filesystem]";
   return `Project [${state?.viewMode ?? "modified"} · ${state?.scope ?? "workspace"}]`;
@@ -131,6 +138,13 @@ export function diffColor(kind: string, theme: ThemeTokens): ThemeTokens["text"]
   if (kind === "remove") return theme.diffRemoved;
   if (kind === "hunk") return theme.diffHunkHeader;
   return theme.diffContext;
+}
+
+/** Full-row background mask for diff line kinds; ordinary text keeps a transparent background. */
+function diffBg(kind: string, theme: ThemeTokens): ThemeTokens["diffContextBg"] {
+  if (kind === "add") return theme.diffAddedBg;
+  if (kind === "remove") return theme.diffRemovedBg;
+  return theme.diffContextBg;
 }
 
 type PreviewLine = {
@@ -231,6 +245,8 @@ export function createFilesRouteBindings(handleKey: (key: string) => void) {
     { key: "left", cmd: () => handleKey("left") }, { key: "right", cmd: () => handleKey("right") },
     { key: "j", cmd: () => handleKey("j") }, { key: "k", cmd: () => handleKey("k") },
     { key: "h", cmd: () => handleKey("h") }, { key: "l", cmd: () => handleKey("l") },
+    { key: "n", cmd: () => handleKey("n") }, { key: "p", cmd: () => handleKey("p") },
+    { key: "b", cmd: () => handleKey("b") }, { key: "?", cmd: () => handleKey("?") },
     { key: "enter", cmd: () => handleKey("enter") }, { key: "tab", cmd: () => handleKey("tab") },
     { key: "shift+tab", cmd: () => handleKey("shift+tab") }, { key: "[", cmd: () => handleKey("[") },
     { key: "]", cmd: () => handleKey("]") }, { key: "ctrl+left", cmd: () => handleKey("ctrl+left") },
@@ -253,14 +269,20 @@ export interface FilesRouteInputContext {
   readonly clearSelection: () => void;
   readonly scrollPreview: (delta: number) => void;
   readonly focusTreeOrClose: () => void;
+  readonly isHelpVisible: () => boolean;
+  readonly toggleHelp: () => void;
 }
 export function createFilesRouteKeyHandler(context: FilesRouteInputContext): (key: string) => void {
   return (key: string): void => {
     const active = context.getController();
     const state = active?.state;
     if (context.isDisposed() || active === undefined || state === undefined) return;
-    if (key === "f5" || key === "r") { context.clearSelection(); active.refresh(); return; }
+    // Esc and ? are captured before the help gate so help can always be toggled and closed.
     if (key === "escape") { context.focusTreeOrClose(); return; }
+    if (key === "?") { context.toggleHelp(); return; }
+    if (context.isHelpVisible()) return;
+    if (key === "f5" || key === "r") { context.clearSelection(); active.refresh(); return; }
+    if (key === "b") { context.clearSelection(); active.toggleBranches(); return; }
     if (key === "tab" || key === "shift+tab") {
       if (state.treeCollapsed) { context.clearSelection(); active.setTreeCollapsed(false); } else active.toggleFocus();
       return;
@@ -281,17 +303,24 @@ export function createFilesRouteKeyHandler(context: FilesRouteInputContext): (ke
       else if (key === "pagedown") context.scrollPreview(context.viewportHeight());
       return;
     }
+    // n/p replace j/k as the primary next/previous keys in files, history, and branches.
+    if (state.leftMode === "branches") {
+      if (key === "n" || key === "down") { active.movePrimarySelection(1); return; }
+      if (key === "p" || key === "up") { active.movePrimarySelection(-1); return; }
+      if (key === "enter") { active.switchSelectedBranch(); return; }
+      return;
+    }
     if (state.leftMode === "log") {
-      if (key === "up" || key === "k") active.movePrimarySelection(-1);
-      else if (key === "down" || key === "j") active.movePrimarySelection(1);
-      else if (key === "enter" || key === "right" || key === "l") active.focusPreview();
+      if (key === "n" || key === "down") { active.movePrimarySelection(1); return; }
+      if (key === "p" || key === "up") { active.movePrimarySelection(-1); return; }
+      if (key === "enter" || key === "right" || key === "l") { active.focusPreview(); return; }
       return;
     }
     if (key === "a" && state.leftMode === "files") { context.clearSelection(); active.setViewMode("all"); return; }
     if (key === "m" && state.leftMode === "files") { context.clearSelection(); active.setViewMode("modified"); return; }
     if (key === "s" && state.leftMode === "files") { context.clearSelection(); active.toggleScope(); return; }
-    if (key === "up" || key === "k") { context.clearSelection(); active.movePrimarySelection(-1); return; }
-    if (key === "down" || key === "j") { context.clearSelection(); active.movePrimarySelection(1); return; }
+    if (key === "n" || key === "down") { context.clearSelection(); active.movePrimarySelection(1); return; }
+    if (key === "p" || key === "up") { context.clearSelection(); active.movePrimarySelection(-1); return; }
     if (key === "left" || key === "h") { context.clearSelection(); active.collapseOrParent(); return; }
     if (key === "right" || key === "l") {
       context.clearSelection();
@@ -348,6 +377,7 @@ export interface FilesRouteMouseContext {
   readonly viewportHeight: () => number;
   readonly treeOffset: () => number;
   readonly logOffset: () => number;
+  readonly branchOffset: () => number;
   readonly getSelection: () => PreviewSelection | undefined;
   readonly setSelection: (selection: PreviewSelection | undefined) => void;
   readonly isSelectionDrag: () => boolean;
@@ -373,14 +403,26 @@ export function createFilesRouteMouseHandlers(context: FilesRouteMouseContext): 
       const target = filesRouteMouseTarget(event, state, width);
       const bodyRow = event.y - BODY_TOP;
       if (target === "divider") {
+        if (bodyRow < 0) return;
         context.clearSelection();
         context.setDividerDrag(true);
         return;
       }
       if (target === "tree") {
+        // Overview header and pane-title border rows sit above BODY_TOP; padding below the
+        // last visible row sits at or past viewportHeight. Neither selects a row.
+        if (bodyRow < 0 || bodyRow >= context.viewportHeight()) return;
+        const branchMode = state.leftMode === "branches";
+        const offset = state.leftMode === "log" ? context.logOffset() : branchMode ? context.branchOffset() : context.treeOffset();
+        const index = offset + bodyRow;
+        if (branchMode) {
+          // A branch click always selects only — it can never trigger a switch — and must
+          // stay within the actual branch list rather than trailing viewport rows.
+          const length = state.branches?.branches.length ?? 0;
+          if (index < 0 || index >= length) return;
+        }
         context.clearSelection();
         active.focusTree();
-        const index = (state.leftMode === "log" ? context.logOffset() : context.treeOffset()) + bodyRow;
         active.selectPrimary(index);
         return;
       }
@@ -421,6 +463,7 @@ export function FilesRoute(props: FilesRouteProps) {
 
   const dimensions = useTerminalDimensions();
   const [revision, setRevision] = createSignal(0);
+  const [helpVisible, setHelpVisible] = createSignal(false);
   let controller: ReviewController | undefined;
   let disposed = false;
   let popMode: (() => void) | undefined;
@@ -430,6 +473,7 @@ export function FilesRoute(props: FilesRouteProps) {
   let copyNotice: string | undefined;
   let treeOffset = 0;
   let logOffset = 0;
+  let branchOffset = 0;
   let lastPreview: FilePreview | CommitDiffPreview | undefined;
   let lastPreviewPath: string | undefined;
   let lastDimensions: FilesRouteDimensions | undefined;
@@ -454,6 +498,8 @@ export function FilesRoute(props: FilesRouteProps) {
   };
 
   const focusTreeOrClose = (): void => {
+    // Esc leaves Branches/help/preview first, then closes from the Files tree.
+    if (helpVisible()) { setHelpVisible(false); return; }
     const active = controller;
     if (active?.state.focus === "preview") active.focusTree();
     else props.onClose();
@@ -466,6 +512,8 @@ export function FilesRoute(props: FilesRouteProps) {
     clearSelection,
     scrollPreview,
     focusTreeOrClose,
+    isHelpVisible: helpVisible,
+    toggleHelp: () => setHelpVisible(value => !value),
   });
 
   useBindings(() => ({
@@ -499,6 +547,7 @@ export function FilesRoute(props: FilesRouteProps) {
     viewportHeight,
     treeOffset: () => treeOffset,
     logOffset: () => logOffset,
+    branchOffset: () => branchOffset,
     getSelection: () => selection,
     setSelection: value => { selection = value; },
     isSelectionDrag: () => selectionDrag,
@@ -541,7 +590,6 @@ export function FilesRoute(props: FilesRouteProps) {
 
   const previewLineText = (line: PreviewLine): string => line.right === undefined ? line.text : `${line.text}${SPLIT_DIFF_SEPARATOR}${line.right.text}`;
   const renderTextLine = (line: PreviewLine, index: number, width: number) => {
-    const text = previewLineText(line);
     const span = selection === undefined ? undefined : selectedSpans(selection, index + 1, width).find(item => item.row === index);
     const theme = props.api.theme.current;
     if (line.right !== undefined) {
@@ -551,28 +599,47 @@ export function FilesRoute(props: FilesRouteProps) {
       const spans = splitSelectionSpans(span, leftWidth, visibleWidth(separator), rightWidth);
       const leftSpan = spans.left;
       const rightSpan = spans.right;
+      // Split cells each carry their own diff background through gutter, marker, and padding.
       const renderSide = (value: string, kind: PreviewLine["kind"], sideSpan: SelectionSpan | undefined) => {
-        if (sideSpan === undefined) return <span style={{ fg: diffColor(kind, theme) }}>{safeText(value)}</span>;
+        const fg = diffColor(kind, theme);
+        const bg = diffBg(kind, theme);
+        if (sideSpan === undefined) return <span style={{ fg, bg }}>{safeText(value)}</span>;
         const [before, selected, after] = selectionPieces(value, sideSpan, visibleWidth(value));
         return <>
-          <span style={{ fg: diffColor(kind, theme) }}>{before}</span>
+          <span style={{ fg, bg }}>{before}</span>
           <span style={{ fg: theme.selectedListItemText, bg: theme.backgroundElement }}>{selected}</span>
-          <span style={{ fg: diffColor(kind, theme) }}>{after}</span>
+          <span style={{ fg, bg }}>{after}</span>
         </>;
       };
       return <text>
         {renderSide(line.text, line.kind, leftSpan)}
-        <span style={{ fg: theme.diffContext }}>{separator}</span>
+        <span style={{ fg: theme.diffContext, bg: theme.diffContextBg }}>{separator}</span>
         {renderSide(line.right.text, line.right.kind, rightSpan)}
       </text>;
     }
-    const [before, selected, after] = selectionPieces(text, span, width);
+    if (line.kind === "text") {
+      // Ordinary file preview text keeps the host text token without a diff background mask.
+      const text = previewLineText(line);
+      const [before, selected, after] = selectionPieces(text, span, width);
+      if (span !== undefined) return <text>
+        <span style={{ fg: diffColor(line.kind, theme) }}>{before}</span>
+        <span style={{ fg: theme.selectedListItemText, bg: theme.backgroundElement }}>{selected}</span>
+        <span style={{ fg: diffColor(line.kind, theme) }}>{after}</span>
+      </text>;
+      return <text content={safeText(text)} fg={diffColor(line.kind, theme)} />;
+    }
+    // Diff add/remove/context/hunk rows are padded to the full available width before the
+    // background mask is applied, so the color fills the row rather than just the glyphs.
+    const fg = diffColor(line.kind, theme);
+    const bg = diffBg(line.kind, theme);
+    const padded = fitColumn(previewLineText(line), width);
+    const [before, selected, after] = selectionPieces(padded, span, width);
     if (span !== undefined) return <text>
-      <span style={{ fg: diffColor(line.kind, theme) }}>{before}</span>
+      <span style={{ fg, bg }}>{before}</span>
       <span style={{ fg: theme.selectedListItemText, bg: theme.backgroundElement }}>{selected}</span>
-      <span style={{ fg: diffColor(line.kind, theme) }}>{after}</span>
+      <span style={{ fg, bg }}>{after}</span>
     </text>;
-    return <text content={safeText(text)} fg={diffColor(line.kind, theme)} />;
+    return <text><span style={{ fg, bg }}>{padded}</span></text>;
   };
 
   const renderPreview = (state: ReviewControllerState | undefined, width: number) => {
@@ -591,6 +658,15 @@ export function FilesRoute(props: FilesRouteProps) {
     return <For each={lines}>{(line: PreviewLine, index: () => number) => renderTextLine(line, index(), width)}</For>;
   };
 
+  /** Selected+focused rows get a full-row backgroundElement mask; everything else keeps plain text. */
+  const renderRow = (text: string, selected: boolean, focused: boolean, fg: ThemeTokens["text"], width: number) => {
+    const theme = props.api.theme.current;
+    if (selected && focused) {
+      return <text><span style={{ fg: theme.selectedListItemText, bg: theme.backgroundElement }}>{fitColumn(text, width)}</span></text>;
+    }
+    return <text content={text} fg={fg} />;
+  };
+
   const renderTree = (state: ReviewControllerState | undefined, width: number) => {
     const theme = props.api.theme.current;
     if (state === undefined) return <text content="Loading project files…" fg={theme.primary} />;
@@ -604,7 +680,23 @@ export function FilesRoute(props: FilesRouteProps) {
       return <For each={entries.slice(logOffset, logOffset + viewportHeight())}>{(entry: GitLogEntry, offset: () => number) => {
         const index = logOffset + offset();
         const selected = index === state.logSelectedIndex;
-        return <text content={`${selected ? ">" : " "} ${safeText(entry.shortOid)} ${safeText(entry.subject)}`} fg={selected && state.focus === "tree" ? theme.primary : theme.text} />;
+        const text = `${selected ? ">" : " "} ${safeText(entry.shortOid)} ${safeText(entry.subject)}`;
+        return renderRow(text, selected, state.focus === "tree", theme.text, width);
+      }}</For>;
+    }
+    if (state.leftMode === "branches") {
+      if (state.branchLoading && state.branches === undefined) return <text content="Loading branches…" fg={theme.primary} />;
+      if (state.branchError !== undefined) return <text content={`Error: ${safeText(state.branchError)}`} fg={theme.error} />;
+      const branches = state.branches?.branches ?? [];
+      if (branches.length === 0) return <text content="No local branches found" fg={theme.textMuted} />;
+      if (state.branchSelectedIndex < branchOffset) branchOffset = state.branchSelectedIndex;
+      if (state.branchSelectedIndex >= branchOffset + viewportHeight()) branchOffset = state.branchSelectedIndex - viewportHeight() + 1;
+      return <For each={branches.slice(branchOffset, branchOffset + viewportHeight())}>{(branch: GitBranch, offset: () => number) => {
+        const index = branchOffset + offset();
+        const selected = index === state.branchSelectedIndex;
+        const switching = state.branchSwitching === branch.name;
+        const text = `${selected ? ">" : " "} ${branch.current ? "* " : "  "}${safeText(branch.name)}${switching ? " (switching…)" : ""}`;
+        return renderRow(text, selected, state.focus === "tree", branch.current ? theme.success : theme.text, width);
       }}</For>;
     }
     if (state.snapshot === undefined) return <text content={state.refreshError === undefined ? "Loading project files…" : `Error: ${safeText(state.refreshError)}`} fg={state.refreshError === undefined ? theme.primary : theme.error} />;
@@ -623,7 +715,7 @@ export function FilesRoute(props: FilesRouteProps) {
       const text = node.kind === "directory"
         ? `${cursor} ${indent}${row.expanded ? "▼" : "▶"} ${safeText(node.name)}/`
         : `${cursor} ${indent}${node.status ?? " "}  ${safeText(node.name)}`;
-      return <text content={text} fg={selected && state.focus === "tree" ? theme.primary : statusColor(node.status, theme)} />;
+      return renderRow(text, selected, state.focus === "tree", statusColor(node.status, theme), width);
     }}</For>;
   };
 
@@ -641,6 +733,9 @@ export function FilesRoute(props: FilesRouteProps) {
     if (state.refreshLoading) pieces.push("refreshing");
     else if (state.refreshError !== undefined) pieces.push(`error: ${safeText(state.refreshError)}`);
     else if (state.watchError !== undefined) pieces.push(`watch error: ${safeText(state.watchError)}`);
+    else if (state.leftMode === "branches" && state.branchError !== undefined) pieces.push(`error: ${safeText(state.branchError)}`);
+    else if (state.leftMode === "branches" && state.branchSwitching !== undefined) pieces.push(`switching to ${safeText(state.branchSwitching)}`);
+    else if (state.leftMode === "branches" && state.branchLoading) pieces.push("loading branches");
     else if (state.leftMode === "log" && state.historyLoading) pieces.push("loading history");
     else if (state.leftMode === "log" && state.commitDiffLoading) pieces.push("loading commit");
     else if (state.previewLoading) pieces.push("loading preview");
@@ -692,6 +787,20 @@ export function FilesRoute(props: FilesRouteProps) {
     }
   });
 
+  // The flattened tree lists directories before files, so the very first row after the initial
+  // refresh can be a directory. Land the default selection (and its preview) on the first
+  // changed file instead, so opening Files immediately shows a preview.
+  let initialFileSelectionApplied = false;
+  createEffect(() => {
+    const state = currentState();
+    if (initialFileSelectionApplied || disposed || state === undefined || state.leftMode !== "files" || state.snapshot === undefined) return;
+    initialFileSelectionApplied = true;
+    const selected = state.rows[state.selectedIndex];
+    if (selected?.node.kind === "file") return;
+    const fileIndex = state.rows.findIndex(row => row.node.kind === "file");
+    if (fileIndex >= 0) controller?.selectPrimary(fileIndex);
+  });
+
   onCleanup(() => {
     disposed = true;
     controller?.dispose();
@@ -707,10 +816,13 @@ export function FilesRoute(props: FilesRouteProps) {
     if (routeDimensionsChanged(lastDimensions, currentDimensions)) clearSelection();
     lastDimensions = currentDimensions;
     const width = currentDimensions.width;
-    if (state?.preview !== lastPreview || state?.commitDiff !== lastPreview || state?.previewPath !== lastPreviewPath) {
+    // Only the preview that the active mode actually shows retires the selection; comparing
+    // the inactive one would clear the selection on every render.
+    const activePreview = state?.leftMode === "log" ? state.commitDiff : state?.preview;
+    if (activePreview !== lastPreview || state?.previewPath !== lastPreviewPath) {
       selection = undefined;
       selectionDrag = false;
-      lastPreview = state?.leftMode === "log" ? state.commitDiff : state?.preview;
+      lastPreview = activePreview;
       lastPreviewPath = state?.previewPath;
     }
     const wide = isWide(width, state);
@@ -730,10 +842,72 @@ export function FilesRoute(props: FilesRouteProps) {
     </box>;
   };
 
-  const renderFooter = () => <box height={1} width="100%" overflow="hidden"><text content={footer(currentState())} fg={props.api.theme.current.textMuted} /></box>;
+  /** Host-neutral projection consumed by the shared presentation module for titles and actions. */
+  const buildPresentationInput = (state: ReviewControllerState | undefined): PanelPresentationInput => {
+    const project = state?.snapshot;
+    const selectedRow = state?.leftMode === "files" ? state.rows[state.selectedIndex] : undefined;
+    const selectedPath = state?.previewPath ?? (selectedRow?.node.kind === "file" ? selectedRow.node.path : undefined);
+    const selectedSummary = selectedPath === undefined ? undefined : project?.workspaceSummaryByPath.get(selectedPath);
+    // exactOptionalPropertyTypes forbids assigning `undefined` to an optional key directly, so
+    // optional fields are only included when they actually have a value. The current branch is
+    // also omitted from the overview meta while Branches mode is active: the branch list already
+    // marks the current branch, and the overview row would otherwise repeat its name above the
+    // list in a way that reads as redundant chrome rather than list content.
+    const showCurrentBranch = state?.leftMode !== "branches";
+    return {
+      sourceKind: project?.kind,
+      leftMode: state?.leftMode ?? "files",
+      focus: state?.focus ?? "tree",
+      viewMode: state?.viewMode ?? "modified",
+      scope: state?.scope ?? "workspace",
+      ...(!showCurrentBranch || project?.currentBranch === undefined ? {} : { currentBranch: project.currentBranch }),
+      ...(!showCurrentBranch || project?.detachedAt === undefined ? {} : { detachedAt: project.detachedAt }),
+      fileCount: summaryFor(project, state?.scope ?? "workspace").files,
+      ...(selectedPath === undefined ? {} : { selectedPath }),
+      ...(selectedSummary === undefined ? {} : { selectedSummary }),
+      status: footer(state),
+    };
+  };
+
+  const renderOverview = () => {
+    const state = currentState();
+    const theme = props.api.theme.current;
+    const project = state?.snapshot;
+    const selectedRow = state?.leftMode === "files" ? state.rows[state.selectedIndex] : undefined;
+    const selectedPath = state?.previewPath ?? (selectedRow?.node.kind === "file" ? selectedRow.node.path : undefined);
+    const selectedSummary = selectedPath === undefined ? undefined : project?.workspaceSummaryByPath.get(selectedPath);
+    const presentation = panelPresentation(buildPresentationInput(state));
+    const summarySuffix = selectedSummary === undefined ? "" : ` +${selectedSummary.insertions} -${selectedSummary.deletions}`;
+    return <box height={1} width="100%" overflow="hidden" flexDirection="row" justifyContent="space-between">
+      <text content={presentation.overviewTitle} fg={theme.text} />
+      <text content={`${presentation.overviewMeta}${summarySuffix}`} fg={theme.textMuted} />
+    </box>;
+  };
+
+  const renderFooter = () => {
+    const state = currentState();
+    const theme = props.api.theme.current;
+    const presentation = panelPresentation(buildPresentationInput(state));
+    const actionsText = presentation.actions.map(action => `${action.key} ${action.label}`).join("  ");
+    // Contextual actions lead the row so they survive width truncation; decorative status
+    // metadata (baseline timestamps, counts) trails and may be clipped first.
+    const text = actionsText.length > 0 ? `${actionsText}  ${footer(state)}` : footer(state);
+    return <box height={1} width="100%" overflow="hidden"><text content={text} fg={theme.textMuted} /></box>;
+  };
+
+  const renderHelp = () => {
+    const theme = props.api.theme.current;
+    return <box width="100%" height="100%" flexDirection="column" border borderStyle="single" borderColor={theme.borderActive} title="Help" overflow="hidden">
+      <For each={PANEL_HELP_GROUPS}>{(group: { readonly title: string; readonly actions: readonly { readonly key: string; readonly label: string }[] }) => <box flexDirection="column">
+        <text content={group.title} fg={theme.primary} />
+        <For each={group.actions}>{(action: { readonly key: string; readonly label: string }) => <text content={`${action.key}  ${action.label}`} fg={theme.text} />}</For>
+      </box>}</For>
+    </box>;
+  };
 
   return <box width="100%" height="100%" flexDirection="column" backgroundColor={props.api.theme.current.background}>
-    {(() => renderBody()) as unknown as JSX.Element}
+    {(() => renderOverview()) as unknown as JSX.Element}
+    {(() => (helpVisible() ? renderHelp() : renderBody())) as unknown as JSX.Element}
     {(() => renderFooter()) as unknown as JSX.Element}
   </box>;
 }

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULT_DIFF_CONTEXT, FULL_DIFF_CONTEXT, MAX_PREVIEW_BYTES } from "../contracts";
@@ -701,4 +701,93 @@ test("inspects a repository containing an untracked nested repository", async ()
   const preview = await repository.preview("nested", signal);
   expect(preview.kind).toBe("error");
   expect(preview.error).toMatch(/not a regular file/);
+});
+
+test("enumerates local branches in deterministic order and marks the symbolic HEAD", async () => {
+  const root = await initializeRepository();
+  await git(root, "branch", "-M", "main");
+  await git(root, "switch", "-c", "feature/ui");
+  await git(root, "switch", "main");
+
+  const repository = await openRepository(root);
+  expect(await repository.branches(new AbortController().signal)).toEqual({
+    branches: [
+      { name: "feature/ui", current: false },
+      { name: "main", current: true },
+    ],
+    current: "main",
+  });
+});
+
+test("reports detached HEAD separately from selectable local branches", async () => {
+  const root = await initializeRepository();
+  await git(root, "branch", "-M", "main");
+  const oid = (await git(root, "rev-parse", "HEAD")).trim();
+  await git(root, "checkout", "--detach", "--quiet", "HEAD");
+
+  const repository = await openRepository(root);
+  const result = await repository.branches(new AbortController().signal);
+
+  expect(result.branches).toEqual([{ name: "main", current: false }]);
+  expect(result.current).toBeUndefined();
+  expect(result.detachedAt).toBe(oid.slice(0, 7));
+});
+
+test("switches to a validated local branch without shell interpolation", async () => {
+  const root = await initializeRepository();
+  await git(root, "branch", "-M", "main");
+  await git(root, "switch", "-c", "feature/ui");
+  await git(root, "switch", "main");
+
+  const repository = await openRepository(root);
+  await repository.switchBranch("feature/ui", new AbortController().signal);
+
+  expect((await git(root, "branch", "--show-current")).trim()).toBe("feature/ui");
+});
+
+test("ordinary Git safety rejects a conflicting dirty switch without losing data", async () => {
+  const root = await initializeRepository();
+  await git(root, "branch", "-M", "main");
+  await git(root, "switch", "-c", "feature/ui");
+  await writeFile(join(root, "tracked.ts"), "feature version\n");
+  await git(root, "add", "tracked.ts");
+  await git(root, "commit", "--quiet", "-m", "feature change");
+  await git(root, "switch", "main");
+  await writeFile(join(root, "tracked.ts"), "dirty main version\n");
+
+  const repository = await openRepository(root);
+  await expect(repository.switchBranch("feature/ui", new AbortController().signal)).rejects.toThrow();
+  expect(await readFile(join(root, "tracked.ts"), "utf8")).toBe("dirty main version\n");
+  expect((await git(root, "branch", "--show-current")).trim()).toBe("main");
+});
+
+test("branch operations use bounded argv execution without stash, force, fetch, or shells", async () => {
+  const observed: string[][] = [];
+  const runner = new ScriptedRunner((args) => {
+    observed.push([...args]);
+    const command = args.join("\0");
+    if (command === "rev-parse\0--show-toplevel") return commandOutput(`${process.cwd()}\n`);
+    if (command === "rev-parse\0--verify\0HEAD") return commandOutput(`${"a".repeat(40)}\n`);
+    if (command === "symbolic-ref\0-q\0HEAD") return commandOutput("refs/heads/main\n");
+    if (args[0] === "for-each-ref" || args[0] === "branch") {
+      return commandOutput("feature/ui\0main\0");
+    }
+    if (args[0] === "switch") return commandOutput();
+    return commandOutput();
+  });
+
+  const repository = await GitRepository.open(
+    process.cwd(),
+    runner,
+    new AbortController().signal,
+  );
+  if (!repository) throw new Error("expected scripted repository");
+  await repository.branches(new AbortController().signal);
+  await repository.switchBranch("feature/ui", new AbortController().signal);
+
+  const flattened = observed.flat();
+  expect(flattened).not.toContain("stash");
+  expect(flattened).not.toContain("force");
+  expect(flattened).not.toContain("fetch");
+  expect(observed.some(args => /(?:^|[\\/])(sh|bash|cmd|powershell)(?:\.exe)?$/iu.test(args[0] ?? ""))).toBe(false);
 });

@@ -37,6 +37,7 @@ const expectedRuntimeFiles = [
   "src/ui/render.ts",
   "src/ui/selection.ts",
   "src/ui/review-controller.ts",
+  "src/ui/presentation.ts",
   "src/opencode/index.tsx",
   "src/opencode/files-route.tsx",
   "src/opencode/selection.ts",

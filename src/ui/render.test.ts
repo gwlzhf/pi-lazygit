@@ -15,10 +15,17 @@ import {
   sanitizeTerminalText,
 } from "./render";
 
-function plainTheme(calls: ThemeColor[] = []): Theme {
+function plainTheme(calls: string[] = []): Theme {
   return {
     fg(color: ThemeColor, text: string): string {
       calls.push(color);
+      return text;
+    },
+    bg(_color: string, text: string): string {
+      return text;
+    },
+    fgOnBg(color: ThemeColor, background: string, text: string): string {
+      calls.push(`${color}/${background}`);
       return text;
     },
   } as unknown as Theme;
@@ -104,7 +111,7 @@ describe("width-safe cells", () => {
 
 describe("preview line rendering", () => {
   test("uses file, hunk, addition, deletion, then context precedence", () => {
-    const calls: ThemeColor[] = [];
+    const calls: string[] = [];
     const theme = plainTheme(calls);
     const source = [
       "diff --git a/a.ts b/a.ts",
@@ -123,15 +130,15 @@ describe("preview line rendering", () => {
       "toolTitle",
       "toolTitle",
       "accent",
-      "toolDiffAdded",
-      "toolDiffRemoved",
+      "toolDiffAdded/toolSuccessBg",
+      "toolDiffRemoved/toolErrorBg",
       "toolDiffContext",
     ]);
     for (const line of rendered) expectFits(line, 32);
   });
 
   test("does not mistake added or removed content for file headers", () => {
-    const calls: ThemeColor[] = [];
+    const calls: string[] = [];
     const theme = plainTheme(calls);
 
     renderDiffLine("---not-a-header", 24, theme);
@@ -151,6 +158,10 @@ describe("preview line rendering", () => {
     const calls: string[] = [];
     const theme = {
       fg(_color: ThemeColor, text: string): string {
+        calls.push(text);
+        return text;
+      },
+      fgOnBg(_color: ThemeColor, _background: string, text: string): string {
         calls.push(text);
         return text;
       },
@@ -196,7 +207,7 @@ describe("preview line rendering", () => {
   });
 
   test("blanks the column that has no counterpart and colors each side", () => {
-    const calls: ThemeColor[] = [];
+    const calls: string[] = [];
     const theme = plainTheme(calls);
     const rows = parseUnifiedDiff(["@@ -1 +1,2 @@", "-old", "+new", "+extra"]) ?? [];
 
@@ -253,4 +264,25 @@ describe("preview line rendering", () => {
       expect(line.endsWith("\x1b[0m") || width <= 3).toBe(true);
     }
   });
+});
+test("masks unified additions and deletions with theme foreground/background pairs", () => {
+  const calls: string[] = [];
+  const theme = {
+    fg(color: ThemeColor, text: string): string {
+      calls.push(color);
+      return text;
+    },
+    fgOnBg(color: ThemeColor, background: string, text: string): string {
+      calls.push(`${color}/${background}`);
+      return text;
+    },
+  } as unknown as Theme;
+
+  const added = renderDiffLine("+added", 24, theme);
+  const removed = renderDiffLine("-removed", 24, theme);
+
+  expect(calls).toContain("toolDiffAdded/toolSuccessBg");
+  expect(calls).toContain("toolDiffRemoved/toolErrorBg");
+  expect(visibleWidth(added)).toBe(24);
+  expect(visibleWidth(removed)).toBe(24);
 });

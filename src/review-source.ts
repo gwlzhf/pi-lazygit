@@ -5,12 +5,15 @@ import {
   type ChangeRecord,
   type ChangeSummary,
   type CommitDiffPreview,
+  type FileLineSummary,
   type FilePreview,
+  type GitBranchSnapshot,
   type GitLogSnapshot,
   type PreviewOptions,
   type ProjectSnapshot,
   type RefreshOptions,
   type ReviewSource,
+  type SwitchBranchOptions,
   type WatchOptions,
 } from "./contracts";
 import { FilesystemProject } from "./filesystem";
@@ -21,7 +24,7 @@ import { BaselineStore } from "./model/baseline";
 
 type GitBackend = Pick<
   GitRepository,
-  "inspect" | "contentHash" | "preview" | "history" | "commitDiff"
+  "inspect" | "contentHash" | "preview" | "history" | "commitDiff" | "branches" | "switchBranch"
 >;
 type FilesystemBackend = Pick<FilesystemProject, "inspect" | "preview">;
 
@@ -195,11 +198,11 @@ export class ProjectReviewSource implements ReviewSource {
     callerSignal: AbortSignal,
   ): Promise<boolean> {
     callerSignal.throwIfAborted();
-    if (this.baselines.get(inspection.root) !== undefined) return false;
+    if (this.baselines.get(inspection.root, inspection.headIdentity) !== undefined) return false;
 
     const coordinator = coordinatorFor(this.baselines);
     coordinator.controller.signal.throwIfAborted();
-    const key = canonicalRoot(inspection.root);
+    const key = `${canonicalRoot(inspection.root)} ${inspection.headIdentity}`;
     let capture = coordinator.captures.get(key);
     let created = false;
     if (capture === undefined) {
@@ -208,6 +211,7 @@ export class ProjectReviewSource implements ReviewSource {
       capture = this.baselines
         .capture(
           inspection.root,
+          inspection.headIdentity,
           inspection.changes,
           hashFile,
           coordinator.controller.signal,
@@ -269,6 +273,7 @@ export class ProjectReviewSource implements ReviewSource {
         workspaceChanges: new Map(),
         sessionChanges: new Map(),
         workspaceSummary: emptySummary(),
+        workspaceSummaryByPath: new Map<string, FileLineSummary>(),
         sessionSummary: emptySummary(),
         truncated: inspection.truncated,
       };
@@ -287,11 +292,12 @@ export class ProjectReviewSource implements ReviewSource {
       ? new Map<string, ChangeRecord>()
       : await this.baselines.compare(
         inspection.root,
+        inspection.headIdentity,
         inspection.changes,
         this.#hashFile(discovery.backend.project, inspection.root),
         options.signal,
       );
-    const baseline = this.baselines.get(inspection.root);
+    const baseline = this.baselines.get(inspection.root, inspection.headIdentity);
     if (baseline === undefined) {
       throw new Error(`Session baseline was not established for repository: ${inspection.root}`);
     }
@@ -300,10 +306,13 @@ export class ProjectReviewSource implements ReviewSource {
       kind: "git",
       root: inspection.root,
       hasHead: inspection.hasHead,
+      ...(inspection.currentBranch === undefined ? {} : { currentBranch: inspection.currentBranch }),
+      ...(inspection.detachedAt === undefined ? {} : { detachedAt: inspection.detachedAt }),
       allFiles: inspection.allFiles,
       workspaceChanges: inspection.changes,
       sessionChanges,
       workspaceSummary: inspection.summary,
+      workspaceSummaryByPath: inspection.summaryByPath,
       sessionSummary: sessionSummary(sessionChanges, inspection.summaryByPath),
       baselineEstablishedAt: baseline.establishedAt,
       truncated: false,
@@ -325,6 +334,16 @@ export class ProjectReviewSource implements ReviewSource {
   async commitDiff(oid: string, options: PreviewOptions): Promise<CommitDiffPreview> {
     const backend = await this.#gitBackend(options.signal);
     return backend.project.commitDiff(oid, options.signal, options.diffContext);
+  }
+
+  async branches(options: RefreshOptions): Promise<GitBranchSnapshot> {
+    const backend = await this.#gitBackend(options.signal);
+    return backend.project.branches(options.signal);
+  }
+
+  async switchBranch(name: string, options: SwitchBranchOptions): Promise<void> {
+    const backend = await this.#gitBackend(options.signal);
+    await backend.project.switchBranch(name, options.signal);
   }
 
   async watch(options: WatchOptions): Promise<void> {

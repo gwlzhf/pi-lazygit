@@ -40,9 +40,10 @@ test("capture records status and hashes while compare omits an unchanged baselin
   const store = new BaselineStore();
   const signal = new AbortController().signal;
 
-  const baseline = await store.capture(root, initial, hashFile, signal, 1234);
+  const baseline = await store.capture(root, "branch:main", initial, hashFile, signal, 1234);
 
   expect(baseline.root).toBe(root);
+  expect(baseline.headIdentity).toBe("branch:main");
   expect(baseline.establishedAt).toBe(1234);
   expect([...baseline.entries]).toEqual([
     ["src/a.ts", { status: "M", hash: "hash-a" }],
@@ -50,7 +51,7 @@ test("capture records status and hashes while compare omits an unchanged baselin
     ["deleted.txt", { status: "D", hash: null }],
     ["missing.txt", { status: "M", hash: null }],
   ]);
-  expect(store.get(root)).toBe(baseline);
+  expect(store.get(root, "branch:main")).toBe(baseline);
   expect(calls).toEqual([
     resolve(root, "src/a.ts"),
     resolve(root, "new.txt"),
@@ -58,7 +59,7 @@ test("capture records status and hashes while compare omits an unchanged baselin
   ]);
 
   calls.length = 0;
-  expect((await store.compare(root, initial, hashFile, signal)).size).toBe(0);
+  expect((await store.compare(root, "branch:main", initial, hashFile, signal)).size).toBe(0);
   expect(calls).toEqual([
     resolve(root, "src/a.ts"),
     resolve(root, "new.txt"),
@@ -72,10 +73,10 @@ test("compare includes a tracked file that was clean when the baseline was captu
   const signal = new AbortController().signal;
   const calls: string[] = [];
   const hashFile = fakeHashes(new Map(), calls);
-  await store.capture(root, new Map(), hashFile, signal, 10);
+  await store.capture(root, "branch:main", new Map(), hashFile, signal, 10);
   const current = changes(change("src/a.ts", "M"));
 
-  expect(await store.compare(root, current, hashFile, signal)).toEqual(current);
+  expect(await store.compare(root, "branch:main", current, hashFile, signal)).toEqual(current);
   expect(calls).toEqual([]);
 });
 
@@ -88,15 +89,15 @@ test("compare detects content changes in pre-existing dirty files and ignores re
   const store = new BaselineStore();
   const signal = new AbortController().signal;
   const current = changes(change("src/a.ts", "M"));
-  await store.capture(root, current, hashFile, signal, 20);
+  await store.capture(root, "branch:main", current, hashFile, signal, 20);
 
   calls.length = 0;
-  expect((await store.compare(root, current, hashFile, signal)).size).toBe(0);
+  expect((await store.compare(root, "branch:main", current, hashFile, signal)).size).toBe(0);
   expect(calls).toEqual([absolutePath]);
 
   values.set(absolutePath, "changed");
   calls.length = 0;
-  expect(await store.compare(root, current, hashFile, signal)).toEqual(current);
+  expect(await store.compare(root, "branch:main", current, hashFile, signal)).toEqual(current);
   expect(calls).toEqual([absolutePath]);
 });
 
@@ -108,11 +109,11 @@ test("compare reports status changes, including deletion, without hashing delete
   const hashFile = fakeHashes(values, calls);
   const store = new BaselineStore();
   const signal = new AbortController().signal;
-  await store.capture(root, changes(change("src/a.ts", "M")), hashFile, signal);
+  await store.capture(root, "branch:main", changes(change("src/a.ts", "M")), hashFile, signal);
 
   calls.length = 0;
   const deleted = changes(change("src/a.ts", "D"));
-  expect(await store.compare(root, deleted, hashFile, signal)).toEqual(deleted);
+  expect(await store.compare(root, "branch:main", deleted, hashFile, signal)).toEqual(deleted);
   expect(calls).toEqual([]);
 });
 
@@ -124,14 +125,14 @@ test("a dirty file disappears from session changes after content is restored to 
   const store = new BaselineStore();
   const signal = new AbortController().signal;
   const current = changes(change("src/a.ts", "M"));
-  await store.capture(root, current, hashFile, signal);
+  await store.capture(root, "branch:main", current, hashFile, signal);
 
   values.set(absolutePath, "edited-again");
-  expect(await store.compare(root, current, hashFile, signal)).toEqual(current);
+  expect(await store.compare(root, "branch:main", current, hashFile, signal)).toEqual(current);
 
   values.set(absolutePath, "baseline");
-  expect((await store.compare(root, current, hashFile, signal)).size).toBe(0);
-  expect((await store.compare(root, new Map(), hashFile, signal)).size).toBe(0);
+  expect((await store.compare(root, "branch:main", current, hashFile, signal)).size).toBe(0);
+  expect((await store.compare(root, "branch:main", new Map(), hashFile, signal)).size).toBe(0);
 });
 
 test("Windows repository identity is case-insensitive without changing display casing", async () => {
@@ -141,14 +142,15 @@ test("Windows repository identity is case-insensitive without changing display c
   const root = "C:\\Work\\Repo";
   const baseline = await store.capture(
     root,
+    "branch:main",
     new Map(),
     fakeHashes(new Map(), []),
     new AbortController().signal,
     30,
   );
 
-  expect(store.get("c:\\work\\repo\\.")).toBe(baseline);
-  expect(store.get("C:/WORK/REPO")?.root).toBe(root);
+  expect(store.get("c:\\work\\repo\\.", "branch:main")).toBe(baseline);
+  expect(store.get("C:/WORK/REPO", "branch:main")?.root).toBe(root);
 });
 
 test("capture rejects paths that could resolve outside the repository before hashing", async () => {
@@ -161,9 +163,9 @@ test("capture rejects paths that could resolve outside the repository before has
     const store = new BaselineStore();
     const records = new Map<string, ChangeRecord>([["safe-key", change(path, "M")]]);
     await expect(
-      store.capture(root, records, hashFile, new AbortController().signal),
+      store.capture(root, "branch:main", records, hashFile, new AbortController().signal),
     ).rejects.toThrow();
-    expect(store.get(root)).toBeUndefined();
+    expect(store.get(root, "branch:main")).toBeUndefined();
   }
   expect(calls).toEqual([]);
 });
@@ -179,6 +181,7 @@ test("capture accepts a POSIX filename beginning with a drive-like colon prefix"
 
   const baseline = await store.capture(
     root,
+    "branch:main",
     changes(change("C:notes.txt", "M")),
     hashFile,
     new AbortController().signal,
@@ -199,11 +202,11 @@ test("compare rejects invalid current paths before resolving or hashing them", a
   const hashFile = fakeHashes(new Map(), calls);
   const store = new BaselineStore();
   const signal = new AbortController().signal;
-  await store.capture(root, new Map(), hashFile, signal);
+  await store.capture(root, "branch:main", new Map(), hashFile, signal);
 
   for (const path of invalidPaths) {
     const records = new Map<string, ChangeRecord>([["safe-key", change(path, "M")]]);
-    await expect(store.compare(root, records, hashFile, signal)).rejects.toThrow();
+    await expect(store.compare(root, "branch:main", records, hashFile, signal)).rejects.toThrow();
   }
   expect(calls).toEqual([]);
 });
@@ -221,15 +224,17 @@ test("capture aborts atomically and compare observes abort signals", async () =>
   await expect(
     store.capture(
       root,
+      "branch:main",
       changes(change("src/a.ts", "M")),
       captureHash,
       captureController.signal,
     ),
   ).rejects.toBe(captureReason);
-  expect(store.get(root)).toBeUndefined();
+  expect(store.get(root, "branch:main")).toBeUndefined();
 
   await store.capture(
     root,
+    "branch:main",
     changes(change("src/a.ts", "M")),
     fakeHashes(new Map([[resolve(root, "src/a.ts"), "baseline"]]), []),
     new AbortController().signal,
@@ -240,6 +245,7 @@ test("capture aborts atomically and compare observes abort signals", async () =>
   await expect(
     store.compare(
       root,
+      "branch:main",
       changes(change("src/a.ts", "M")),
       fakeHashes(new Map(), []),
       compareController.signal,
@@ -247,15 +253,32 @@ test("capture aborts atomically and compare observes abort signals", async () =>
   ).rejects.toBe(compareReason);
 });
 
+test("keeps independent baselines for local branch HEAD identities", async () => {
+  const root = resolve("branch-baselines");
+  const store = new BaselineStore();
+  const signal = new AbortController().signal;
+  const hashFile = fakeHashes(new Map(), []);
+  const mainChanges = changes(change("main.ts", "M"));
+  const featureChanges = changes(change("feature.ts", "A"));
+
+  await store.capture(root, "branch:main", mainChanges, hashFile, signal, 1);
+  await store.capture(root, "branch:feature", featureChanges, hashFile, signal, 2);
+
+  expect(store.get(root, "branch:main")?.establishedAt).toBe(1);
+  expect(store.get(root, "branch:feature")?.establishedAt).toBe(2);
+  expect(await store.compare(root, "branch:main", mainChanges, hashFile, signal)).toEqual(new Map());
+  expect(await store.compare(root, "branch:feature", featureChanges, hashFile, signal)).toEqual(new Map());
+});
+
 test("clear removes every repository baseline", async () => {
   const store = new BaselineStore();
   const signal = new AbortController().signal;
   const hashFile = fakeHashes(new Map(), []);
-  await store.capture(resolve("one"), new Map(), hashFile, signal);
-  await store.capture(resolve("two"), new Map(), hashFile, signal);
+  await store.capture(resolve("one"), "branch:main", new Map(), hashFile, signal);
+  await store.capture(resolve("two"), "branch:main", new Map(), hashFile, signal);
 
   store.clear();
 
-  expect(store.get(resolve("one"))).toBeUndefined();
-  expect(store.get(resolve("two"))).toBeUndefined();
+  expect(store.get(resolve("one"), "branch:main")).toBeUndefined();
+  expect(store.get(resolve("two"), "branch:main")).toBeUndefined();
 });

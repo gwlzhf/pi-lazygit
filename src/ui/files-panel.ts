@@ -2,6 +2,7 @@ import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import {
   matchesKey,
   routeSgrMouseInput,
+  visibleWidth,
   type Component,
   type KeybindingsManager,
   type SgrMouseEvent,
@@ -12,6 +13,7 @@ import {
   type CommitDiffPreview,
   type DiffLayout,
   type FilePreview,
+  type GitBranch,
   type GitLogEntry,
   type ProjectSnapshot,
   type ReviewSource,
@@ -30,6 +32,7 @@ import {
   type HighlighterStream,
   type HighlightThemeName,
 } from "./highlight";
+import { PANEL_HELP_GROUPS, panelPresentation, type PanelPresentationInput } from "./presentation";
 import {
   encodeOsc52,
   highlightSelection,
@@ -39,10 +42,12 @@ import {
   type SelectionPoint,
 } from "./selection";
 import {
+  fitCell,
   renderDiffLine,
   renderDiffSplitRow,
   renderHighlightedLine,
   renderNumberedLine,
+  renderSelectedRow,
   renderSingleBorder,
   renderSingleRow,
   renderSplitBorder,
@@ -101,6 +106,8 @@ export class FilesPanel implements Component {
 
   #treeOffset = 0;
   #logOffset = 0;
+  #branchOffset = 0;
+  #helpVisible = false;
   #lastWidth = 0;
   #lastTerminalRows = 0;
   #lastPreviewWidth = 0;
@@ -166,12 +173,28 @@ export class FilesPanel implements Component {
       routeSgrMouseInput(data, event => this.#routeMouse(event));
       return;
     }
-    const interrupted = this.#keybindings.matches(data, "app.interrupt");
-    if (interrupted || matchesKey(data, "escape")) {
-      if (this.#state.focus === "preview") this.#focusTree();
-      else this.#finish();
+    if (matchesKey(data, "?")) {
+      this.#clearSelection();
+      this.#helpVisible = !this.#helpVisible;
+      this.#requestRender();
       return;
     }
+    const interrupted = this.#keybindings.matches(data, "app.interrupt");
+    if (interrupted || matchesKey(data, "escape")) {
+      if (this.#helpVisible) {
+        this.#helpVisible = false;
+        this.#requestRender();
+      } else if (this.#state.leftMode === "branches") {
+        this.#clearSelection();
+        this.#controller.toggleBranches();
+      } else if (this.#state.focus === "preview") {
+        this.#focusTree();
+      } else {
+        this.#finish();
+      }
+      return;
+    }
+    if (this.#helpVisible) return;
     if (matchesKey(data, "f5") || matchesKey(data, "r")) {
       this.#clearSelection();
       this.#controller.refresh();
@@ -183,6 +206,11 @@ export class FilesPanel implements Component {
       } else {
         this.#controller.toggleFocus();
       }
+      return;
+    }
+    if (matchesKey(data, "b")) {
+      this.#clearSelection();
+      this.#controller.toggleBranches();
       return;
     }
     if (matchesKey(data, "\\") || matchesKey(data, "ctrl+b")) {
@@ -216,7 +244,7 @@ export class FilesPanel implements Component {
       this.#controller.setHighlightTheme?.(nextTheme.name);
       return;
     }
-    if (matchesKey(data, "g")) {
+    if (this.#state.leftMode !== "branches" && matchesKey(data, "g")) {
       this.#clearSelection();
       this.#controller.toggleLeftMode();
       return;
@@ -239,17 +267,21 @@ export class FilesPanel implements Component {
     let lines: readonly string[];
     if (terminalRows === 0) {
       lines = Object.freeze([]);
-    } else if (terminalRows <= 2) {
+    } else if (terminalRows === 1) {
+      lines = Object.freeze([this.#overviewRow(safeWidth)]);
+    } else if (terminalRows <= 3) {
       const wide = this.#isWideLayout(safeWidth);
       const leftWidth = this.#treeWidth(safeWidth);
-      const header = wide
-        ? renderSplitBorder(this.#treeTitle(), this.#previewTitle(), safeWidth, leftWidth, "top", this.#theme)
-        : renderSingleBorder(state.focus === "preview" ? this.#previewTitle() : this.#treeTitle(), safeWidth, "top", this.#theme);
-      lines = Object.freeze(terminalRows === 1
-        ? [header]
-        : [header, renderSingleBorder(this.#footer(), safeWidth, "bottom", this.#theme)]);
+      const paneRow = wide
+        ? renderSplitBorder(this.#leftTitle(), this.#rightTitle(), safeWidth, leftWidth, "top", this.#theme)
+        : renderSingleBorder(state.focus === "preview" ? this.#rightTitle() : this.#leftTitle(), safeWidth, "top", this.#theme);
+      lines = Object.freeze(terminalRows === 2
+        ? [this.#overviewRow(safeWidth), paneRow]
+        : [this.#overviewRow(safeWidth), paneRow, renderSingleBorder(this.#footer(), safeWidth, "bottom", this.#theme)]);
+    } else if (this.#helpVisible) {
+      lines = this.#renderHelp(safeWidth, terminalRows);
     } else {
-      const contentHeight = terminalRows - 2;
+      const contentHeight = terminalRows - 3;
       lines = this.#isWideLayout(safeWidth)
         ? this.#renderWide(safeWidth, contentHeight)
         : this.#renderNarrow(safeWidth, contentHeight);
@@ -284,11 +316,24 @@ export class FilesPanel implements Component {
 
   #handleTreeInput(data: string): void {
     const state = this.#state;
-    if (state.leftMode === "log") {
-      if (matchesKey(data, "up") || matchesKey(data, "k")) {
+    if (state.leftMode === "branches") {
+      if (matchesKey(data, "up") || matchesKey(data, "p")) {
         this.#clearSelection();
         this.#controller.movePrimarySelection(-1);
-      } else if (matchesKey(data, "down") || matchesKey(data, "j")) {
+      } else if (matchesKey(data, "down") || matchesKey(data, "n")) {
+        this.#clearSelection();
+        this.#controller.movePrimarySelection(1);
+      } else if (matchesKey(data, "enter")) {
+        this.#clearSelection();
+        this.#controller.switchSelectedBranch();
+      }
+      return;
+    }
+    if (state.leftMode === "log") {
+      if (matchesKey(data, "up") || matchesKey(data, "p")) {
+        this.#clearSelection();
+        this.#controller.movePrimarySelection(-1);
+      } else if (matchesKey(data, "down") || matchesKey(data, "n")) {
         this.#clearSelection();
         this.#controller.movePrimarySelection(1);
       } else if (matchesKey(data, "enter") || matchesKey(data, "right") || matchesKey(data, "l")) {
@@ -312,10 +357,10 @@ export class FilesPanel implements Component {
       this.#controller.toggleScope();
       return;
     }
-    if (matchesKey(data, "up") || matchesKey(data, "k")) {
+    if (matchesKey(data, "up") || matchesKey(data, "p")) {
       this.#clearSelection();
       this.#controller.movePrimarySelection(-1);
-    } else if (matchesKey(data, "down") || matchesKey(data, "j")) {
+    } else if (matchesKey(data, "down") || matchesKey(data, "n")) {
       this.#clearSelection();
       this.#controller.movePrimarySelection(1);
     } else if (matchesKey(data, "left") || matchesKey(data, "h")) {
@@ -375,7 +420,13 @@ export class FilesPanel implements Component {
     if (event.leftClick) {
       this.#dividerDrag = wide && event.col === treeWidth + 1;
       this.#clearSelection();
-      if (this.#dividerDrag || point === undefined) return true;
+      if (this.#dividerDrag) return true;
+      const treeIndex = this.#treeRowIndex(event, wide, treeWidth);
+      if (treeIndex !== undefined) {
+        this.#controller.selectPrimary(treeIndex);
+        return true;
+      }
+      if (point === undefined) return true;
       this.#controller.focusPreview();
       this.#selectionDrag = true;
       this.#selection = { anchor: point, head: point };
@@ -399,9 +450,9 @@ export class FilesPanel implements Component {
 
   #previewPoint(event: SgrMouseEvent, wide: boolean, treeWidth: number): SelectionPoint | undefined {
     const terminalRows = Math.floor(this.#tui.terminal.rows);
-    if (!Number.isFinite(terminalRows) || terminalRows <= 2) return undefined;
-    const row = event.row - 1;
-    if (row < 0 || row >= terminalRows - 2) return undefined;
+    if (!Number.isFinite(terminalRows) || terminalRows <= 3) return undefined;
+    const row = event.row - 2;
+    if (row < 0 || row >= terminalRows - 3) return undefined;
     const previewWidth = wide ? Math.max(0, this.#lastWidth - 3 - treeWidth) : Math.max(0, this.#lastWidth - 2);
     if (previewWidth === 0) return undefined;
     if (wide) {
@@ -411,6 +462,28 @@ export class FilesPanel implements Component {
     if (this.#state.focus !== "preview") return undefined;
     const col = event.col - 1;
     return col < 0 || col >= previewWidth ? undefined : { row, col };
+  }
+
+  #treeRowIndex(event: SgrMouseEvent, wide: boolean, treeWidth: number): number | undefined {
+    const terminalRows = Math.floor(this.#tui.terminal.rows);
+    if (!Number.isFinite(terminalRows) || terminalRows <= 3) return undefined;
+    const bodyHeight = terminalRows - 3;
+    const row = event.row - 2;
+    if (row < 0 || row >= bodyHeight) return undefined;
+    if (wide) {
+      if (event.col < 1 || event.col > treeWidth) return undefined;
+    } else {
+      if (this.#state.focus !== "tree") return undefined;
+      const bodyWidth = Math.max(0, this.#lastWidth - 2);
+      if (event.col < 1 || event.col > bodyWidth) return undefined;
+    }
+    const state = this.#state;
+    const offset = state.leftMode === "branches" ? this.#branchOffset : state.leftMode === "log" ? this.#logOffset : this.#treeOffset;
+    const length = state.leftMode === "branches"
+      ? state.branches?.branches.length ?? 0
+      : state.leftMode === "log" ? state.history?.entries.length ?? 0 : state.rows.length;
+    const absolute = offset + row;
+    return absolute >= 0 && absolute < length ? absolute : undefined;
   }
 
   #selectionNeedsRetirement(previous: ReviewControllerState, next: ReviewControllerState): boolean {
@@ -427,7 +500,9 @@ export class FilesPanel implements Component {
       || previous.scope !== next.scope
       || previous.history !== next.history
       || previous.logSelectedIndex !== next.logSelectedIndex
-      || previous.commitDiff !== next.commitDiff;
+      || previous.commitDiff !== next.commitDiff
+      || previous.branches !== next.branches
+      || previous.branchSelectedIndex !== next.branchSelectedIndex;
   }
 
   #retireSelection(): void {
@@ -474,7 +549,7 @@ export class FilesPanel implements Component {
   }
 
   #previewViewportHeight(): number {
-    return Math.max(1, Math.max(3, Math.floor(this.#tui.terminal.rows)) - 2);
+    return Math.max(1, Math.max(4, Math.floor(this.#tui.terminal.rows)) - 3);
   }
   #scrollPreview(delta: number, height: number): void {
     const before = this.#state.previewScroll;
@@ -512,7 +587,10 @@ export class FilesPanel implements Component {
     const rightWidth = Math.max(0, width - 3 - leftWidth);
     const tree = this.#renderTreeRows(leftWidth, height);
     const preview = this.#renderPreviewRows(rightWidth, height);
-    const result: string[] = [renderSplitBorder(this.#treeTitle(), this.#previewTitle(), width, leftWidth, "top", this.#theme)];
+    const result: string[] = [
+      this.#overviewRow(width),
+      renderSplitBorder(this.#leftTitle(), this.#rightTitle(), width, leftWidth, "top", this.#theme),
+    ];
     for (let index = 0; index < height; index += 1) result.push(renderSplitRow(tree[index] ?? "", preview[index] ?? "", width, leftWidth, this.#theme));
     result.push(renderSingleBorder(this.#footer(), width, "bottom", this.#theme));
     return Object.freeze(result);
@@ -522,41 +600,102 @@ export class FilesPanel implements Component {
     const previewFocused = this.#state.focus === "preview";
     const bodyWidth = Math.max(0, width - 2);
     const body = previewFocused ? this.#renderPreviewRows(bodyWidth, height) : this.#renderTreeRows(bodyWidth, height);
-    const result: string[] = [renderSingleBorder(previewFocused ? this.#previewTitle() : this.#treeTitle(), width, "top", this.#theme)];
+    const result: string[] = [
+      this.#overviewRow(width),
+      renderSingleBorder(previewFocused ? this.#rightTitle() : this.#leftTitle(), width, "top", this.#theme),
+    ];
     for (let index = 0; index < height; index += 1) result.push(renderSingleRow(body[index] ?? "", width, this.#theme));
     result.push(renderSingleBorder(this.#footer(), width, "bottom", this.#theme));
     return Object.freeze(result);
   }
 
-  #treeTitle(): string {
-    const state = this.#state;
-    if (state.leftMode === "log") return "History";
-    if (state.snapshot?.kind === "filesystem") return "Project [filesystem]";
-    return `Project [${state.viewMode} · ${state.scope}]`;
+  #renderHelp(width: number, terminalRows: number): readonly string[] {
+    const height = Math.max(0, terminalRows - 3);
+    const lines: string[] = [];
+    for (const group of PANEL_HELP_GROUPS) {
+      lines.push(this.#theme.fg("accent", group.title));
+      for (const action of group.actions) lines.push(`  ${action.key}  ${action.label}`);
+      lines.push("");
+    }
+    const body = lines.slice(0, Math.max(0, height));
+    const result: string[] = [
+      this.#overviewRow(width),
+      renderSingleBorder("Help", width, "top", this.#theme),
+    ];
+    for (let index = 0; index < height; index += 1) result.push(renderSingleRow(body[index] ?? "", width, this.#theme));
+    result.push(renderSingleBorder("esc close", width, "bottom", this.#theme));
+    return Object.freeze(result);
   }
 
-  #previewTitle(): string {
+  #presentationInput(): PanelPresentationInput {
     const state = this.#state;
-    if (state.leftMode === "log") {
-      const entry = this.#selectedLogEntry();
-      if (entry === undefined) return "Commit preview";
-      if (state.commitDiffLoading) return `Loading commit: ${entry.shortOid}`;
-      return state.commitDiff?.kind === "error" ? `Error: ${entry.shortOid}` : `Commit: ${entry.shortOid}`;
-    }
-    const selected = state.rows[state.selectedIndex];
-    const path = state.previewPath ?? (selected?.node.kind === "file" ? selected.node.path : undefined);
-    if (path === undefined) return "Preview";
-    if (state.previewLoading) return `Loading: ${path}`;
-    switch (state.preview?.kind) {
-      case "diff": return `Diff: ${path}`;
-      case "binary": return `Binary: ${path}`;
-      case "error": return `Error: ${path}`;
-      default: return `File: ${path}`;
-    }
+    const project = state.snapshot;
+    const selected = state.leftMode === "files" ? state.rows[state.selectedIndex] : undefined;
+    const selectedPath = state.leftMode === "files"
+      ? (selected?.node.kind === "file" ? selected.node.path : state.previewPath)
+      : undefined;
+    const selectedSummary = selectedPath === undefined || project?.kind !== "git"
+      ? undefined
+      : project.workspaceSummaryByPath.get(selectedPath);
+    const fileCount = project === undefined
+      ? 0
+      : project.kind === "git" ? project.workspaceSummary.files : project.allFiles.length;
+    const status = this.#statusText();
+    return {
+      sourceKind: project?.kind,
+      leftMode: state.leftMode,
+      focus: state.focus,
+      viewMode: state.viewMode,
+      scope: state.scope,
+      ...(project?.kind === "git" && project.currentBranch !== undefined ? { currentBranch: project.currentBranch } : {}),
+      ...(project?.kind === "git" && project.detachedAt !== undefined ? { detachedAt: project.detachedAt } : {}),
+      fileCount,
+      ...(selectedPath === undefined ? {} : { selectedPath }),
+      ...(selectedSummary === undefined ? {} : { selectedSummary }),
+      ...(status === undefined ? {} : { status }),
+    };
+  }
+
+  #statusText(): string | undefined {
+    const state = this.#state;
+    if (state.branchError !== undefined) return `switch error: ${state.branchError}`;
+    if (state.refreshError !== undefined) return `error: ${state.refreshError}`;
+    if (state.watchError !== undefined) return `watch error: ${state.watchError}`;
+    if (state.leftMode === "log" && state.commitDiff?.kind === "error") return "commit error";
+    if (state.preview?.kind === "error") return "preview error";
+    if (state.branchSwitching !== undefined) return `switching to ${state.branchSwitching}`;
+    if (state.branchLoading) return "loading branches";
+    if (state.refreshLoading) return "refreshing";
+    if (state.leftMode === "log" && state.historyLoading) return "loading history";
+    if (state.leftMode === "log" && state.commitDiffLoading) return "loading commit";
+    if (state.previewLoading) return "loading preview";
+    if (this.#copyNotice !== undefined) return this.#copyNotice;
+    return undefined;
+  }
+
+  #overviewRow(width: number): string {
+    const presentation = panelPresentation(this.#presentationInput());
+    const title = sanitizeTerminalText(presentation.overviewTitle).replaceAll("\n", " ");
+    const meta = sanitizeTerminalText(presentation.overviewMeta).replaceAll("\n", " ");
+    const gap = Math.max(1, width - visibleWidth(title) - visibleWidth(meta));
+    return this.#theme.fg("text", fitCell(`${title}${" ".repeat(gap)}${meta}`, width));
+  }
+
+  #leftTitle(): string {
+    const state = this.#state;
+    const base = panelPresentation(this.#presentationInput()).leftTitle;
+    if (state.leftMode !== "files") return base;
+    if (state.snapshot?.kind === "filesystem") return `${base} [filesystem]`;
+    return `${base} [${state.viewMode} · ${state.scope}]`;
+  }
+
+  #rightTitle(): string {
+    return panelPresentation(this.#presentationInput()).rightTitle;
   }
 
   #renderTreeRows(width: number, height: number): readonly string[] {
     const state = this.#state;
+    if (state.leftMode === "branches") return this.#renderBranchRows(width, height);
     if (state.leftMode === "log") return this.#renderLogRows(width, height);
     if (state.snapshot === undefined) {
       const message = state.refreshError === undefined ? "Loading project files…" : `Error: ${state.refreshError}`;
@@ -571,7 +710,7 @@ export class FilesPanel implements Component {
     return state.rows.slice(this.#treeOffset, this.#treeOffset + height).map((row, offset) => this.#renderTreeRow(row, this.#treeOffset + offset, width));
   }
 
-  #renderLogRows(_width: number, height: number): readonly string[] {
+  #renderLogRows(width: number, height: number): readonly string[] {
     const state = this.#state;
     if (state.historyLoading && state.history === undefined) return [this.#theme.fg("accent", "Loading history…")];
     if (state.historyError !== undefined) return [this.#theme.fg("error", `Error: ${state.historyError}`)];
@@ -579,17 +718,40 @@ export class FilesPanel implements Component {
     if (entries === undefined || entries.length === 0) return [this.#theme.fg("muted", "No commits found")];
     if (state.logSelectedIndex < this.#logOffset) this.#logOffset = state.logSelectedIndex;
     if (state.logSelectedIndex >= this.#logOffset + height) this.#logOffset = state.logSelectedIndex - height + 1;
-    return entries.slice(this.#logOffset, this.#logOffset + height).map((entry, offset) => this.#renderLogRow(entry, this.#logOffset + offset));
+    return entries.slice(this.#logOffset, this.#logOffset + height).map((entry, offset) => this.#renderLogRow(entry, this.#logOffset + offset, width));
   }
 
-  #renderLogRow(entry: GitLogEntry, index: number): string {
+  #renderLogRow(entry: GitLogEntry, index: number, width: number): string {
     const state = this.#state;
     const selected = index === state.logSelectedIndex;
     const raw = `${selected ? ">" : " "} ${sanitizeTerminalText(entry.shortOid).replaceAll("\n", " ")} ${sanitizeTerminalText(entry.subject).replaceAll("\n", " ")}`;
-    return this.#theme.fg(selected && state.focus === "tree" ? "accent" : "text", raw);
+    if (selected && state.focus === "tree") return renderSelectedRow(raw, width, this.#theme);
+    return this.#theme.fg("text", fitCell(raw, width));
   }
 
-  #renderTreeRow(row: TreeRow, index: number, _width: number): string {
+  #renderBranchRows(width: number, height: number): readonly string[] {
+    const state = this.#state;
+    if (state.branchLoading && state.branches === undefined) return [this.#theme.fg("accent", "Loading branches…")];
+    if (state.branchError !== undefined && state.branches === undefined) return [this.#theme.fg("error", `Error: ${state.branchError}`)];
+    const branches = state.branches?.branches;
+    if (branches === undefined || branches.length === 0) return [this.#theme.fg("muted", "No local branches found")];
+    if (state.branchSelectedIndex < this.#branchOffset) this.#branchOffset = state.branchSelectedIndex;
+    if (state.branchSelectedIndex >= this.#branchOffset + height) this.#branchOffset = state.branchSelectedIndex - height + 1;
+    return branches.slice(this.#branchOffset, this.#branchOffset + height).map((branch, offset) => this.#renderBranchRow(branch, this.#branchOffset + offset, width));
+  }
+
+  #renderBranchRow(branch: GitBranch, index: number, width: number): string {
+    const state = this.#state;
+    const selected = index === state.branchSelectedIndex;
+    const cursor = selected ? ">" : " ";
+    const marker = branch.current ? "*" : " ";
+    const switching = state.branchSwitching === branch.name ? " (switching…)" : "";
+    const raw = `${cursor} ${marker} ${sanitizeTerminalText(branch.name).replaceAll("\n", " ")}${switching}`;
+    if (selected && state.focus === "tree") return renderSelectedRow(raw, width, this.#theme);
+    return this.#theme.fg(branch.current ? "success" : "text", fitCell(raw, width));
+  }
+
+  #renderTreeRow(row: TreeRow, index: number, width: number): string {
     const state = this.#state;
     const selected = index === state.selectedIndex;
     const cursor = selected ? ">" : " ";
@@ -597,8 +759,9 @@ export class FilesPanel implements Component {
     const raw = row.node.kind === "directory"
       ? `${cursor} ${indent}${row.expanded ? "▼" : "▶"} ${sanitizeTerminalText(row.node.name).replaceAll("\n", " ")}/`
       : `${cursor} ${indent}${row.node.status ?? " "}  ${sanitizeTerminalText(row.node.name).replaceAll("\n", " ")}`;
-    const color: ThemeColor = selected && state.focus === "tree" ? "accent" : row.node.status === "U" || row.node.status === "D" ? "error" : row.node.status === "A" ? "success" : row.node.status === undefined ? "text" : "warning";
-    return this.#theme.fg(color, raw);
+    if (selected && state.focus === "tree") return renderSelectedRow(raw, width, this.#theme);
+    const color: ThemeColor = row.node.status === "U" || row.node.status === "D" ? "error" : row.node.status === "A" ? "success" : row.node.status === undefined ? "text" : "warning";
+    return this.#theme.fg(color, fitCell(raw, width));
   }
 
   #renderPreviewRows(width: number, height: number): readonly string[] {
@@ -699,32 +862,30 @@ export class FilesPanel implements Component {
   #footer(): string {
     const state = this.#state;
     const project = state.snapshot;
+    const presentation = panelPresentation(this.#presentationInput());
     const pieces: string[] = [];
     if (state.leftMode === "log" && state.commitDiff?.truncated) pieces.push("commit preview truncated");
     else if (state.leftMode === "log" && state.history?.truncated) pieces.push("history truncated");
     else if (state.preview?.truncated) pieces.push("preview truncated");
     else if (project?.truncated) pieces.push("listing truncated");
     if (this.#sessionName !== undefined && this.#sessionName.length > 0) pieces.push(sanitizeTerminalText(this.#sessionName).replaceAll("\n", " "));
-    if (project?.kind === "filesystem") pieces.push("filesystem", `${project.allFiles.length} ${project.allFiles.length === 1 ? "file" : "files"}`);
-    else {
-      const summary = project === undefined ? { files: 0, insertions: 0, deletions: 0 } : state.scope === "workspace" ? project.workspaceSummary : project.sessionSummary;
-      pieces.push(state.viewMode, state.scope, `+${summary.insertions} -${summary.deletions}`, `${summary.files} ${summary.files === 1 ? "file" : "files"}`);
+    if (state.leftMode === "files") {
+      if (project?.kind === "filesystem") pieces.push("filesystem", `${project.allFiles.length} ${project.allFiles.length === 1 ? "file" : "files"}`);
+      else {
+        const summary = project === undefined ? { files: 0, insertions: 0, deletions: 0 } : state.scope === "workspace" ? project.workspaceSummary : project.sessionSummary;
+        pieces.push(state.viewMode, state.scope, `+${summary.insertions} -${summary.deletions}`, `${summary.files} ${summary.files === 1 ? "file" : "files"}`);
+      }
     }
-    if (state.refreshLoading) pieces.push("refreshing");
-    else if (state.refreshError !== undefined) pieces.push(`error: ${state.refreshError}`);
-    else if (state.watchError !== undefined) pieces.push(`watch error: ${state.watchError}`);
-    else if (state.leftMode === "log" && state.historyLoading) pieces.push("loading history");
-    else if (state.leftMode === "log" && state.commitDiffLoading) pieces.push("loading commit");
-    else if (state.previewLoading) pieces.push("loading preview");
-    else if (state.preview?.kind === "error") pieces.push("preview error");
-    else if (project?.baselineEstablishedAt !== undefined) pieces.push(`baseline ${new Date(project.baselineEstablishedAt).toISOString()}`);
+    if (presentation.status !== undefined) pieces.push(presentation.status);
+    else if (project?.baselineEstablishedAt !== undefined && state.leftMode === "files") pieces.push(`baseline ${new Date(project.baselineEstablishedAt).toISOString()}`);
     if (this.#highlight !== undefined) pieces.push(`theme ${getHighlightThemeLabel(state.highlightTheme)}`, "t theme");
     if (state.leftMode === "log" ? state.commitDiff?.kind === "diff" : state.preview?.kind === "diff") pieces.push(`${state.diffLayout} diff`, `ctx ${diffContextLabel(state.diffContext)}`);
-    if (this.#copyNotice !== undefined) pieces.push(this.#copyNotice);
     const width = this.#isWideLayout(this.#lastWidth) ? "[ ] width" : undefined;
-    const hints = state.leftMode === "log"
-      ? state.focus === "preview" ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "g files", "←/h/tab/esc list", "drag copy", width] : ["F5/r reload", "↑↓ select", "→/l ↵ preview", "g files", "tab", "\\ tree", width, "esc"]
-      : state.focus === "preview" ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "\\ tree", "←/h/tab/esc tree", "drag copy", width] : project?.kind === "filesystem" ? ["F5/r refresh", "↑↓ move", "→/l preview", "↵ open", "tab", "\\ tree", width, "esc"] : ["F5/r refresh", "↑↓ move", "→/l preview", "↵ open", "tab", "\\ tree", "g log", width, "m/a", "s", "esc"];
+    const hints = [
+      "F5/r refresh",
+      ...presentation.actions.map(action => `${action.key} ${action.label}`),
+      width,
+    ];
     pieces.push(hints.filter(hint => hint !== undefined).join(" · "));
     return pieces.join(" · ");
   }

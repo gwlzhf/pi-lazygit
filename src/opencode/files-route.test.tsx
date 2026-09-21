@@ -29,22 +29,57 @@ function snapshot(): ProjectSnapshot {
     ["src/界.ts", { path: "src/界.ts", index: " ", worktree: "M", status: "M" }],
   ]);
   return {
-    kind: "git", root: "/fixture", hasHead: true, allFiles: ["src/界.ts", "README.md"],
+    kind: "git", root: "/fixture", hasHead: true, currentBranch: "main", allFiles: ["src/界.ts", "README.md"],
     workspaceChanges: changes, sessionChanges: changes,
     workspaceSummary: { files: 1, insertions: 2, deletions: 1 }, sessionSummary: { files: 1, insertions: 2, deletions: 1 },
+    workspaceSummaryByPath: new Map([["src/界.ts", { insertions: 2, deletions: 1 }]]),
     baselineEstablishedAt: Date.UTC(2026, 0, 2), truncated: false,
   };
 }
 
-const preview: FilePreview = { path: "src/界.ts", kind: "text", lines: ["const 界 = true;", "return 界;"], truncated: false };
+type LocalBranchSnapshot = {
+  readonly branches: readonly { readonly name: string; readonly current: boolean }[];
+  readonly current?: string;
+  readonly detachedAt?: string;
+};
 
-function controlledSource(options: { readonly refresh?: Promise<ProjectSnapshot>; readonly preview?: Promise<FilePreview>; readonly watch?: (signal: AbortSignal) => Promise<void> } = {}): ReviewSource & { readonly signals: AbortSignal[] } {
+type RouteSource = ReviewSource & {
+  readonly signals: AbortSignal[];
+  readonly switches: string[];
+  readonly branches: (options: { readonly signal: AbortSignal }) => Promise<LocalBranchSnapshot>;
+  readonly switchBranch: (name: string, options: { readonly signal: AbortSignal }) => Promise<void>;
+};
+
+type SourceOptions = {
+  readonly refresh?: Promise<ProjectSnapshot>;
+  readonly preview?: Promise<FilePreview>;
+  readonly watch?: (signal: AbortSignal) => Promise<void>;
+  readonly branches?: Promise<LocalBranchSnapshot>;
+  readonly switchBranch?: (name: string, signal: AbortSignal) => Promise<void>;
+};
+
+const defaultBranches: LocalBranchSnapshot = {
+  branches: [{ name: "feature/ui", current: false }, { name: "main", current: true }],
+  current: "main",
+};
+
+function controlledSource(options: SourceOptions = {}): RouteSource {
   const signals: AbortSignal[] = [];
+  const switches: string[] = [];
   return {
     signals,
+    switches,
     preview: async (_path, { signal }) => { signals.push(signal); return options.preview === undefined ? preview : options.preview; },
     history: async () => ({ entries: [{ oid: "abc", shortOid: "abc", subject: "Initial", author: "A", authoredAt: 0 }], truncated: false }),
     commitDiff: async () => ({ oid: "abc", kind: "diff", lines: ["@@ -1 +1 @@", "-old", "+new"], truncated: false }),
+    branches: async ({ signal }) => {
+      signals.push(signal);
+      return options.branches === undefined ? defaultBranches : options.branches;
+    },
+    switchBranch: async (name, { signal }) => {
+      switches.push(name);
+      if (options.switchBranch !== undefined) await options.switchBranch(name, signal);
+    },
     watch: async ({ signal }) => {
       signals.push(signal);
       if (options.watch !== undefined) return options.watch(signal);
@@ -53,6 +88,9 @@ function controlledSource(options: { readonly refresh?: Promise<ProjectSnapshot>
     refresh: async ({ signal }) => { signals.push(signal); return options.refresh === undefined ? snapshot() : options.refresh; },
   };
 }
+
+const preview: FilePreview = { path: "src/界.ts", kind: "text", lines: ["const 界 = true;", "return 界;"], truncated: false };
+
 
 function settingsStore(): PanelSettingsStore & { readonly flushed: () => number } {
   let value: PanelSettings = DEFAULT_PANEL_SETTINGS;
@@ -98,6 +136,58 @@ async function mount(width: number, height: number, source: ReviewSource, settin
   await setup.flush();
   return { setup, layers, modePushes, copied, toasts, settings, rendererCopy, disposeRoot };
 }
+type CapturedTestFrame = {
+  readonly lines: readonly {
+    readonly spans: readonly {
+      readonly text: string;
+      readonly fg: RGBA;
+      readonly bg: RGBA;
+      readonly width: number;
+    }[];
+  }[];
+};
+
+type TestRouteBinding = {
+  readonly key: string;
+  readonly cmd: () => void;
+};
+
+type TestRouteLayer = {
+  readonly bindings?: readonly TestRouteBinding[];
+};
+
+type MountedRouteBindings = {
+  readonly layers: readonly TestRouteLayer[];
+};
+
+function invokeMountedBinding(mounted: MountedRouteBindings, key: string): void {
+  for (const layer of mounted.layers) {
+    const binding = layer.bindings?.find(candidate => candidate.key === key);
+    if (binding !== undefined) {
+      binding.cmd();
+      return;
+    }
+  }
+}
+
+function expectSelectedRow(frame: CapturedTestFrame, text: string): void {
+  const line = capturedLine(frame, text);
+  expect(line).toBeDefined();
+  if (line === undefined) return;
+  expect(line.spans.some(span => span.bg.equals(theme.backgroundElement))).toBe(true);
+  expect(line.spans.some(span => span.fg.equals(theme.selectedListItemText))).toBe(true);
+  expect(spanWidth(line.spans.filter(span => span.bg.equals(theme.backgroundElement)))).toBeGreaterThan(text.length);
+}
+
+function capturedLine(frame: CapturedTestFrame, text: string) {
+  return frame.lines.find(line => line.spans.some(span => span.text.includes(text)));
+}
+
+function spanWidth(spans: readonly { readonly width: number }[]): number {
+  return spans.reduce((total, span) => total + span.width, 0);
+}
+
+
 
 describe("FilesRoute", () => {
   test("renders split and narrow native panes", async () => {
@@ -122,12 +212,13 @@ describe("FilesRoute", () => {
     mounted.setup.renderer.destroy();
   });
 
-  test("registered bindings dispatch route keyboard behavior through the production handler", async () => {
+  test("normalizes primary keys while preserving preview scrolling and layered help escape", async () => {
     const mounted = await mount(100, 20, controlledSource());
     expect(mounted.modePushes).toContain("pi-lazygit.files");
     const calls: string[] = [];
     const state = {
       focus: "tree", leftMode: "files", treeCollapsed: false, rows: [], selectedIndex: 0,
+      branches: defaultBranches, branchSelectedIndex: 0, branchLoading: false, branchSwitching: undefined, branchError: undefined,
     };
     const fake = {
       state,
@@ -136,6 +227,8 @@ describe("FilesRoute", () => {
       toggleFocus: () => calls.push("focus"),
       resizeTree: (delta: number) => calls.push(`resize:${delta}`),
       toggleLeftMode: () => calls.push("history"),
+      toggleBranches: () => calls.push("branches"),
+      switchSelectedBranch: () => calls.push("switch"),
       focusPreview: () => { state.focus = "preview"; calls.push("preview"); },
       focusTree: () => { state.focus = "tree"; calls.push("tree"); },
       setTreeCollapsed: () => calls.push("collapsed"),
@@ -150,6 +243,7 @@ describe("FilesRoute", () => {
       scrollPreviewEnd: () => calls.push("end"),
       scrollPreview: () => calls.push("scroll"),
     } as unknown as ReviewController;
+    let helpVisible = false;
     const handler = createFilesRouteKeyHandler({
       getController: () => fake,
       isDisposed: () => false,
@@ -158,21 +252,122 @@ describe("FilesRoute", () => {
       clearSelection: () => undefined,
       scrollPreview: () => calls.push("scroll"),
       focusTreeOrClose: () => {
-        if (state.focus === "preview") { state.focus = "tree"; calls.push("tree"); } else calls.push("close");
+        if (helpVisible) { helpVisible = false; calls.push("help-close"); }
+        else if (state.focus === "preview") { state.focus = "tree"; calls.push("tree"); }
+        else calls.push("close");
       },
-    });
+      isHelpVisible: () => helpVisible,
+      toggleHelp: () => { helpVisible = !helpVisible; calls.push(helpVisible ? "help-open" : "help-close"); },
+    } as unknown as Parameters<typeof createFilesRouteKeyHandler>[0]);
     const bindings = createFilesRouteBindings(handler);
+    expect(["n", "p", "b", "?"].every(key => bindings.some(binding => binding.key === key))).toBe(true);
     const invoke = (key: string): void => bindings.find(binding => binding.key === key)?.cmd();
+
     invoke("r"); invoke("a"); invoke("down"); invoke("tab"); invoke("]"); invoke("escape");
-    expect(calls).toEqual(["refresh", "mode:all", "move:1", "focus", "resize:1", "close"]);
-    state.focus = "preview";
-    invoke("escape");
-    expect(calls.at(-1)).toBe("tree");
+    expect(calls.slice(0, 6)).toEqual(["refresh", "mode:all", "move:1", "focus", "resize:1", "close"]);
+
+    state.focus = "tree";
+    state.leftMode = "files";
+    const beforeFilesJk = calls.length;
+    invoke("j"); invoke("k");
+    expect(calls).toHaveLength(beforeFilesJk);
+    invoke("n"); invoke("p");
+    expect(calls.slice(-2)).toEqual(["move:1", "move:-1"]);
+
     state.leftMode = "log";
-    invoke("g"); invoke("up"); invoke("enter");
-    expect(calls.slice(-3)).toEqual(["history", "move:-1", "preview"]);
+    const beforeLogJk = calls.length;
+    invoke("j"); invoke("k");
+    expect(calls).toHaveLength(beforeLogJk);
+    invoke("n"); invoke("p");
+    expect(calls.slice(-2)).toEqual(["move:1", "move:-1"]);
+
+    state.leftMode = "branches";
+    const beforeBranchJk = calls.length;
+    invoke("j"); invoke("k");
+    expect(calls).toHaveLength(beforeBranchJk);
+    invoke("n"); invoke("p"); invoke("enter");
+    expect(calls.slice(-3)).toEqual(["move:1", "move:-1", "switch"]);
+    invoke("b");
+    expect(calls.at(-1)).toBe("branches");
+
+    state.focus = "preview";
+    invoke("j"); invoke("k");
+    expect(calls.slice(-2)).toEqual(["scroll", "scroll"]);
+
+    const closeCount = calls.filter(call => call === "close").length;
+    invoke("?");
+    expect(calls.at(-1)).toBe("help-open");
+    invoke("escape");
+    expect(calls.at(-1)).toBe("help-close");
+    expect(calls.filter(call => call === "close")).toHaveLength(closeCount);
     mounted.setup.renderer.destroy();
   });
+  test("renders overview metadata, contextual actions, and padded native selected rows", async () => {
+    const mounted = await mount(100, 20, controlledSource());
+    const overview = mounted.setup.captureCharFrame();
+    expect(overview).toContain("Diff working tree");
+    expect(overview).toContain("main");
+    expect(overview).toContain("+2 -1");
+    for (const key of ["n", "p", "b", "?"]) expect(overview).toContain(key);
+    expect(overview).toMatch(/Enter|enter/);
+    expectSelectedRow(mounted.setup.captureSpans(), "界.ts");
+
+    invokeMountedBinding(mounted, "g");
+    await mounted.setup.flush();
+    const history = mounted.setup.captureCharFrame();
+    expect(history).toContain("History");
+    expectSelectedRow(mounted.setup.captureSpans(), "abc");
+
+    invokeMountedBinding(mounted, "b");
+    await mounted.setup.flush();
+    const branches = mounted.setup.captureCharFrame();
+    expect(branches).toContain("Switch branch");
+    expect(branches).toContain("feature/ui");
+    expectSelectedRow(mounted.setup.captureSpans(), "main");
+    mounted.setup.renderer.destroy();
+  });
+
+  test("masks unified and split diff cells with host backgrounds without covering selected text", async () => {
+    const diff: FilePreview = {
+      path: "src/界.ts",
+      kind: "diff",
+      lines: ["@@ -1,2 +1,2 @@", " context", "-removed", "+added"],
+      truncated: false,
+    };
+    const mounted = await mount(100, 20, controlledSource({ preview: Promise.resolve(diff) }));
+    const unified = mounted.setup.captureSpans();
+    const added = capturedLine(unified, "+added");
+    const removed = capturedLine(unified, "-removed");
+    const context = capturedLine(unified, "context");
+    expect(added).toBeDefined();
+    expect(removed).toBeDefined();
+    expect(context).toBeDefined();
+    expect(added!.spans.some(span => span.bg.equals(theme.diffAddedBg))).toBe(true);
+    expect(removed!.spans.some(span => span.bg.equals(theme.diffRemovedBg))).toBe(true);
+    expect(context!.spans.some(span => span.bg.equals(theme.diffContextBg))).toBe(true);
+
+    invokeMountedBinding(mounted, "d");
+    await mounted.setup.flush();
+    const split = mounted.setup.captureSpans();
+    const splitAdded = capturedLine(split, "+added");
+    const splitRemoved = capturedLine(split, "-removed");
+    expect(splitAdded).toBeDefined();
+    expect(splitRemoved).toBeDefined();
+    expect(splitAdded!.spans.some(span => span.bg.equals(theme.diffAddedBg))).toBe(true);
+    expect(splitRemoved!.spans.some(span => span.bg.equals(theme.diffRemovedBg))).toBe(true);
+    expect(spanWidth(splitAdded!.spans.filter(span => span.bg.equals(theme.diffAddedBg)))).toBeGreaterThan(1);
+    expect(spanWidth(splitRemoved!.spans.filter(span => span.bg.equals(theme.diffRemovedBg)))).toBeGreaterThan(1);
+
+    // Row 0 is the overview header and row 1 the pane-title border, so the paired diff row
+    // that carries "+added" sits at screen row 4.
+    await mounted.setup.mockMouse.drag(33, 4, 39, 4);
+    await mounted.setup.flush();
+    const selected = capturedLine(mounted.setup.captureSpans(), "+added");
+    expect(selected).toBeDefined();
+    expect(selected!.spans.some(span => span.fg.equals(theme.selectedListItemText) && span.bg.equals(theme.backgroundElement))).toBe(true);
+    mounted.setup.renderer.destroy();
+  });
+
   test("cleanup aborts source work and flushes settings", async () => {
     const source = controlledSource();
     const mounted = await mount(100, 20, source);
@@ -231,20 +426,21 @@ describe("FilesRoute", () => {
       viewportHeight: () => 10,
       treeOffset: () => 0,
       logOffset: () => 0,
+      branchOffset: () => 0,
       getSelection: () => selection,
-      setSelection: value => { selection = value; },
+      setSelection: (value: typeof selection) => { selection = value; },
       isSelectionDrag: () => selecting,
-      setSelectionDrag: value => { selecting = value; },
+      setSelectionDrag: (value: boolean) => { selecting = value; },
       isDividerDrag: () => divider,
-      setDividerDrag: value => { divider = value; },
+      setDividerDrag: (value: boolean) => { divider = value; },
       clearSelection: () => { selection = undefined; },
       bumpRevision: () => undefined,
       copySelection: () => {
         const notice = copyFilesRouteSelection(selection, ["const 界 = true;"], 20, text => { copied = text; return clipboard; }, () => { warned = true; });
         if (notice !== undefined) calls.push(notice);
       },
-    });
-    const mouse = (x: number) => ({ x, y: 1 } as never);
+    } as unknown as Parameters<typeof createFilesRouteMouseHandlers>[0]);
+    const mouse = (x: number) => ({ x, y: 2 } as never);
     const dividerColumn = Array.from({ length: 100 }, (_, x) => x).find(x => filesRouteMouseTarget(mouse(x), routeState, 100) === "divider")!;
     handlers.onMouseDown(mouse(dividerColumn));
     handlers.onMouseDrag(mouse(dividerColumn + 3));
@@ -259,6 +455,79 @@ describe("FilesRoute", () => {
     handlers.onMouseDrag(mouse(dividerColumn + 8));
     handlers.onMouseUp();
     expect(warned).toBe(true);
+  });
+  test("maps files, history, and branch clicks below the overview and ignores chrome or padding", () => {
+    const state = {
+      focus: "tree", leftMode: "files", treeCollapsed: true, treeRatio: 0.3,
+      rows: Array.from({ length: 8 }, () => ({})), selectedIndex: 0,
+      branches: { branches: Array.from({ length: 8 }, (_, index) => ({ name: `branch-${index}`, current: index === 0 })), current: "branch-0" },
+      branchSelectedIndex: 0,
+    };
+    const routeState = state as unknown as ReviewControllerState;
+    const calls: string[] = [];
+    let width = 40;
+    const fake = {
+      state: routeState,
+      focusTree: () => calls.push("tree"),
+      focusPreview: () => calls.push("preview"),
+      selectPrimary: (index: number) => calls.push(`select:${index}`),
+      switchSelectedBranch: () => calls.push("switch"),
+      setTreeColumns: (column: number) => calls.push(`resize:${column}`),
+    } as unknown as ReviewController;
+    let selection: { readonly anchor: { readonly row: number; readonly col: number }; readonly head: { readonly row: number; readonly col: number } } | undefined;
+    let selectionDrag = false;
+    let dividerDrag = false;
+    const handlers = createFilesRouteMouseHandlers({
+      getController: () => fake,
+      isDisposed: () => false,
+      width: () => width,
+      viewportHeight: () => 3,
+      treeOffset: () => 4,
+      logOffset: () => 2,
+      branchOffset: () => 5,
+      getSelection: () => selection,
+      setSelection: (value: typeof selection) => { selection = value; },
+      isSelectionDrag: () => selectionDrag,
+      setSelectionDrag: (value: boolean) => { selectionDrag = value; },
+      isDividerDrag: () => dividerDrag,
+      setDividerDrag: (value: boolean) => { dividerDrag = value; },
+      clearSelection: () => { selection = undefined; },
+      bumpRevision: () => undefined,
+      copySelection: () => undefined,
+    } as unknown as Parameters<typeof createFilesRouteMouseHandlers>[0]);
+    const mouse = (x: number, y: number) => ({ x, y } as never);
+
+    handlers.onMouseDown(mouse(2, 0));
+    handlers.onMouseDown(mouse(2, 1));
+    expect(calls).toEqual([]);
+
+    handlers.onMouseDown(mouse(2, 2));
+    expect(calls).toContain("select:4");
+    state.leftMode = "log";
+    handlers.onMouseDown(mouse(2, 3));
+    expect(calls).toContain("select:3");
+    state.leftMode = "branches";
+    handlers.onMouseDown(mouse(2, 4));
+    expect(calls).toContain("select:7");
+    expect(calls).not.toContain("switch");
+
+    state.branches = { branches: [{ name: "only", current: true }], current: "only" };
+    handlers.onMouseDown(mouse(2, 3));
+    handlers.onMouseDown(mouse(2, 5));
+    expect(calls.filter(call => call.startsWith("select:"))).toHaveLength(3);
+
+    width = 100;
+    state.treeCollapsed = false;
+    state.leftMode = "files";
+    state.focus = "tree";
+    const dividerColumn = Array.from({ length: 100 }, (_, x) => x).find(x => filesRouteMouseTarget(mouse(x, 2), routeState, width) === "divider")!;
+    handlers.onMouseDown(mouse(dividerColumn, 2));
+    expect(dividerDrag).toBe(true);
+    handlers.onMouseUp();
+    state.focus = "preview";
+    handlers.onMouseDown(mouse(dividerColumn + 2, 2));
+    expect(selectionDrag).toBe(true);
+    expect(calls.at(-1)).toBe("preview");
   });
   test("retires selection state whenever renderer dimensions change", () => {
     expect(routeDimensionsChanged(undefined, { width: 100, height: 20 })).toBe(false);

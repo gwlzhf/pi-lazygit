@@ -124,6 +124,12 @@ function createSource(): ReviewSource {
     commitDiff: async () => {
       throw new Error("not used by entry tests");
     },
+    branches: async () => {
+      throw new Error("not used by entry tests");
+    },
+    switchBranch: async () => {
+      throw new Error("not used by entry tests");
+    },
     watch: async () => {
       throw new Error("not used by entry tests");
     },

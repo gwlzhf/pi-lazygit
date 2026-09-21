@@ -13,6 +13,7 @@ import {
   type CommitDiffPreview,
   type DiffLayout,
   type FilePreview,
+  type GitBranchSnapshot,
   type GitLogEntry,
   type GitLogSnapshot,
   type ProjectSnapshot,
@@ -49,7 +50,7 @@ import { parseUnifiedDiff } from "./diff-view";
 import { type HighlightThemeName, DEFAULT_HIGHLIGHT_THEME } from "../highlight-theme";
 
 export type PanelFocus = "tree" | "preview";
-export type LeftMode = "files" | "log";
+export type LeftMode = "files" | "log" | "branches";
 
 export interface ReviewControllerState {
   readonly revision: number;
@@ -79,6 +80,11 @@ export interface ReviewControllerState {
   readonly diffLayout: DiffLayout;
   readonly diffContext: number;
   readonly highlightTheme: HighlightThemeName;
+  readonly branches: GitBranchSnapshot | undefined;
+  readonly branchSelectedIndex: number;
+  readonly branchLoading: boolean;
+  readonly branchSwitching: string | undefined;
+  readonly branchError: string | undefined;
 }
 
 export interface ReviewControllerOptions {
@@ -169,6 +175,15 @@ export class ReviewController {
   #revision = 0;
   #started = false;
   #disposed = false;
+  #branches: GitBranchSnapshot | undefined;
+  #branchSelectedIndex = -1;
+  #branchLoading = false;
+  #branchSwitching: string | undefined;
+  #branchError: string | undefined;
+  #branchesController: AbortController | undefined;
+  #branchesGeneration = 0;
+  #branchSwitchController: AbortController | undefined;
+  #branchSwitchGeneration = 0;
 
   constructor(options: ReviewControllerOptions) {
     this.#cwd = options.cwd;
@@ -216,6 +231,11 @@ export class ReviewController {
       diffLayout: this.#diffLayout,
       diffContext: this.#diffContext,
       highlightTheme: this.#highlightTheme,
+      branches: this.#branches,
+      branchSelectedIndex: this.#branchSelectedIndex,
+      branchLoading: this.#branchLoading,
+      branchSwitching: this.#branchSwitching,
+      branchError: this.#branchError,
     };
   }
 
@@ -354,6 +374,10 @@ export class ReviewController {
       this.#moveLogSelection(delta);
       return;
     }
+    if (this.#leftMode === "branches") {
+      this.#moveBranchSelection(delta);
+      return;
+    }
     if (this.#rows.length === 0) return;
     const next = Math.max(0, Math.min(this.#rows.length - 1, this.#selectedIndex + delta));
     if (next === this.#selectedIndex) return;
@@ -363,6 +387,15 @@ export class ReviewController {
 
   selectPrimary(index: number): void {
     if (this.#disposed) return;
+    if (this.#leftMode === "branches") {
+      const length = this.#branches?.branches.length ?? 0;
+      if (length === 0) return;
+      const next = Math.max(0, Math.min(length - 1, Math.floor(index)));
+      if (next === this.#branchSelectedIndex) return;
+      this.#branchSelectedIndex = next;
+      this.#changed();
+      return;
+    }
     const length = this.#leftMode === "log" ? this.#history?.entries.length ?? 0 : this.#rows.length;
     if (length === 0) return;
     const next = Math.max(0, Math.min(length - 1, Math.floor(index)));
@@ -378,6 +411,84 @@ export class ReviewController {
     if (next === this.#selectedIndex) return;
     this.#selectedIndex = next;
     this.#selectionChanged();
+  }
+
+  toggleBranches(): void {
+    if (this.#disposed || this.#snapshot?.kind !== "git" || this.#branchSwitching !== undefined) return;
+    if (this.#leftMode === "branches") {
+      this.#leftMode = "files";
+      this.#cancelBranches();
+      this.#focus = "tree";
+      this.#rebuildRows(true);
+      this.#changed();
+      return;
+    }
+    if (this.#treeCollapsed) {
+      this.#treeCollapsed = false;
+      this.#onTreeCollapsedChange?.(false);
+    }
+    this.#focus = "tree";
+    this.#previewScroll = 0;
+    if (this.#leftMode === "log") {
+      this.#cancelHistory();
+      this.#cancelCommitDiff();
+    } else {
+      this.#cancelPreview();
+    }
+    this.#leftMode = "branches";
+    this.#branchError = undefined;
+    this.#beginBranches();
+    this.#changed();
+  }
+
+  switchSelectedBranch(): void {
+    if (this.#disposed || this.#leftMode !== "branches" || this.#branchSwitching !== undefined) return;
+    const branch = this.#branches?.branches[this.#branchSelectedIndex];
+    if (branch === undefined) return;
+    if (branch.current) {
+      this.#leftMode = "files";
+      this.#focus = "tree";
+      this.#cancelBranches();
+      this.#rebuildRows(true);
+      this.#changed();
+      return;
+    }
+    this.#branchError = undefined;
+    this.#branchSwitching = branch.name;
+    this.#cancelPreview();
+    this.#cancelHistory();
+    this.#cancelCommitDiff();
+    this.#cancelRefresh();
+    this.#stopWatch();
+    const generation = ++this.#branchSwitchGeneration;
+    const controller = new AbortController();
+    this.#branchSwitchController = controller;
+    this.#changed();
+    void this.#source.switchBranch(branch.name, { signal: controller.signal }).then(
+      () => {
+        if (!this.#isCurrentBranchSwitch(generation, controller)) return;
+        this.#branchSwitchController = undefined;
+        this.#branchSwitching = undefined;
+        this.#leftMode = "files";
+        this.#focus = "tree";
+        this.#cancelBranches();
+        this.#rows = [];
+        this.#selectedIndex = -1;
+        this.#expanded = new Set();
+        this.#expansionInitialized = false;
+        this.#cancelPreview();
+        this.#beginRefresh();
+        this.#changed();
+      },
+      error => {
+        if (!this.#isCurrentBranchSwitch(generation, controller) || isAbort(error, controller.signal)) return;
+        this.#branchSwitchController = undefined;
+        this.#branchSwitching = undefined;
+        this.#branchError = errorMessage(error);
+        this.#installWatch();
+        this.#changed();
+      },
+    );
   }
 
   collapseOrParent(): void {
@@ -471,6 +582,8 @@ export class ReviewController {
     this.#historyGeneration += 1;
     this.#commitDiffGeneration += 1;
     this.#watchGeneration += 1;
+    this.#branchesGeneration += 1;
+    this.#branchSwitchGeneration += 1;
     if (this.#refreshTimer !== undefined) clearTimeout(this.#refreshTimer);
     this.#refreshTimer = undefined;
     this.#refreshQueued = false;
@@ -479,11 +592,15 @@ export class ReviewController {
     this.#historyController?.abort();
     this.#commitDiffController?.abort();
     this.#watchController?.abort();
+    this.#branchesController?.abort();
+    this.#branchSwitchController?.abort();
     this.#refreshController = undefined;
     this.#previewController = undefined;
     this.#historyController = undefined;
     this.#commitDiffController = undefined;
     this.#watchController = undefined;
+    this.#branchesController = undefined;
+    this.#branchSwitchController = undefined;
   }
 
   #changed(): void {
@@ -549,10 +666,10 @@ export class ReviewController {
         if (project.kind === "git") {
           this.#installWatch();
           if (this.#leftMode === "log") this.#beginHistory();
-          else this.#rebuildRows(true);
+          else if (this.#leftMode === "files") this.#rebuildRows(true);
         } else {
           this.#stopWatch();
-          if (this.#leftMode === "log") this.#leftMode = "files";
+          if (this.#leftMode !== "files") this.#leftMode = "files";
           this.#rebuildRows(true);
         }
         this.#changed();
@@ -577,6 +694,72 @@ export class ReviewController {
 
   #isCurrentRefresh(generation: number, controller: AbortController): boolean {
     return !this.#disposed && generation === this.#refreshGeneration && this.#refreshController === controller;
+  }
+
+  #cancelRefresh(): void {
+    this.#refreshGeneration += 1;
+    this.#refreshController?.abort();
+    this.#refreshController = undefined;
+    this.#refreshLoading = false;
+    if (this.#refreshTimer !== undefined) clearTimeout(this.#refreshTimer);
+    this.#refreshTimer = undefined;
+    this.#refreshQueued = false;
+  }
+
+  #beginBranches(): void {
+    if (this.#disposed) return;
+    const generation = ++this.#branchesGeneration;
+    this.#branchesController?.abort();
+    const controller = new AbortController();
+    this.#branchesController = controller;
+    this.#branchLoading = true;
+    void this.#source.branches({ signal: controller.signal }).then(
+      result => {
+        if (!this.#isCurrentBranches(generation, controller)) return;
+        this.#branchesController = undefined;
+        this.#branchLoading = false;
+        this.#branches = result;
+        const currentIndex = result.branches.findIndex(branch => branch.current);
+        this.#branchSelectedIndex = result.branches.length === 0 ? -1 : Math.max(0, currentIndex);
+        this.#changed();
+      },
+      error => {
+        if (!this.#isCurrentBranches(generation, controller) || isAbort(error, controller.signal)) return;
+        this.#branchesController = undefined;
+        this.#branchLoading = false;
+        this.#branchError = errorMessage(error);
+        this.#changed();
+      },
+    );
+  }
+
+  #isCurrentBranches(generation: number, controller: AbortController): boolean {
+    return !this.#disposed
+      && this.#leftMode === "branches"
+      && generation === this.#branchesGeneration
+      && this.#branchesController === controller;
+  }
+
+  #cancelBranches(): void {
+    this.#branchesGeneration += 1;
+    this.#branchesController?.abort();
+    this.#branchesController = undefined;
+    this.#branchLoading = false;
+  }
+
+  #moveBranchSelection(delta: number): void {
+    const length = this.#branches?.branches.length ?? 0;
+    if (length === 0) return;
+    const next = Math.max(0, Math.min(length - 1, this.#branchSelectedIndex + delta));
+    if (next === this.#branchSelectedIndex) return;
+    this.#branchSelectedIndex = next;
+    this.#changed();
+  }
+
+  #isCurrentBranchSwitch(generation: number, controller: AbortController): boolean {
+    return !this.#disposed
+      && generation === this.#branchSwitchGeneration
+      && this.#branchSwitchController === controller;
   }
 
   #installWatch(): void {
