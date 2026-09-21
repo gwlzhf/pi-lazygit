@@ -15,10 +15,18 @@ import {
   sanitizeTerminalText,
 } from "./render";
 
-function plainTheme(calls: ThemeColor[] = []): Theme {
+function plainTheme(calls: string[] = []): Theme {
   return {
     fg(color: ThemeColor, text: string): string {
       calls.push(color);
+      return text;
+    },
+    bg(background: string, text: string): string {
+      calls.push(`/${background}`);
+      return text;
+    },
+    fgOnBg(color: ThemeColor, background: string, text: string): string {
+      calls.push(`${color}/${background}`);
       return text;
     },
   } as unknown as Theme;
@@ -104,7 +112,7 @@ describe("width-safe cells", () => {
 
 describe("preview line rendering", () => {
   test("uses file, hunk, addition, deletion, then context precedence", () => {
-    const calls: ThemeColor[] = [];
+    const calls: string[] = [];
     const theme = plainTheme(calls);
     const source = [
       "diff --git a/a.ts b/a.ts",
@@ -123,15 +131,15 @@ describe("preview line rendering", () => {
       "toolTitle",
       "toolTitle",
       "accent",
-      "toolDiffAdded",
-      "toolDiffRemoved",
+      "toolDiffAdded/toolSuccessBg",
+      "toolDiffRemoved/toolErrorBg",
       "toolDiffContext",
     ]);
     for (const line of rendered) expectFits(line, 32);
   });
 
   test("does not mistake added or removed content for file headers", () => {
-    const calls: ThemeColor[] = [];
+    const calls: string[] = [];
     const theme = plainTheme(calls);
 
     renderDiffLine("---not-a-header", 24, theme);
@@ -140,17 +148,22 @@ describe("preview line rendering", () => {
     renderDiffLine("+++\tnew/path", 24, theme);
 
     expect(calls).toEqual([
-      "toolDiffRemoved",
-      "toolDiffAdded",
+      "toolDiffRemoved/toolErrorBg",
+      "toolDiffAdded/toolSuccessBg",
       "toolTitle",
       "toolTitle",
     ]);
   });
 
+
   test("sanitizes before styling and handles tiny widths", () => {
     const calls: string[] = [];
     const theme = {
       fg(_color: ThemeColor, text: string): string {
+        calls.push(text);
+        return text;
+      },
+      fgOnBg(_color: ThemeColor, _background: string, text: string): string {
         calls.push(text);
         return text;
       },
@@ -196,7 +209,7 @@ describe("preview line rendering", () => {
   });
 
   test("blanks the column that has no counterpart and colors each side", () => {
-    const calls: ThemeColor[] = [];
+    const calls: string[] = [];
     const theme = plainTheme(calls);
     const rows = parseUnifiedDiff(["@@ -1 +1,2 @@", "-old", "+new", "+extra"]) ?? [];
 
@@ -208,14 +221,14 @@ describe("preview line rendering", () => {
     ]);
     expect(calls).toEqual([
       "dim",
-      "toolDiffRemoved",
+      "toolDiffRemoved/toolErrorBg",
       "borderMuted",
       "dim",
-      "toolDiffAdded",
+      "toolDiffAdded/toolSuccessBg",
       "dim",
       "borderMuted",
       "dim",
-      "toolDiffAdded",
+      "toolDiffAdded/toolSuccessBg",
     ]);
   });
 
@@ -234,6 +247,24 @@ describe("preview line rendering", () => {
         expectFits(line, width);
         expect(line).not.toContain("\x1b[2J");
         expect(line).not.toContain("\0");
+      }
+    }
+  });
+
+  test("keeps unified and split diff masks exact-width under ANSI, CJK, and combining text", () => {
+    const theme = plainTheme();
+    const rows: readonly DiffRow[] = parseUnifiedDiff([
+      "@@ -1 +1 @@",
+      "-e\u0301 猫\x1b[31mold\x1b[0m",
+      "+e\u0301 文件\x1b[32mnew\x1b[0m",
+    ]) ?? [];
+
+    for (let width = 1; width <= 80; width += 1) {
+      const unified = renderDiffLine("+e\u0301 文件\x1b[32mnew\x1b[0m", width, theme);
+      expect(visibleWidth(unified)).toBe(width);
+      for (const row of rows) {
+        const split = renderDiffSplitRow(row, width, theme, 2);
+        expect(visibleWidth(split)).toBe(width);
       }
     }
   });

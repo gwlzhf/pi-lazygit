@@ -8,6 +8,8 @@ import {
   isDiffLayout,
   nextDiffContext,
   normalizeDiffContext,
+  type GitBranchSnapshot,
+  type ProjectSnapshot,
 } from "./contracts";
 
 test("changeMap normalizes separators and keys by current path", () => {
@@ -46,4 +48,35 @@ test("isDiffLayout accepts only the two supported layouts", () => {
   expect(isDiffLayout("split")).toBe(true);
   expect(isDiffLayout("columns")).toBe(false);
   expect(isDiffLayout(undefined)).toBe(false);
+});
+
+test("branch and per-file summary contracts preserve local branch metadata", () => {
+  const branches: GitBranchSnapshot = {
+    branches: [
+      { name: "feature/ui", current: false },
+      { name: "main", current: true },
+    ],
+    current: "main",
+  };
+  const snapshot: ProjectSnapshot = {
+    kind: "git",
+    root: "C:/repo",
+    hasHead: true,
+    currentBranch: branches.current ?? "",
+    allFiles: ["src/a.ts"],
+    workspaceChanges: new Map(),
+    sessionChanges: new Map(),
+    workspaceSummary: { files: 0, insertions: 0, deletions: 0 },
+    workspaceSummaryByPath: new Map([
+      ["src/a.ts", { insertions: 3, deletions: 1 }],
+    ]),
+    sessionSummary: { files: 0, insertions: 0, deletions: 0 },
+    truncated: false,
+  };
+
+  expect(branches.branches.find(branch => branch.current)?.name).toBe("main");
+  expect(snapshot.workspaceSummaryByPath.get("src/a.ts")).toEqual({
+    insertions: 3,
+    deletions: 1,
+  });
 });

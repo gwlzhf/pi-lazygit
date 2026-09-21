@@ -4,9 +4,11 @@ import type {
   ChangeRecord,
   CommitDiffPreview,
   FilePreview,
+  GitBranchSnapshot,
   GitLogSnapshot,
   ProjectSnapshot,
   StatusCode,
+  SwitchBranchOptions,
 } from "./contracts";
 import type { GitRepository, RepositoryInspection } from "./git/repository";
 import { BaselineStore } from "./model/baseline";
@@ -26,6 +28,7 @@ function inspection(
   root: string,
   records: readonly ChangeRecord[],
   summaryByPath: RepositoryInspection["summaryByPath"],
+  overrides: Partial<RepositoryInspection> = {},
 ): RepositoryInspection {
   const changes = new Map(records.map((record) => [record.path, record]));
   let insertions = 0;
@@ -37,10 +40,13 @@ function inspection(
   return {
     root,
     hasHead: true,
+    headIdentity: "branch:main",
+    currentBranch: "main",
     allFiles: records.map((record) => record.path),
     changes,
     summary: { files: changes.size, insertions, deletions },
     summaryByPath,
+    ...overrides,
   };
 }
 
@@ -64,9 +70,11 @@ interface FakeGit {
     signal: AbortSignal,
     contextLines?: number,
   ): Promise<CommitDiffPreview>;
+  branches(signal: AbortSignal): Promise<GitBranchSnapshot>;
+  switchBranch(name: string, options: SwitchBranchOptions): Promise<void>;
 }
 
-function unusedGitOperations(): Pick<FakeGit, "history" | "commitDiff"> {
+function unusedGitOperations(): Pick<FakeGit, "history" | "commitDiff" | "branches" | "switchBranch"> {
   return {
     async history() {
       throw new Error("Git history is not used by this test");
@@ -74,12 +82,18 @@ function unusedGitOperations(): Pick<FakeGit, "history" | "commitDiff"> {
     async commitDiff() {
       throw new Error("Git commit diffs are not used by this test");
     },
+    async branches() {
+      throw new Error("Git branches are not used by this test");
+    },
+    async switchBranch() {
+      throw new Error("Git branch switching is not used by this test");
+    },
   };
 }
 
 type FakeGitBackend = Pick<
   GitRepository,
-  "inspect" | "contentHash" | "preview" | "history" | "commitDiff"
+  "inspect" | "contentHash" | "preview" | "history" | "commitDiff" | "branches" | "switchBranch"
 >;
 
 function gitFactories(git: FakeGit, openCalls: string[]): ReviewSourceFactories {
@@ -126,6 +140,8 @@ test("Git-only operations delegate to a discovered Git backend and watch its rep
   const oid = "0123456789abcdef";
   const historyCalls: AbortSignal[] = [];
   const diffCalls: Array<{ readonly oid: string; readonly signal: AbortSignal; readonly context: number | undefined }> = [];
+  const branchCalls: AbortSignal[] = [];
+  const switchCalls: Array<{ readonly name: string; readonly signal: AbortSignal }> = [];
   const watchCalls: Array<{ readonly root: string; readonly options: unknown }> = [];
   const history = {
     entries: [{
@@ -143,7 +159,14 @@ test("Git-only operations delegate to a discovered Git backend and watch its rep
     lines: ["diff --git a/file.ts b/file.ts"],
     truncated: false,
   };
-  const git: FakeGit & Pick<GitRepository, "history" | "commitDiff"> = {
+  const branchSnapshot: GitBranchSnapshot = {
+    branches: [
+      { name: "feature/ui", current: false },
+      { name: "main", current: true },
+    ],
+    current: "main",
+  };
+  const git: FakeGit = {
     async inspect(receivedSignal) {
       receivedSignal.throwIfAborted();
       return inspection(repositoryRoot, [], new Map());
@@ -164,6 +187,13 @@ test("Git-only operations delegate to a discovered Git backend and watch its rep
       diffCalls.push({ oid: receivedOid, signal: receivedSignal, context });
       return commitPreview;
     },
+    async branches(receivedSignal) {
+      branchCalls.push(receivedSignal);
+      return branchSnapshot;
+    },
+    async switchBranch(name, options) {
+      switchCalls.push({ name, signal: options.signal });
+    },
   };
   const source = new ProjectReviewSource(
     cwd,
@@ -176,6 +206,9 @@ test("Git-only operations delegate to a discovered Git backend and watch its rep
       },
     },
   );
+  const branchSignal = new AbortController().signal;
+  expect(await source.branches({ signal: branchSignal })).toBe(branchSnapshot);
+  await source.switchBranch("feature/ui", { signal: branchSignal });
   const historySignal = new AbortController().signal;
   const previewSignal = new AbortController().signal;
   const watchOptions = {
@@ -183,6 +216,8 @@ test("Git-only operations delegate to a discovered Git backend and watch its rep
     onChange() {},
     onError() {},
   };
+  expect(branchCalls).toEqual([branchSignal]);
+  expect(switchCalls).toEqual([{ name: "feature/ui", signal: branchSignal }]);
 
   expect(await source.history({ signal: historySignal })).toBe(history);
   expect(await source.commitDiff(oid, { signal: previewSignal, diffContext: 25 })).toBe(commitPreview);
@@ -223,6 +258,8 @@ test("Git-only operations reject for a discovered filesystem backend without sta
   await source.refresh({ signal });
   await expect(source.history({ signal })).rejects.toThrow("Git repository");
   await expect(source.commitDiff("not-a-commit", { signal })).rejects.toThrow("Git repository");
+  await expect(source.branches({ signal })).rejects.toThrow("Git repository");
+  await expect(source.switchBranch("main", { signal })).rejects.toThrow("Git repository");
   await expect(source.watch({ signal, onChange() {}, onError() {} })).rejects.toThrow("Git repository");
 
   expect(discoveryCalls).toBe(1);
@@ -276,6 +313,7 @@ test("prepareSessionBaseline is reused by refresh and preview delegates to the a
   const source = createReviewSource(join(root, "."), undefined, factories);
   const snapshot = await source.refresh({ signal });
   const filePreview = await source.preview(added.path, { signal });
+  expect(snapshot.workspaceSummaryByPath).toEqual(currentInspection.summaryByPath);
 
   expect(openCalls).toEqual([root, root]);
   expect(inspectCalls).toHaveLength(2);
@@ -338,6 +376,50 @@ test("first refresh in a repository establishes one baseline before returning se
   expect(hashCalls).toEqual([dirty.path, dirty.path]);
 });
 
+test("first refresh on a feature branch captures a separate baseline from main", async () => {
+  const root = resolve("branch-specific-source-baselines");
+  const dirty = change("src/dirty.ts", "M");
+  const mainInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 2, deletions: 1 }]]),
+    { headIdentity: "branch:main", currentBranch: "main" },
+  );
+  const featureInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 8, deletions: 0 }]]),
+    { headIdentity: "branch:feature", currentBranch: "feature" },
+  );
+  let currentInspection = mainInspection;
+  const baselines = new BaselineStore();
+  const git: FakeGit = {
+    ...unusedGitOperations(),
+    async inspect(receivedSignal) {
+      receivedSignal.throwIfAborted();
+      return currentInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      return currentInspection === mainInspection ? "main-hash" : "feature-hash";
+    },
+    async preview(path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      return preview(path);
+    },
+  };
+  const source = new ProjectReviewSource(root, baselines, undefined, gitFactories(git, []));
+
+  const main = await source.refresh({ signal });
+  currentInspection = featureInspection;
+  const feature = await source.refresh({ signal });
+
+  expect(main.sessionChanges.size).toBe(0);
+  expect(feature.sessionChanges.size).toBe(0);
+  expect(baselines.get(root, "branch:main")?.headIdentity).toBe("branch:main");
+  expect(baselines.get(root, "branch:feature")?.headIdentity).toBe("branch:feature");
+});
+
 test("filesystem refresh has no Git changes or baseline and re-inspects the cached backend", async () => {
   const root = resolve("filesystem-project");
   const inspectSignals: AbortSignal[] = [];
@@ -378,6 +460,7 @@ test("filesystem refresh has no Git changes or baseline and re-inspects the cach
     workspaceChanges: new Map(),
     sessionChanges: new Map(),
     workspaceSummary: { files: 0, insertions: 0, deletions: 0 },
+    workspaceSummaryByPath: new Map(),
     sessionSummary: { files: 0, insertions: 0, deletions: 0 },
     truncated: false,
   };

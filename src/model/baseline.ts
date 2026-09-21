@@ -42,11 +42,16 @@ function absoluteProjectPath(root: string, projectPath: string): string {
   return join(resolve(root), ...projectPath.split("/"));
 }
 
+function baselineKey(root: string, headIdentity: string): string {
+  return `${canonicalRoot(root)}\0${headIdentity}`;
+}
+
 export class BaselineStore {
   readonly #baselines = new Map<string, RepositoryBaseline>();
 
   async capture(
     root: string,
+    headIdentity: string,
     changes: ReadonlyMap<string, ChangeRecord>,
     hashFile: HashFile,
     signal: AbortSignal,
@@ -69,25 +74,27 @@ export class BaselineStore {
     signal.throwIfAborted();
     const baseline: RepositoryBaseline = Object.freeze({
       root,
+      headIdentity,
       establishedAt: now,
       entries,
     });
-    this.#baselines.set(canonicalRoot(root), baseline);
+    this.#baselines.set(baselineKey(root, headIdentity), baseline);
     return baseline;
   }
 
-  get(root: string): RepositoryBaseline | undefined {
-    return this.#baselines.get(canonicalRoot(root));
+  get(root: string, headIdentity: string): RepositoryBaseline | undefined {
+    return this.#baselines.get(baselineKey(root, headIdentity));
   }
 
   async compare(
     root: string,
+    headIdentity: string,
     current: ReadonlyMap<string, ChangeRecord>,
     hashFile: HashFile,
     signal: AbortSignal,
   ): Promise<Map<string, ChangeRecord>> {
     signal.throwIfAborted();
-    const baseline = this.get(root);
+    const baseline = this.get(root, headIdentity);
     const result = new Map<string, ChangeRecord>();
 
     for (const record of current.values()) {

@@ -2,6 +2,7 @@ import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import {
   matchesKey,
   routeSgrMouseInput,
+  visibleWidth,
   type Component,
   type KeybindingsManager,
   type SgrMouseEvent,
@@ -23,6 +24,8 @@ import {
   type CommitDiffPreview,
   type DiffLayout,
   type FilePreview,
+  type GitBranch,
+  type GitBranchSnapshot,
   type GitLogEntry,
   type GitLogSnapshot,
   type ProjectSnapshot,
@@ -60,10 +63,12 @@ import {
   type SelectionPoint,
 } from "./selection";
 import {
+  fitCell,
   renderDiffLine,
   renderDiffSplitRow,
   renderHighlightedLine,
   renderNumberedLine,
+  renderSelectedRow,
   renderSingleBorder,
   renderSingleRow,
   renderSplitBorder,
@@ -71,6 +76,7 @@ import {
   sanitizeTerminalText,
   SPLIT_DIFF_MINIMUM_WIDTH,
 } from "./render";
+import { PANEL_HELP_GROUPS, panelPresentation, type PanelPresentationInput } from "./presentation";
 
 export interface FilesPanelOptions {
   readonly cwd: string;
@@ -106,7 +112,7 @@ export interface FilesPanelOptions {
 
 type PanelFocus = "tree" | "preview";
 
-type LeftMode = "files" | "log";
+type LeftMode = "files" | "log" | "branches";
 
 /**
  * How the left pane lists files: as a directory tree, or as the flat staged and
@@ -233,6 +239,17 @@ export class FilesPanel implements Component {
   #started = false;
   #disposed = false;
   #doneCalled = false;
+  #helpOpen = false;
+  #branches: GitBranchSnapshot | undefined;
+  #branchLoading = false;
+  #branchError: string | undefined;
+  #branchSelectedIndex = -1;
+  #branchOffset = 0;
+  #branchSwitching: string | undefined;
+  #branchController: AbortController | undefined;
+  #branchGeneration = 0;
+  #switchController: AbortController | undefined;
+  #switchGeneration = 0;
 
   constructor(options: FilesPanelOptions) {
     this.#cwd = options.cwd;
@@ -270,6 +287,15 @@ export class FilesPanel implements Component {
     }
     const interrupted = this.#keybindings.matches(data, "app.interrupt");
     if (interrupted || matchesKey(data, "escape")) {
+      if (this.#helpOpen) {
+        this.#helpOpen = false;
+        this.#requestRender();
+        return;
+      }
+      if (this.#leftMode === "branches") {
+        this.#leaveBranches();
+        return;
+      }
       if (this.#focus === "preview") {
         this.#focusTree();
       } else {
@@ -277,6 +303,12 @@ export class FilesPanel implements Component {
       }
       return;
     }
+    if (data === "?") {
+      this.#helpOpen = !this.#helpOpen;
+      this.#requestRender();
+      return;
+    }
+    if (this.#helpOpen) return;
     if (matchesKey(data, "f5") || matchesKey(data, "r")) {
       // Queued rather than immediate: watching can have a refresh in flight.
       this.#queueRefresh();
@@ -329,6 +361,10 @@ export class FilesPanel implements Component {
       this.#toggleLeftMode();
       return;
     }
+    if (matchesKey(data, "b")) {
+      this.#toggleBranches();
+      return;
+    }
 
     if (this.#focus === "preview") {
       this.#handlePreviewInput(data);
@@ -356,17 +392,17 @@ export class FilesPanel implements Component {
     let lines: readonly string[];
     if (terminalRows === 0) {
       lines = Object.freeze([]);
-    } else if (terminalRows <= 2) {
-      const wide = this.#isWideLayout(safeWidth);
-      const leftWidth = this.#treeWidth(safeWidth);
-      const header = wide
-        ? renderSplitBorder(this.#treeTitle(), this.#previewTitle(), safeWidth, leftWidth, "top", this.#theme)
-        : renderSingleBorder(this.#focus === "preview" ? this.#previewTitle() : this.#treeTitle(), safeWidth, "top", this.#theme);
-      lines = Object.freeze(terminalRows === 1
-        ? [header]
-        : [header, renderSingleBorder(this.#footer(), safeWidth, "bottom", this.#theme)]);
+    } else if (terminalRows === 1) {
+      lines = Object.freeze([this.#renderOverviewRow(safeWidth)]);
+    } else if (terminalRows === 2) {
+      lines = Object.freeze([
+        this.#renderOverviewRow(safeWidth),
+        renderSingleBorder(this.#footer(), safeWidth, "bottom", this.#theme),
+      ]);
+    } else if (this.#helpOpen) {
+      lines = this.#renderHelp(safeWidth, terminalRows);
     } else {
-      const contentHeight = terminalRows - 2;
+      const contentHeight = terminalRows - 3;
       lines = this.#isWideLayout(safeWidth)
         ? this.#renderWide(safeWidth, contentHeight)
         : this.#renderNarrow(safeWidth, contentHeight);
@@ -410,23 +446,41 @@ export class FilesPanel implements Component {
     this.#historyController?.abort();
     this.#commitDiffController?.abort();
     this.#watchController?.abort();
+    this.#branchController?.abort();
+    this.#switchController?.abort();
     this.#refreshController = undefined;
     this.#previewController = undefined;
     this.#historyController = undefined;
     this.#commitDiffController = undefined;
     this.#watchController = undefined;
+    this.#branchController = undefined;
+    this.#switchController = undefined;
     this.#highlighted = undefined;
     this.#diffRows = undefined;
     this.#cache = undefined;
   }
 
   #handleTreeInput(data: string): void {
+    if (this.#leftMode === "branches") {
+      if (matchesKey(data, "up") || data === "p") {
+        this.#moveBranchSelection(-1);
+        return;
+      }
+      if (matchesKey(data, "down") || data === "n") {
+        this.#moveBranchSelection(1);
+        return;
+      }
+      if (matchesKey(data, "enter")) {
+        this.#activateSelectedBranch();
+      }
+      return;
+    }
     if (this.#leftMode === "log") {
-      if (matchesKey(data, "up") || matchesKey(data, "k")) {
+      if (matchesKey(data, "up") || data === "p") {
         this.#moveLogSelection(-1);
         return;
       }
-      if (matchesKey(data, "down") || matchesKey(data, "j")) {
+      if (matchesKey(data, "down") || data === "n") {
         this.#moveLogSelection(1);
         return;
       }
@@ -474,11 +528,11 @@ export class FilesPanel implements Component {
       }
       return;
     }
-    if (matchesKey(data, "up") || matchesKey(data, "k")) {
+    if (matchesKey(data, "up") || data === "p") {
       this.#moveSelection(-1);
       return;
     }
-    if (matchesKey(data, "down") || matchesKey(data, "j")) {
+    if (matchesKey(data, "down") || data === "n") {
       this.#moveSelection(1);
       return;
     }
@@ -580,11 +634,17 @@ export class FilesPanel implements Component {
       else this.#setPreviewScroll(this.#previewScroll + event.wheel * WHEEL_STEP, this.#previewViewportHeight());
       return true;
     }
-    const point = this.#previewPoint(event, wide, treeWidth);
     if (event.leftClick) {
       this.#dividerDrag = wide && event.col === treeWidth + 1;
       this.#clearSelection();
-      if (this.#dividerDrag || point === undefined) return true;
+      if (this.#dividerDrag) return true;
+      const treeRow = this.#treeClickRow(event, wide, treeWidth);
+      if (treeRow !== undefined) {
+        this.#selectTreeRow(treeRow);
+        return true;
+      }
+      const point = this.#previewPoint(event, wide, treeWidth);
+      if (point === undefined) return true;
       // A press inside the preview both takes focus and anchors a text drag.
       this.#focusPreview();
       this.#selectionDrag = true;
@@ -592,6 +652,7 @@ export class FilesPanel implements Component {
       this.#requestRender();
       return true;
     }
+    const point = this.#previewPoint(event, wide, treeWidth);
     // Motion with the left button held (low button bits clear) is a drag.
     if (event.motion && (event.button & 3) === 0) {
       if (this.#dividerDrag && wide) {
@@ -614,10 +675,10 @@ export class FilesPanel implements Component {
    */
   #previewPoint(event: SgrMouseEvent, wide: boolean, treeWidth: number): SelectionPoint | undefined {
     const terminalRows = Math.floor(this.#tui.terminal.rows);
-    if (!Number.isFinite(terminalRows) || terminalRows <= 2) return undefined;
-    // Row 0 is the top border and the last row is the footer border.
-    const row = event.row - 1;
-    if (row < 0 || row >= terminalRows - 2) return undefined;
+    if (!Number.isFinite(terminalRows) || terminalRows <= 3) return undefined;
+    // Rows 0-1 are the overview and pane-title borders; the last row is the footer border.
+    const row = event.row - 2;
+    if (row < 0 || row >= terminalRows - 3) return undefined;
     const previewWidth = wide
       ? Math.max(0, this.#lastWidth - 3 - treeWidth)
       : Math.max(0, this.#lastWidth - 2);
@@ -629,6 +690,85 @@ export class FilesPanel implements Component {
     if (this.#focus !== "preview") return undefined;
     const col = event.col - 1;
     return col < 0 || col >= previewWidth ? undefined : { row, col };
+  }
+
+  /**
+   * Translate a mouse report into an absolute row of the active left-pane
+   * list, or `undefined` when the pointer is outside the tree/log/branches
+   * content area.
+   */
+  #treeClickRow(event: SgrMouseEvent, wide: boolean, treeWidth: number): number | undefined {
+    const terminalRows = Math.floor(this.#tui.terminal.rows);
+    if (!Number.isFinite(terminalRows) || terminalRows <= 3) return undefined;
+    const height = terminalRows - 3;
+    const row = event.row - 2;
+    if (row < 0 || row >= height) return undefined;
+    if (wide) {
+      if (event.col < 1 || event.col > treeWidth) return undefined;
+    } else if (this.#focus === "preview") {
+      return undefined;
+    }
+    this.#syncListOffset(height);
+    const offset = this.#leftMode === "branches"
+      ? this.#branchOffset
+      : this.#leftMode === "log"
+        ? this.#logOffset
+        : this.#treeOffset;
+    return offset + row;
+  }
+
+  /** Recompute the active list's viewport offset outside of a render pass. */
+  #syncListOffset(height: number): void {
+    if (this.#leftMode === "branches") {
+      if (this.#branchSelectedIndex < this.#branchOffset) this.#branchOffset = this.#branchSelectedIndex;
+      if (this.#branchSelectedIndex >= this.#branchOffset + height) this.#branchOffset = this.#branchSelectedIndex - height + 1;
+      return;
+    }
+    if (this.#leftMode === "log") {
+      if (this.#logSelectedIndex < this.#logOffset) this.#logOffset = this.#logSelectedIndex;
+      if (this.#logSelectedIndex >= this.#logOffset + height) this.#logOffset = this.#logSelectedIndex - height + 1;
+      return;
+    }
+    if (this.#selectedIndex < this.#treeOffset) this.#treeOffset = this.#selectedIndex;
+    if (this.#selectedIndex >= this.#treeOffset + height) this.#treeOffset = this.#selectedIndex - height + 1;
+  }
+
+  #selectTreeRow(rowIndex: number): void {
+    if (this.#leftMode === "branches") {
+      const branches = this.#branches?.branches;
+      if (branches === undefined || rowIndex < 0 || rowIndex >= branches.length) return;
+      this.#focus = "tree";
+      if (rowIndex === this.#branchSelectedIndex) {
+        this.#requestRender();
+        return;
+      }
+      this.#branchSelectedIndex = rowIndex;
+      this.#requestRender();
+      return;
+    }
+    if (this.#leftMode === "log") {
+      const entries = this.#history?.entries;
+      if (entries === undefined || rowIndex < 0 || rowIndex >= entries.length) return;
+      this.#focus = "tree";
+      if (rowIndex === this.#logSelectedIndex) {
+        this.#requestRender();
+        return;
+      }
+      this.#logSelectedIndex = rowIndex;
+      this.#previewScroll = 0;
+      const entry = entries[rowIndex];
+      if (entry !== undefined) this.#beginCommitDiff(entry.oid);
+      this.#requestRender();
+      return;
+    }
+    if (rowIndex < 0 || rowIndex >= this.#rows.length) return;
+    this.#focus = "tree";
+    if (rowIndex === this.#selectedIndex) {
+      this.#requestRender();
+      return;
+    }
+    this.#selectedIndex = rowIndex;
+    this.#selectionChanged();
   }
 
   #clearSelection(): void {
@@ -698,7 +838,7 @@ export class FilesPanel implements Component {
   }
 
   #previewViewportHeight(): number {
-    return Math.max(1, Math.max(3, Math.floor(this.#tui.terminal.rows)) - 2);
+    return Math.max(1, Math.max(4, Math.floor(this.#tui.terminal.rows)) - 3);
   }
 
   #queueRefresh(debounce = false): void {
@@ -943,6 +1083,152 @@ export class FilesPanel implements Component {
     this.#commitDiff = undefined;
   }
 
+  #toggleBranches(): void {
+    if (this.#leftMode === "branches") {
+      this.#leaveBranches();
+      return;
+    }
+    this.#enterBranches();
+  }
+
+  #enterBranches(): void {
+    if (this.#disposed || this.#snapshot?.kind !== "git") return;
+    this.#leftMode = "branches";
+    if (this.#treeCollapsed) this.#setTreeCollapsed(false);
+    else this.#focus = "tree";
+    this.#previewScroll = 0;
+    this.#cancelPreview();
+    this.#cancelHistory();
+    this.#cancelCommitDiff();
+    this.#beginBranches();
+    this.#requestRender();
+  }
+
+  #leaveBranches(): void {
+    this.#leftMode = "files";
+    this.#cancelBranches();
+    this.#rebuildRows(true);
+    this.#requestRender();
+  }
+
+  #beginBranches(): void {
+    if (this.#disposed || this.#leftMode !== "branches") return;
+    const generation = ++this.#branchGeneration;
+    this.#branchController?.abort();
+    const controller = new AbortController();
+    this.#branchController = controller;
+    this.#branchLoading = true;
+    this.#branchError = undefined;
+    void this.#source.branches({ signal: controller.signal }).then(
+      snapshot => {
+        if (!this.#isCurrentBranches(generation, controller)) return;
+        this.#branchController = undefined;
+        this.#branchLoading = false;
+        this.#branches = snapshot;
+        const currentIndex = snapshot.branches.findIndex(branch => branch.current);
+        this.#branchSelectedIndex = snapshot.branches.length === 0 ? -1 : Math.max(0, currentIndex);
+        this.#branchOffset = 0;
+        this.#requestRender();
+      },
+      error => {
+        if (!this.#isCurrentBranches(generation, controller) || isAbort(error, controller.signal)) return;
+        this.#branchController = undefined;
+        this.#branchLoading = false;
+        this.#branchError = errorMessage(error);
+        this.#requestRender();
+      },
+    );
+  }
+
+  #isCurrentBranches(generation: number, controller: AbortController): boolean {
+    return !this.#disposed
+      && this.#leftMode === "branches"
+      && generation === this.#branchGeneration
+      && this.#branchController === controller;
+  }
+
+  #cancelBranches(): void {
+    this.#branchGeneration += 1;
+    this.#branchController?.abort();
+    this.#branchController = undefined;
+    this.#branchLoading = false;
+  }
+
+  #moveBranchSelection(delta: number): void {
+    const branches = this.#branches?.branches;
+    if (branches === undefined || branches.length === 0) return;
+    const next = Math.max(0, Math.min(branches.length - 1, this.#branchSelectedIndex + delta));
+    if (next === this.#branchSelectedIndex) return;
+    this.#branchSelectedIndex = next;
+    this.#requestRender();
+  }
+
+  #selectedBranch(): GitBranch | undefined {
+    const branches = this.#branches?.branches;
+    return branches === undefined || this.#branchSelectedIndex < 0
+      ? undefined
+      : branches[this.#branchSelectedIndex];
+  }
+
+  #activateSelectedBranch(): void {
+    if (this.#branchSwitching !== undefined) return;
+    const selected = this.#selectedBranch();
+    if (selected === undefined || selected.current) return;
+    this.#beginSwitchBranch(selected.name);
+  }
+
+  #beginSwitchBranch(name: string): void {
+    this.#branchSwitching = name;
+    this.#branchError = undefined;
+    this.#clearSelection();
+    this.#previewGeneration += 1;
+    this.#previewController?.abort();
+    this.#previewController = undefined;
+    this.#previewLoading = false;
+    this.#historyGeneration += 1;
+    this.#historyController?.abort();
+    this.#historyController = undefined;
+    this.#historyLoading = false;
+    this.#commitDiffGeneration += 1;
+    this.#commitDiffController?.abort();
+    this.#commitDiffController = undefined;
+    this.#commitDiffLoading = false;
+    this.#refreshGeneration += 1;
+    this.#refreshController?.abort();
+    this.#refreshController = undefined;
+    this.#refreshLoading = false;
+    this.#stopWatch();
+    const generation = ++this.#switchGeneration;
+    const controller = new AbortController();
+    this.#switchController = controller;
+    this.#requestRender();
+    void this.#source.switchBranch(name, { signal: controller.signal }).then(
+      () => {
+        if (!this.#isCurrentSwitch(generation, controller)) return;
+        this.#switchController = undefined;
+        this.#branchSwitching = undefined;
+        this.#leftMode = "files";
+        this.#focus = "tree";
+        this.#treeOffset = 0;
+        this.#cancelBranches();
+        this.#beginRefresh();
+        this.#requestRender();
+      },
+      error => {
+        if (!this.#isCurrentSwitch(generation, controller) || isAbort(error, controller.signal)) return;
+        this.#switchController = undefined;
+        this.#branchSwitching = undefined;
+        this.#branchError = errorMessage(error);
+        this.#installWatch();
+        this.#requestRender();
+      },
+    );
+  }
+
+  #isCurrentSwitch(generation: number, controller: AbortController): boolean {
+    return !this.#disposed && generation === this.#switchGeneration && this.#switchController === controller;
+  }
+
   #activeChanges(): ReadonlyMap<string, ChangeRecord> {
     const project = this.#snapshot;
     if (project === undefined || project.kind === "filesystem") return EMPTY_CHANGES;
@@ -1010,6 +1296,10 @@ export class FilesPanel implements Component {
   }
 
   #moveSelection(delta: number): void {
+    if (this.#leftMode === "branches") {
+      this.#moveBranchSelection(delta);
+      return;
+    }
     if (this.#leftMode === "log") {
       this.#moveLogSelection(delta);
       return;
@@ -1210,6 +1500,7 @@ export class FilesPanel implements Component {
     const tree = this.#renderTreeRows(leftWidth, height);
     const preview = this.#renderPreviewRows(rightWidth, height);
     const result: string[] = [
+      this.#renderOverviewRow(width),
       renderSplitBorder(this.#treeTitle(), this.#previewTitle(), width, leftWidth, "top", this.#theme),
     ];
     for (let index = 0; index < height; index += 1) {
@@ -1226,6 +1517,7 @@ export class FilesPanel implements Component {
       ? this.#renderPreviewRows(bodyWidth, height)
       : this.#renderTreeRows(bodyWidth, height);
     const result: string[] = [
+      this.#renderOverviewRow(width),
       renderSingleBorder(previewFocused ? this.#previewTitle() : this.#treeTitle(), width, "top", this.#theme),
     ];
     for (let index = 0; index < height; index += 1) {
@@ -1235,14 +1527,75 @@ export class FilesPanel implements Component {
     return Object.freeze(result);
   }
 
+  #presentationInput(): PanelPresentationInput {
+    const snapshot = this.#snapshot;
+    const selectedRow = this.#leftMode === "files" ? this.#selectedRow() : undefined;
+    const selectedPath = this.#leftMode === "log"
+      ? this.#selectedLogEntry()?.shortOid
+      : this.#leftMode === "files"
+        ? (this.#previewPath ?? (selectedRow?.node.kind === "file" ? selectedRow.node.path : undefined))
+        : undefined;
+    const selectedSummary = this.#leftMode === "files" && selectedPath !== undefined && snapshot?.kind === "git"
+      ? snapshot.workspaceSummaryByPath.get(selectedPath)
+      : undefined;
+    const fileCount = snapshot === undefined
+      ? 0
+      : snapshot.kind === "filesystem"
+        ? snapshot.allFiles.length
+        : this.#scope === "workspace"
+          ? snapshot.workspaceSummary.files
+          : snapshot.sessionSummary.files;
+    const currentBranch = snapshot?.kind === "git" ? snapshot.currentBranch : undefined;
+    const detachedAt = snapshot?.kind === "git" ? snapshot.detachedAt : undefined;
+    return {
+      sourceKind: snapshot?.kind,
+      leftMode: this.#leftMode,
+      focus: this.#focus,
+      viewMode: this.#viewMode,
+      scope: this.#scope,
+      ...(currentBranch !== undefined ? { currentBranch } : {}),
+      ...(detachedAt !== undefined ? { detachedAt } : {}),
+      fileCount,
+      ...(selectedPath !== undefined ? { selectedPath } : {}),
+      ...(selectedSummary !== undefined ? { selectedSummary } : {}),
+    };
+  }
+
+  #renderOverviewRow(width: number): string {
+    const presentation = panelPresentation(this.#presentationInput());
+    const titleWidth = visibleWidth(presentation.overviewTitle);
+    const metaWidth = visibleWidth(presentation.overviewMeta);
+    const interior = Math.max(0, width - 2);
+    const gap = Math.max(1, interior - titleWidth - metaWidth);
+    const content = `${presentation.overviewTitle}${" ".repeat(gap)}${presentation.overviewMeta}`;
+    return renderSingleRow(content, width, this.#theme);
+  }
+
+  #renderHelp(width: number, terminalRows: number): readonly string[] {
+    const height = Math.max(0, terminalRows - 2);
+    const body: string[] = [];
+    for (const group of PANEL_HELP_GROUPS) {
+      body.push(group.title);
+      for (const action of group.actions) body.push(`  ${action.key}  ${action.label}`);
+    }
+    const result: string[] = [renderSingleBorder("Keyboard shortcuts", width, "top", this.#theme)];
+    for (let index = 0; index < height; index += 1) {
+      result.push(renderSingleRow(body[index] ?? "", width, this.#theme));
+    }
+    result.push(renderSingleBorder(this.#footer(), width, "bottom", this.#theme));
+    return Object.freeze(result);
+  }
+
   #treeTitle(): string {
+    if (this.#leftMode === "branches") return "Branches";
     if (this.#leftMode === "log") return "History";
-    if (this.#snapshot?.kind === "filesystem") return "Project [filesystem]";
-    const listing = this.#usesChangeList() ? "changes" : this.#viewMode;
-    return `Project [${listing} · ${this.#scope}]`;
+    // The redesign names the pane "Files"; the listing and scope detail lives in the overview
+    // header and the footer instead of the pane title.
+    return "Files";
   }
 
   #previewTitle(): string {
+    if (this.#leftMode === "branches") return "Preview";
     if (this.#leftMode === "log") {
       const entry = this.#selectedLogEntry();
       if (entry === undefined) return "Commit preview";
@@ -1266,6 +1619,7 @@ export class FilesPanel implements Component {
   }
 
   #renderTreeRows(width: number, height: number): readonly string[] {
+    if (this.#leftMode === "branches") return this.#renderBranchRows(width, height);
     if (this.#leftMode === "log") return this.#renderLogRows(width, height);
     if (this.#snapshot === undefined) {
       const message = this.#refreshError === undefined ? "Loading project files…" : `Error: ${this.#refreshError}`;
@@ -1287,7 +1641,7 @@ export class FilesPanel implements Component {
     return visible.map((row, offset) => this.#renderTreeRow(row, this.#treeOffset + offset, width));
   }
 
-  #renderLogRows(_width: number, height: number): readonly string[] {
+  #renderLogRows(width: number, height: number): readonly string[] {
     if (this.#historyLoading && this.#history === undefined) return [this.#theme.fg("accent", "Loading history…")];
     if (this.#historyError !== undefined) return [this.#theme.fg("error", `Error: ${this.#historyError}`)];
     const entries = this.#history?.entries;
@@ -1296,13 +1650,37 @@ export class FilesPanel implements Component {
     if (this.#logSelectedIndex >= this.#logOffset + height) this.#logOffset = this.#logSelectedIndex - height + 1;
     return entries
       .slice(this.#logOffset, this.#logOffset + height)
-      .map((entry, offset) => this.#renderLogRow(entry, this.#logOffset + offset));
+      .map((entry, offset) => this.#renderLogRow(entry, this.#logOffset + offset, width));
   }
 
-  #renderLogRow(entry: GitLogEntry, index: number): string {
+  #renderLogRow(entry: GitLogEntry, index: number, width: number): string {
     const selected = index === this.#logSelectedIndex;
     const raw = `${selected ? ">" : " "} ${sanitizeTerminalText(entry.shortOid).replaceAll("\n", " ")} ${sanitizeTerminalText(entry.subject).replaceAll("\n", " ")}`;
-    return this.#theme.fg(selected && this.#focus === "tree" ? "accent" : "text", raw);
+    if (selected && this.#focus === "tree") return renderSelectedRow(raw, width, this.#theme);
+    return this.#theme.fg("text", fitCell(raw, width));
+  }
+
+  #renderBranchRows(width: number, height: number): readonly string[] {
+    if (this.#branchLoading && this.#branches === undefined) return [this.#theme.fg("accent", "Loading branches…")];
+    if (this.#branchError !== undefined && this.#branches === undefined) {
+      return [this.#theme.fg("error", `Error: ${this.#branchError}`)];
+    }
+    const branches = this.#branches?.branches;
+    if (branches === undefined || branches.length === 0) return [this.#theme.fg("muted", "No local branches found")];
+    if (this.#branchSelectedIndex < this.#branchOffset) this.#branchOffset = this.#branchSelectedIndex;
+    if (this.#branchSelectedIndex >= this.#branchOffset + height) this.#branchOffset = this.#branchSelectedIndex - height + 1;
+    return branches
+      .slice(this.#branchOffset, this.#branchOffset + height)
+      .map((branch, offset) => this.#renderBranchRow(branch, this.#branchOffset + offset, width));
+  }
+
+  #renderBranchRow(branch: GitBranch, index: number, width: number): string {
+    const selected = index === this.#branchSelectedIndex;
+    const marker = branch.current ? "*" : " ";
+    const switching = this.#branchSwitching === branch.name ? " (switching…)" : "";
+    const raw = `${selected ? ">" : " "} ${marker} ${sanitizeTerminalText(branch.name).replaceAll("\n", " ")}${switching}`;
+    if (selected && this.#focus === "tree") return renderSelectedRow(raw, width, this.#theme);
+    return this.#theme.fg(branch.current ? "success" : "text", fitCell(raw, width));
   }
 
   #renderTreeRow(row: TreeRow, index: number, width: number): string {
@@ -1320,16 +1698,15 @@ export class FilesPanel implements Component {
     } else {
       raw = `${cursor} ${indent}${row.node.status ?? " "}  ${sanitizeTerminalText(row.node.name).replaceAll("\n", " ")}`;
     }
-    const color: ThemeColor = selected && this.#focus === "tree"
-      ? "accent"
-      : row.node.status === "U" || row.node.status === "D"
-        ? "error"
-        : row.node.status === "A"
-          ? "success"
-          : row.node.status === undefined
-            ? "text"
-            : "warning";
-    return this.#theme.fg(color, raw);
+    if (selected && this.#focus === "tree") return renderSelectedRow(raw, width, this.#theme);
+    const color: ThemeColor = row.node.status === "U" || row.node.status === "D"
+      ? "error"
+      : row.node.status === "A"
+        ? "success"
+        : row.node.status === undefined
+          ? "text"
+          : "warning";
+    return this.#theme.fg(color, fitCell(raw, width));
   }
 
   #renderPreviewRows(width: number, height: number): readonly string[] {
@@ -1507,20 +1884,28 @@ export class FilesPanel implements Component {
       pieces.push(`${this.#diffLayout} diff`, `ctx ${diffContextLabel(this.#diffContext)}`);
     }
 
+    if (this.#leftMode === "branches") {
+      if (this.#branchSwitching !== undefined) pieces.push(`switching to ${this.#branchSwitching}`);
+      else if (this.#branchLoading) pieces.push("loading branches");
+      else if (this.#branchError !== undefined) pieces.push(`error: ${this.#branchError}`);
+    }
+
     if (this.#copyNotice !== undefined) pieces.push(this.#copyNotice);
 
     // `[` / `]` only move a divider that the side-by-side layout draws, so the
     // hint is omitted when the panel is showing a single pane.
     const width = this.#isWideLayout(this.#lastWidth) ? "[ ] width" : undefined;
-    const hints = this.#leftMode === "log"
-      ? this.#focus === "preview"
-        ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "g files", "←/h/tab/esc list", "drag copy", width]
-        : ["F5/r reload", "↑↓ select", "→/l ↵ preview", "g files", "tab", "\\ tree", width, "esc"]
-      : this.#focus === "preview"
-        ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "\\ tree", "←/h/tab/esc tree", "drag copy", width]
-        : project?.kind === "filesystem"
-          ? ["F5/r refresh", "↑↓ move", "→/l preview", "↵ open", "tab", "\\ tree", width, "esc"]
-          : ["F5/r refresh", "↑↓ move", "→/l preview", "↵ open", "tab", "\\ tree", "g log", width, "v list", "m/a", "s", "esc"];
+    const hints = this.#leftMode === "branches"
+      ? ["n/p select", "↵ switch", "b files", "? help"]
+      : this.#leftMode === "log"
+        ? this.#focus === "preview"
+          ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "g files", "←/h/tab/esc list", "drag copy", width]
+          : ["F5/r reload", "n/p select", "→/l ↵ preview", "g files", "b branches", "tab", "\\ tree", width, "esc"]
+        : this.#focus === "preview"
+          ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "\\ tree", "←/h/tab/esc tree", "drag copy", width]
+          : project?.kind === "filesystem"
+            ? ["F5/r refresh", "n/p move", "→/l preview", "↵ open", "tab", "\\ tree", width, "esc"]
+            : ["F5/r refresh", "n/p move", "→/l preview", "↵ open", "tab", "\\ tree", "g log", "b branches", width, "v list", "m/a", "s", "esc"];
     pieces.push(hints.filter(hint => hint !== undefined).join(" · "));
     return pieces.join(" · ");
   }

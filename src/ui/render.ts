@@ -134,7 +134,10 @@ function diffColor(line: string): ThemeColor {
 export function renderDiffLine(line: string, width: number, theme: Theme): string {
   const clean = safeLine(line);
   const cell = fitCell(clean, width);
-  return theme.fg(diffColor(clean), cell);
+  const color = diffColor(clean);
+  if (color === "toolDiffAdded") return theme.fgOnBg(color, "toolSuccessBg", cell);
+  if (color === "toolDiffRemoved") return theme.fgOnBg(color, "toolErrorBg", cell);
+  return theme.fg(color, cell);
 }
 
 /** Smallest preview width that still fits two readable diff columns. */
@@ -156,7 +159,14 @@ function renderDiffCell(cell: DiffCell, width: number, theme: Theme, gutterWidth
   if (width <= numberWidth) return theme.fg("dim", fitCell(number, width));
   const marker = cell.kind === "add" ? "+" : cell.kind === "remove" ? "-" : " ";
   const body = fitCell(`${marker}${safeLine(cell.text)}`, width - numberWidth - 1);
-  return `${theme.fg("dim", `${number} `)}${theme.fg(diffCellColor(cell.kind), body)}`;
+  const color = diffCellColor(cell.kind);
+  const dimPrefix = theme.fg("dim", `${number} `);
+  const styledBody = cell.kind === "add"
+    ? theme.fgOnBg(color, "toolSuccessBg", body)
+    : cell.kind === "remove"
+      ? theme.fgOnBg(color, "toolErrorBg", body)
+      : theme.fg(color, body);
+  return `${dimPrefix}${styledBody}`;
 }
 
 /**
@@ -180,6 +190,11 @@ export function renderDiffSplitRow(
     themedBorder(theme, "│"),
     renderDiffCell(row.right, rightWidth, theme, gutterWidth),
   ].join("");
+}
+
+/** Pad trusted, single-line text to width, then paint the whole row as selected. */
+export function renderSelectedRow(text: string, width: number, theme: Theme): string {
+  return theme.fgOnBg("text", "selectedBg", fitCell(text, width));
 }
 
 export function renderNumberedLine(

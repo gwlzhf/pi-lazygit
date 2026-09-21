@@ -1,6 +1,6 @@
 # Pi Files Review
 
-Pi Files Review is a read-only Oh My Pi extension for reviewing project files and Git changes inside the current OMP terminal session. It provides a keyboard-driven project tree and a selected-file diff or content preview without replacing the editor or leaving OMP.
+Pi Files Review is an Oh My Pi extension for reviewing project files and Git changes inside the current OMP terminal session. It provides a keyboard- and mouse-driven project tree and a selected-file diff or content preview without replacing the editor or leaving OMP. Review itself is read-only; the one repository-mutating action is switching to a local branch, which is always explicit.
 
 ## Prerequisites
 
@@ -44,6 +44,8 @@ Both open the same review panel. Only one panel can be open at a time. Headless,
 
 At wide terminal widths the project tree and preview appear side by side. At narrow widths, or with the tree collapsed, the tree and preview use a single pane.
 
+The panel is framed by three chrome rows. The top row is an overview header: on the left the active review (`Diff working tree`, `Diff session`, `Project files`, `History`, or `Switch branch`), on the right the current branch — or `detached <short-oid>` — followed by the visible file count. Below it the pane-title row names the left pane and the selected file; on a diff preview the file is followed by its `+N -N` line summary, taken from the same status inspection that produces the totals, and omitted entirely when the file has no summary. The bottom row carries the status text and the compact key hints for the current mode.
+
 The panel opens as a fullscreen overlay on the terminal's alternate screen, so the OMP transcript stays intact underneath and the terminal reports mouse events to the panel. The terminal's own text selection is unavailable while the panel is open; the preview pane provides its own (see [Copying preview text](#copying-preview-text)).
 
 ## Layout
@@ -61,6 +63,10 @@ The single-pane layout has no divider to move — the visible pane spans the pan
 The width, collapsed state, syntax theme, and diff view settings are stored in `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden), so they survive panel closes and OMP restarts. Width is stored as a ratio of the panel interior. Rapid changes are coalesced into a single write; unreadable, invalid, or unwritable settings fall back to the 30% width, expanded tree, Pi syntax theme, and unified 3-line diff without interrupting the session.
 
 The mouse wheel moves the selection in the tree pane and scrolls the preview pane, following the pointer in the side-by-side layout and the focused pane in the single-pane layout.
+
+Left-clicking a visible row in the left pane focuses that pane and selects the row. In the project tree a file click starts its preview immediately, and a directory click selects it without expanding or collapsing it — expansion stays on the keyboard. History and branch rows behave the same way: a click selects only. Clicks on the overview header, the pane-title row, the footer, the padding below the last row, and the divider select nothing; divider dragging and preview text selection keep their existing meaning.
+
+Selected rows are painted across the full pane width using the active OMP theme's selection background. Diff previews mask whole rows as well: added lines use the theme's success background, removed lines its error background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. Hunk and context rows keep ordinary theme colors. No color is hardcoded, and the masks change neither the visible width nor the text that a selection copies.
 
 ## Copying preview text
 
@@ -105,14 +111,30 @@ The commit diff obeys the same `d` and `c` keys as a file diff, so layout and co
 
 History is limited to the 200 most recent commits, and the footer reports `history truncated` when more exist. The footer reports `commit preview truncated` when a commit's diff exceeds the preview limits. `F5` or `r` reloads the history, and the selected commit is preserved across a reload when it still exists. The history view is Git-only and is unavailable in filesystem fallback mode.
 
+## Switching branches
+
+Press `b` to swap the left pane for the list of local branches; press `b` again, or `Esc`, to return to the project tree without changing anything. Move the selection with `n` / `p` or `Up` / `Down`, and press `Enter` to switch to the selected branch. The current branch is marked, and `Enter` on it simply returns to the files view without running Git.
+
+**Switching a branch writes to your repository.** It is the only operation in this plugin that does. Everything else remains read-only.
+
+The switch runs the equivalent of `git switch --no-guess <branch>` as an argument vector — no shell command is built, and the name always comes from your own local refs, revalidated immediately before execution. The plugin never fetches, never stashes, never forces, and never creates, renames, or deletes a ref. Only local branches are listed: remote branches, tags, and arbitrary revisions cannot be selected.
+
+A dirty worktree is left to Git's own safety rules. If your changes carry cleanly to the target branch, Git switches and keeps them. If the switch would overwrite them, Git refuses, your files are untouched, and the sanitized error stays visible in the branch list — the plugin does not retry, stash, or resolve anything on your behalf. Clicking a branch row only selects it, so no single click can move your `HEAD`.
+
+After a successful switch the panel returns to the files view, clears selection state belonging to the old branch, refreshes under the new `HEAD`, and only then restarts the worktree watch. A failed switch keeps you in the branch list with the selection intact.
+
+Session baselines are per branch. Each branch, detached checkout, or unborn branch gets its own baseline on first visit, so switching branches is not misread as a session-sized edit, and returning to a branch restores its own comparison point. Branch listing and switching are Git-only and unavailable in filesystem fallback mode.
+
 ## Keys
+
+`?` opens a full list of every shortcut, grouped by navigation, review, layout, and mouse. It leaves the selection, preview, and branch state untouched; `?` or `Esc` closes it, and `Esc` closes the help before anything else.
 
 ### Project tree
 
 | Key | Action |
 | --- | --- |
+| `n` / `p` | Move the selection to the next/previous row |
 | `Up` / `Down` | Move the selection |
-| `j` / `k` | Move the selection down/up |
 | `Left` / `h` | Collapse a directory, or move to its parent |
 | `Right` / `l` | Expand or descend a directory; move focus to the preview from a file |
 | `Enter` | Toggle a directory, or open/focus the selected file preview |
@@ -127,9 +149,14 @@ History is limited to the 200 most recent commits, and the footer reports `histo
 | `a` | Show all visible files |
 | `s` | Toggle workspace/session scope |
 | `g` | Switch the left pane between the project tree and the commit history |
+| `b` | Switch the left pane to the local branch list |
+| `?` | Show every shortcut |
 | `F5` / `r` | Refresh Git status, change list, summary, and selected diff or code |
+| Left click | Focus the tree and select the clicked row |
 | `Esc` | Close the panel from the tree |
 | configured OMP `app.interrupt` key | Close the panel from the tree |
+
+`j` and `k` no longer move the tree selection; they scroll the preview. Use `n` / `p` or `Up` / `Down` here.
 
 ### Preview
 
@@ -146,6 +173,8 @@ History is limited to the 200 most recent commits, and the footer reports `histo
 | `d` | Switch the diff preview between unified and split columns |
 | `c` | Cycle the diff context: 3, 10, 25, full file |
 | `g` | Switch the left pane between the project tree and the commit history |
+| `b` | Switch the left pane to the local branch list |
+| `?` | Show every shortcut |
 | `F5` / `r` | Refresh Git status, change list, summary, and selected diff or code |
 | `Left` or `h` | Return focus to the project tree |
 | Left-button drag | Select preview text; release copies it |
@@ -162,12 +191,28 @@ Replaces the project tree keys while the history is shown (`g`).
 
 | Key | Action |
 | --- | --- |
+| `n` / `p` | Move the commit selection to the next/previous row |
 | `Up` / `Down` | Move the commit selection |
-| `j` / `k` | Move the commit selection down/up |
 | `Enter` or `Right` / `l` | Focus the commit diff preview |
 | `g` | Return to the project tree |
+| `b` | Switch the left pane to the local branch list |
+| `?` | Show every shortcut |
 | `F5` / `r` | Reload the commit history |
+| Left click | Select the clicked commit |
 | `Esc` | Close the panel |
+
+### Branches
+
+Replaces the project tree keys while the branch list is shown (`b`).
+
+| Key | Action |
+| --- | --- |
+| `n` / `p` | Move the branch selection to the next/previous row |
+| `Up` / `Down` | Move the branch selection |
+| `Enter` | Switch to the selected branch; a no-op on the current branch |
+| `b` / `Esc` | Return to the project tree without switching |
+| `?` | Show every shortcut |
+| Left click | Select the clicked branch; it never switches |
 
 ## Review modes and scopes
 
@@ -202,4 +247,4 @@ The panel displays a truncation state when a limit is reached. Git all-files mod
 
 ## Scope and safety
 
-Pi Files Review is intentionally read-only. It does not edit files, stage changes, apply or revert hunks, commit, branch, or otherwise mutate the repository. It also does not claim that an Agent produced every change shown in session scope.
+Pi Files Review is read-only except for one explicit action: switching to a local branch with `Enter` in the branch list (see [Switching branches](#switching-branches)). It does not edit files, stage changes, apply or revert hunks, commit, fetch, stash, force, or create, rename, or delete any ref. It also does not claim that an Agent produced every change shown in session scope.

@@ -5,10 +5,12 @@ import { visibleWidth } from "@oh-my-pi/pi-tui";
 import type {
   ChangeRecord,
   FilePreview,
+  GitBranchSnapshot,
   PreviewOptions,
   ProjectSnapshot,
   ReviewSource,
   StatusCode,
+  SwitchBranchOptions,
 } from "../contracts";
 import { FilesPanel, type FilesPanelOptions } from "./files-panel";
 import type { HighlightThemeName } from "./highlight";
@@ -59,8 +61,6 @@ interface WatchCall {
   readonly onChange: () => void;
   readonly onError: (error: unknown) => void;
 }
-
-
 class ControlledSource implements ReviewSource {
   readonly refreshCalls: Pending<ProjectSnapshot>[] = [];
   readonly previewCalls: (Pending<FilePreview> & {
@@ -72,6 +72,8 @@ class ControlledSource implements ReviewSource {
     readonly oid: string;
     readonly diffContext: number | undefined;
   })[] = [];
+  readonly branchesCalls: Pending<GitBranchSnapshot>[] = [];
+  readonly switchBranchCalls: (Pending<void> & { readonly name: string })[] = [];
   readonly watchCalls: WatchCall[] = [];
 
 
@@ -108,6 +110,17 @@ class ControlledSource implements ReviewSource {
     });
     return value.promise;
   }
+  branches({ signal }: { readonly signal: AbortSignal }): Promise<GitBranchSnapshot> {
+    const value = deferred<GitBranchSnapshot>();
+    this.branchesCalls.push({ signal, value });
+    return value.promise;
+  }
+
+  switchBranch(name: string, options: SwitchBranchOptions): Promise<void> {
+    const value = deferred<void>();
+    this.switchBranchCalls.push({ name, signal: options.signal, value });
+    return value.promise;
+  }
 
   watch(options: WatchCall): Promise<void> {
     this.watchCalls.push(options);
@@ -124,6 +137,7 @@ function snapshot(overrides: Partial<ProjectSnapshot> = {}): ProjectSnapshot {
     kind: "git",
     root: "C:/repo",
     hasHead: true,
+    currentBranch: "main",
     allFiles: ["src/a.ts", "src/b.ts", "README.md"],
     workspaceChanges: new Map([
       ["src/a.ts", change("src/a.ts", "M")],
@@ -131,6 +145,10 @@ function snapshot(overrides: Partial<ProjectSnapshot> = {}): ProjectSnapshot {
     ]),
     sessionChanges: new Map([["src/b.ts", change("src/b.ts", "A")]]),
     workspaceSummary: { files: 2, insertions: 3, deletions: 1 },
+    workspaceSummaryByPath: new Map([
+      ["src/a.ts", { insertions: 2, deletions: 1 }],
+      ["src/b.ts", { insertions: 1, deletions: 0 }],
+    ]),
     sessionSummary: { files: 1, insertions: 1, deletions: 0 },
     truncated: false,
     ...overrides,
@@ -146,9 +164,18 @@ function preview(
   return { path, kind, lines, truncated: false, ...overrides };
 }
 
-function plainTheme(): Theme {
+function plainTheme(calls: string[] = []): Theme {
   return {
-    fg(_color: ThemeColor, text: string): string {
+    fg(color: ThemeColor, text: string): string {
+      calls.push(color);
+      return text;
+    },
+    bg(background: string, text: string): string {
+      calls.push(`/${background}`);
+      return text;
+    },
+    fgOnBg(color: ThemeColor, background: string, text: string): string {
+      calls.push(`${color}/${background}`);
       return text;
     },
     bold(text: string): string {
@@ -235,7 +262,8 @@ describe("FilesPanel state machine", () => {
     await settle();
 
     const initial = panel.render(60);
-    expect(initial[0]).toBe(`┌─ Project [modified · workspace] ${"─".repeat(25)}┐`);
+    expect(initial[0]).toContain("Diff working tree");
+    expect(initial[1]).toContain("Files");
     expect(initial.join("\n")).toContain("M  a.ts");
     expect(initial.join("\n")).toContain("A  b.ts");
     expect(initial.join("\n")).not.toContain("README.md");
@@ -245,14 +273,14 @@ describe("FilesPanel state machine", () => {
 
     panel.handleInput("s");
     const allSession = panel.render(60).join("\n");
-    expect(allSession).toContain("Project [all · session]");
+    expect(allSession).toContain("Diff session");
     expect(allSession).toContain("   a.ts");
     expect(allSession).toContain("A  b.ts");
     expect(allSession).toContain("README.md");
 
     panel.handleInput("m");
     const modifiedSession = panel.render(60).join("\n");
-    expect(modifiedSession).toContain("Project [modified · session]");
+    expect(modifiedSession).toContain("Diff session");
     expect(modifiedSession).not.toContain("a.ts");
     expect(modifiedSession).toContain("b.ts");
   });
@@ -270,7 +298,10 @@ describe("FilesPanel state machine", () => {
 
     panel.handleInput("v");
     const list = panel.render(60);
-    expect(list[0]).toContain("Project [changes · workspace]");
+    // The redesign moved the listing and scope detail out of the pane title: the overview row
+    // names the review and the footer reports "changes · workspace".
+    expect(list[1]).toContain("Files");
+    expect(list.at(-1)).toContain("changes · workspace");
     const body = list.join("\n");
     expect(body).toContain("── Modified files ─");
     expect(body).toContain("M  src/a.ts");
@@ -280,9 +311,9 @@ describe("FilesPanel state machine", () => {
 
     // The cursor starts on the first file and steps over the dividers.
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
-    panel.handleInput("j");
+    panel.handleInput("n");
     expect(source.previewCalls.at(-1)?.path).toBe("notes.txt");
-    panel.handleInput("k");
+    panel.handleInput("p");
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
 
     panel.handleInput("v");
@@ -300,6 +331,7 @@ describe("FilesPanel state machine", () => {
       workspaceChanges: new Map(),
       sessionChanges: new Map(),
       workspaceSummary: { files: 0, insertions: 0, deletions: 0 },
+      workspaceSummaryByPath: new Map(),
       sessionSummary: { files: 0, insertions: 0, deletions: 0 },
     }));
     await settle();
@@ -310,7 +342,7 @@ describe("FilesPanel state machine", () => {
     panel.handleInput("v");
     expect(panel.render(60)).toBe(rendered);
     expect(tui.renderRequests).toBe(requests);
-    expect(rendered[0]).toContain("Project [filesystem]");
+    expect(rendered[0]).toContain("Project files");
     expect(rendered.join("\n")).toContain("README.md");
   });
 
@@ -326,9 +358,13 @@ describe("FilesPanel state machine", () => {
     panel.handleInput("\x1b[B");
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
     panel.handleInput("j");
+    expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
+    panel.handleInput("n");
     expect(source.previewCalls.at(-1)?.path).toBe("src/b.ts");
     expect(source.previewCalls.at(-2)?.signal.aborted).toBe(true);
     panel.handleInput("k");
+    expect(source.previewCalls.at(-1)?.path).toBe("src/b.ts");
+    panel.handleInput("p");
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
     panel.handleInput("\x1b[A");
     expect(panel.render(60).join("\n")).toContain("> ▼ src/");
@@ -344,26 +380,25 @@ describe("FilesPanel state machine", () => {
     await settle();
     panel.handleInput("\r");
     expect(panel.render(60)).toEqual([
+      `│Diff working tree${" ".repeat(27)}main · 2 files│`,
       `┌─ File: src/a.ts ${"─".repeat(41)}┐`,
       `│${" 1 line 1".padEnd(58)}│`,
       `│${" 2 line 2".padEnd(58)}│`,
-      `│${" 3 line 3".padEnd(58)}│`,
       "└─ demo · modified · workspace · +3 -1 · 2 files · F5/r ref┘",
     ]);
     panel.handleInput("\x1b[F");
     panel.handleInput("\x1b[B");
-    expect(panel.render(60).slice(1, 4)).toEqual([
-      `│${" 8 line 8".padEnd(58)}│`,
+    expect(panel.render(60).slice(2, 4)).toEqual([
       `│${" 9 line 9".padEnd(58)}│`,
       `│${"10 line 10".padEnd(58)}│`,
     ]);
     panel.handleInput("\x1b[H");
     panel.handleInput("\x1b[A");
-    expect(panel.render(60)[1]).toBe(`│${" 1 line 1".padEnd(58)}│`);
+    expect(panel.render(60)[2]).toBe(`│${" 1 line 1".padEnd(58)}│`);
     panel.handleInput("\x1b[6~");
-    expect(panel.render(60)[1]).toBe(`│${" 4 line 4".padEnd(58)}│`);
+    expect(panel.render(60)[2]).toBe(`│${" 3 line 3".padEnd(58)}│`);
     panel.handleInput("\x1b[5~");
-    expect(panel.render(60)[1]).toBe(`│${" 1 line 1".padEnd(58)}│`);
+    expect(panel.render(60)[2]).toBe(`│${" 1 line 1".padEnd(58)}│`);
   });
 
   test("Esc returns to tree before closing and done is idempotent", async () => {
@@ -374,7 +409,7 @@ describe("FilesPanel state machine", () => {
     panel.handleInput("\x1b[B");
     panel.handleInput("\r");
     panel.handleInput("\x1b");
-    expect(panel.render(60)[0]).toContain("Project");
+    expect(panel.render(60)[1]).toContain("Files");
     expect(doneResults).toHaveLength(0);
     panel.handleInput("\x03");
     panel.handleInput("\x1b");
@@ -397,7 +432,7 @@ describe("FilesPanel state machine", () => {
   });
 
   test("F5 refreshes the change list and selected code from the preview", async () => {
-    const { panel, source } = harness(100, 6);
+    const { panel, source } = harness(100, 7);
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
@@ -635,6 +670,33 @@ describe("FilesPanel state machine", () => {
     expect(rendered).toContain("+second commit diff");
     expect(rendered).not.toContain("first commit diff");
   });
+
+  test("history uses n/p for primary movement while j/k remain inert", async () => {
+    const { panel, source } = harness(100, 7);
+    const entries: GitLogEntry[] = [
+      { oid: "a".repeat(40), shortOid: "aaaaaaaa", subject: "first", author: "Ada", authoredAt: 1 },
+      { oid: "b".repeat(40), shortOid: "bbbbbbbb", subject: "second", author: "Ada", authoredAt: 2 },
+    ];
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("g");
+    source.historyCalls[0]?.value.resolve({ entries, truncated: false });
+    await settle();
+    expect(source.commitDiffCalls.map(call => call.oid)).toEqual([entries[0]!.oid]);
+
+    panel.handleInput("j");
+    panel.handleInput("k");
+    expect(source.commitDiffCalls.map(call => call.oid)).toEqual([entries[0]!.oid]);
+    panel.handleInput("n");
+    expect(source.commitDiffCalls.map(call => call.oid)).toEqual([entries[0]!.oid, entries[1]!.oid]);
+    panel.handleInput("p");
+    expect(source.commitDiffCalls.map(call => call.oid)).toEqual([
+      entries[0]!.oid,
+      entries[1]!.oid,
+      entries[0]!.oid,
+    ]);
+  });
   test("dispose aborts watcher, refresh, history, preview, and commit-diff work idempotently", async () => {
     const refreshing = harness();
     refreshing.panel.start();
@@ -690,9 +752,120 @@ describe("FilesPanel state machine", () => {
   });
 });
 
+describe("FilesPanel branches, help, and primary movement", () => {
+  const branchList: GitBranchSnapshot = {
+    branches: [
+      { name: "main", current: true },
+      { name: "feature/ui", current: false },
+    ],
+    current: "main",
+  };
+
+  test("b loads branches, current Enter is a no-op, and another branch switches once", async () => {
+    const { panel, source } = harness(80, 7);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    panel.handleInput("b");
+    expect(source.branchesCalls).toHaveLength(1);
+    source.branchesCalls[0]?.value.resolve(branchList);
+    await settle();
+    expect(panel.render(80).join("\n")).toContain("main");
+    expect(panel.render(80).join("\n")).toContain("feature/ui");
+
+    panel.handleInput("\r");
+    expect(source.switchBranchCalls).toHaveLength(0);
+    panel.handleInput("n");
+    panel.handleInput("j");
+    panel.handleInput("k");
+    panel.handleInput("\r");
+    expect(source.switchBranchCalls).toHaveLength(1);
+    expect(source.switchBranchCalls[0]?.name).toBe("feature/ui");
+    panel.handleInput("\r");
+    expect(source.switchBranchCalls).toHaveLength(1);
+  });
+
+  test("failed branch switches stay in Branches with sanitized error and watcher recovery", async () => {
+    const { panel, source } = harness(140, 7);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("b");
+    source.branchesCalls[0]?.value.resolve(branchList);
+    await settle();
+    panel.handleInput("n");
+    panel.handleInput("\r");
+    source.switchBranchCalls[0]?.value.reject(new Error("\x1b[31mwould overwrite local changes\x1b[0m"));
+    await settle();
+
+    const rendered = panel.render(140).join("\n");
+    expect(rendered).toContain(">   feature/ui");
+    expect(rendered).toContain("Branches");
+    expect(rendered).toContain("would overwrite local changes");
+    expect(rendered).not.toContain("\x1b[31m");
+    expect(source.watchCalls).toHaveLength(2);
+  });
+
+  test("successful branch switches return to Files and restart watch after refresh", async () => {
+    const { panel, source } = harness(80, 7);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("b");
+    source.branchesCalls[0]?.value.resolve(branchList);
+    await settle();
+    panel.handleInput("n");
+    panel.handleInput("\r");
+    source.switchBranchCalls[0]?.value.resolve(undefined);
+    await settle();
+
+    expect(source.refreshCalls).toHaveLength(2);
+    source.refreshCalls[1]?.value.resolve(snapshot({ currentBranch: "feature/ui" }));
+    await settle();
+    expect(panel.render(80).join("\n")).toContain("Files");
+    expect(source.watchCalls).toHaveLength(2);
+  });
+
+  test("clicking a branch selects it without switching", async () => {
+    const { panel, source } = harness(80, 7);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("b");
+    source.branchesCalls[0]?.value.resolve(branchList);
+    await settle();
+    panel.render(80);
+
+    panel.handleInput("\x1b[<0;5;4M");
+
+    expect(source.switchBranchCalls).toHaveLength(0);
+    expect(panel.render(80).join("\n")).toContain(">   feature/ui");
+  });
+
+  test("? preserves the underlying preview state and Esc closes help first", async () => {
+    const { panel, source, doneResults } = harness(80, 7);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("n");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["preview"]));
+    await settle();
+    panel.handleInput("\r");
+    panel.handleInput("?");
+    expect(panel.render(80).join("\n")).toContain("Keyboard");
+    panel.handleInput("\x1b");
+    expect(doneResults).toHaveLength(0);
+    expect(panel.render(80)[1]).toContain("File: src/a.ts");
+    panel.handleInput("\x1b");
+    expect(doneResults).toHaveLength(0);
+    expect(panel.render(80)[1]).toContain("Files");
+  });
+});
+
 /** Column index of the wide-layout divider, or -1 when the row has none. */
 function dividerColumn(lines: readonly string[]): number {
-  return (lines[1] ?? "").indexOf("│", 1);
+  return (lines[2] ?? "").indexOf("│", 1);
 }
 
 describe("FilesPanel focus and tree width", () => {
@@ -706,13 +879,13 @@ describe("FilesPanel focus and tree width", () => {
     await settle();
 
     panel.handleInput("\t");
-    expect(panel.render(60)[0]).toContain("File: src/a.ts");
+    expect(panel.render(60)[1]).toContain("File: src/a.ts");
     panel.handleInput("\x1b[Z");
-    expect(panel.render(60)[0]).toContain("Project [modified · workspace]");
+    expect(panel.render(60)[1]).toContain("Files");
     panel.handleInput("\x1b[Z");
-    expect(panel.render(60)[0]).toContain("File: src/a.ts");
+    expect(panel.render(60)[1]).toContain("File: src/a.ts");
     panel.handleInput("\t");
-    expect(panel.render(60)[0]).toContain("Project [modified · workspace]");
+    expect(panel.render(60)[1]).toContain("Files");
   });
 
   test("[ and ] resize the tree pane between the minimum and the 30% cap", async () => {
@@ -837,9 +1010,9 @@ describe("FilesPanel focus and tree width", () => {
     expect(panel.render(100).join("\n")).toContain(">   A  b.ts");
 
     panel.handleInput("\x1b[<65;60;3M");
-    expect(panel.render(100)[1]).toContain(" 4 line 4");
+    expect(panel.render(100)[2]).toContain(" 4 line 4");
     panel.handleInput("\x1b[<64;60;3M");
-    expect(panel.render(100)[1]).toContain(" 1 line 1");
+    expect(panel.render(100)[2]).toContain(" 1 line 1");
 
     panel.handleInput("\x1b[<64;5;3M");
     expect(panel.render(100).join("\n")).toContain("> ▼ src/");
@@ -893,20 +1066,20 @@ describe("FilesPanel focus and tree width", () => {
     expect(panel.render(60).join("\n")).not.toContain("a.ts");
     panel.handleInput("\x1b[C");
     expect(panel.render(60).join("\n")).toContain("M  a.ts");
-    expect(panel.render(60)[0]).toContain("Project [modified · workspace]");
+    expect(panel.render(60)[1]).toContain("Files");
 
     panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["alpha"]));
     await settle();
     panel.handleInput("\x1b[C");
-    expect(panel.render(60)[0]).toContain("File: src/a.ts");
+    expect(panel.render(60)[1]).toContain("File: src/a.ts");
 
     panel.handleInput("\x1b[D");
-    expect(panel.render(60)[0]).toContain("Project [modified · workspace]");
+    expect(panel.render(60)[1]).toContain("Files");
     panel.handleInput("l");
-    expect(panel.render(60)[0]).toContain("File: src/a.ts");
+    expect(panel.render(60)[1]).toContain("File: src/a.ts");
     panel.handleInput("h");
-    expect(panel.render(60)[0]).toContain("Project [modified · workspace]");
+    expect(panel.render(60)[1]).toContain("Files");
   });
 });
 
@@ -925,16 +1098,17 @@ describe("FilesPanel preview selection", () => {
   }
 
   // The preview pane of a 100-column panel starts at 0-based column 31, so an
-  // SGR column field of 32 is its first column; row field 2 is its first row.
+  // SGR column field of 32 is its first column; row field 3 is its first row
+  // (rows 1-2 are the overview and pane-title borders).
   test("dragging over the preview copies the selected text with OSC 52", async () => {
     const { panel, tui } = await previewHarness(["alpha", "bravo"]);
 
-    panel.handleInput("\x1b[<0;34;2M");
-    panel.handleInput("\x1b[<32;38;2M");
-    expect(panel.render(100)[1]).toContain("1 \x1b[7malpha\x1b[27m");
+    panel.handleInput("\x1b[<0;34;3M");
+    panel.handleInput("\x1b[<32;38;3M");
+    expect(panel.render(100)[2]).toContain("1 \x1b[7malpha\x1b[27m");
     expect(tui.writes).toEqual([]);
 
-    panel.handleInput("\x1b[<0;38;2m");
+    panel.handleInput("\x1b[<0;38;3m");
     expect(tui.writes).toEqual([`\x1b]52;c;${Buffer.from("alpha", "utf8").toString("base64")}\x07`]);
     expect(panel.render(100).at(-1)).toContain("copied 1 line");
   });
@@ -942,9 +1116,9 @@ describe("FilesPanel preview selection", () => {
   test("a drag across rows copies every selected row", async () => {
     const { panel, tui } = await previewHarness(["alpha", "bravo"]);
 
-    panel.handleInput("\x1b[<0;34;2M");
-    panel.handleInput("\x1b[<32;38;3M");
-    panel.handleInput("\x1b[<0;38;3m");
+    panel.handleInput("\x1b[<0;34;3M");
+    panel.handleInput("\x1b[<32;38;4M");
+    panel.handleInput("\x1b[<0;38;4m");
     expect(tui.writes).toEqual([
       `\x1b]52;c;${Buffer.from("alpha\n2 bravo", "utf8").toString("base64")}\x07`,
     ]);
@@ -956,13 +1130,13 @@ describe("FilesPanel preview selection", () => {
       Array.from({ length: 10 }, (_, index) => `line ${index + 1}`),
     );
 
-    panel.handleInput("\x1b[<0;34;2M");
-    panel.handleInput("\x1b[<0;34;2m");
+    panel.handleInput("\x1b[<0;34;3M");
+    panel.handleInput("\x1b[<0;34;3m");
     expect(tui.writes).toEqual([]);
     // Focus moved with the press, so Down scrolls the preview instead of
     // moving the tree selection.
     panel.handleInput("\x1b[B");
-    expect(panel.render(100)[1]).toContain(" 2 line 2");
+    expect(panel.render(100)[2]).toContain(" 2 line 2");
   });
 
   test("scrolling retires the selection and its footer notice", async () => {
@@ -970,12 +1144,12 @@ describe("FilesPanel preview selection", () => {
       Array.from({ length: 10 }, (_, index) => `line ${index + 1}`),
     );
 
-    panel.handleInput("\x1b[<0;34;2M");
-    panel.handleInput("\x1b[<32;38;2M");
-    panel.handleInput("\x1b[<0;38;2m");
+    panel.handleInput("\x1b[<0;34;3M");
+    panel.handleInput("\x1b[<32;38;3M");
+    panel.handleInput("\x1b[<0;38;3m");
     expect(panel.render(100).at(-1)).toContain("copied 1 line");
 
-    panel.handleInput("\x1b[<65;60;3M");
+    panel.handleInput("\x1b[<65;60;4M");
     const scrolled = panel.render(100);
     expect(scrolled.at(-1)).not.toContain("copied");
     expect(scrolled.join("\n")).not.toContain("\x1b[7m");
@@ -1011,8 +1185,8 @@ describe("FilesPanel syntax highlighting", () => {
 
     const rendered = panel.render(60);
     expect(calls).toEqual([["const x = 1;\nexport {};", "src/a.ts", "pi", piTheme]]);
-    expect(rendered[1]).toBe(`│1 \x1b[35mconst x = 1;\x1b[39m${" ".repeat(44)}\x1b[0m│`);
-    expect(rendered[2]).toBe(`│2 \x1b[35mexport {};\x1b[39m${" ".repeat(46)}\x1b[0m│`);
+    expect(rendered[2]).toBe(`│1 \x1b[35mconst x = 1;\x1b[39m${" ".repeat(44)}\x1b[0m│`);
+    expect(rendered[3]).toBe(`│2 \x1b[35mexport {};\x1b[39m${" ".repeat(46)}\x1b[0m│`);
     expectWidthSafe(rendered, 60);
 
     // Highlighting a preview is memoized, not repeated per render.
@@ -1038,7 +1212,7 @@ describe("FilesPanel syntax highlighting", () => {
       },
     );
     const lines = Array.from({ length: 100 }, (_, index) => `line ${index + 1}`);
-    const { panel, source } = harness(60, 6, { highlight });
+    const { panel, source } = harness(60, 7, { highlight });
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
@@ -1123,14 +1297,14 @@ describe("FilesPanel syntax highlighting", () => {
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["alpha", "beta"]));
     await settle();
     panel.handleInput("\r");
-    expect(panel.render(60)[1]).toBe(`│${"1 alpha".padEnd(58)}│`);
+    expect(panel.render(60)[2]).toBe(`│${"1 alpha".padEnd(58)}│`);
 
     panel.handleInput("\x1b");
     panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/b.ts", "diff", ["+added"]));
     await settle();
     panel.handleInput("\r");
-    expect(panel.render(60)[1]).toBe(`│${"+added".padEnd(58)}│`);
+    expect(panel.render(60)[2]).toBe(`│${"+added".padEnd(58)}│`);
   });
 
   test("sanitizes preview content before it reaches the highlighter", async () => {
@@ -1157,7 +1331,7 @@ describe("FilesPanel syntax highlighting", () => {
 
 describe("FilesPanel deterministic rendering", () => {
   test("renders exact wide, narrow tree, and narrow preview arrays", async () => {
-    const wide = harness(100, 6);
+    const wide = harness(100, 7);
     wide.panel.start();
     wide.source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
@@ -1165,22 +1339,24 @@ describe("FilesPanel deterministic rendering", () => {
     wide.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "diff", ["diff --git a/src/a.ts b/src/a.ts", "@@ -1 +1 @@", "-old", "+new"]));
     await settle();
     const wideLines = wide.panel.render(100);
-    expect(wideLines).toEqual([
-      `┌─ Project [modified · workspa┬─ Diff: src/a.ts ${"─".repeat(51)}┐`,
+    expect(wideLines[0]).toContain("Diff working tree");
+    expect(wideLines.slice(1)).toEqual([
+      `┌─ Files ─────────────────────┬─ Diff: src/a.ts ${"─".repeat(51)}┐`,
       `│${"  ▼ src/".padEnd(29)}│${"diff --git a/src/a.ts b/src/a.ts".padEnd(68)}│`,
       `│${">   M  a.ts".padEnd(29)}│${"@@ -1 +1 @@".padEnd(68)}│`,
       `│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`,
       `│${"".padEnd(29)}│${"+new".padEnd(68)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · unified diff · ctx 3 · F5/r refresh · ↑↓ move · ┘",
+      "└─ demo · modified · workspace · +3 -1 · 2 files · unified diff · ctx 3 · F5/r refresh · n/p move ·┘",
     ]);
 
-    const narrow = harness(60, 6);
+    const narrow = harness(60, 7);
     narrow.panel.start();
     narrow.source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
     const tree = narrow.panel.render(60);
-    expect(tree).toEqual([
-      `┌─ Project [modified · workspace] ${"─".repeat(25)}┐`,
+    expect(tree[0]).toContain("Diff working tree");
+    expect(tree.slice(1)).toEqual([
+      `┌─ Files ${"─".repeat(50)}┐`,
       `│${"> ▼ src/".padEnd(58)}│`,
       `│${"    M  a.ts".padEnd(58)}│`,
       `│${"    A  b.ts".padEnd(58)}│`,
@@ -1192,7 +1368,8 @@ describe("FilesPanel deterministic rendering", () => {
     await settle();
     narrow.panel.handleInput("\r");
     const file = narrow.panel.render(60);
-    expect(file).toEqual([
+    expect(file[0]).toContain("Diff working tree");
+    expect(file.slice(1)).toEqual([
       `┌─ File: src/a.ts ${"─".repeat(41)}┐`,
       `│${"1 alpha".padEnd(58)}│`,
       `│2 猫${" ".repeat(54)}│`,
@@ -1207,25 +1384,28 @@ describe("FilesPanel deterministic rendering", () => {
   });
 
   test("renders exact loading, empty, binary, truncated, and error states", async () => {
-    const value = harness(60, 4);
+    const value = harness(60, 5);
     value.panel.start();
     const loading = value.panel.render(60);
-    expect(loading).toEqual([
-      `┌─ Project [modified · workspace] ${"─".repeat(25)}┐`,
+    expect(loading[0]).toContain("Diff working tree");
+    expect(loading.slice(1)).toEqual([
+      `┌─ Files ${"─".repeat(50)}┐`,
       `│${"Loading project files…".padEnd(58)}│`,
       `│${"".padEnd(58)}│`,
       "└─ demo · modified · workspace · +0 -0 · 0 files · refreshi┘",
     ]);
     value.source.refreshCalls[0]?.value.resolve(snapshot({ allFiles: [], workspaceChanges: new Map(), sessionChanges: new Map(), workspaceSummary: { files: 0, insertions: 0, deletions: 0 }, sessionSummary: { files: 0, insertions: 0, deletions: 0 } }));
     await settle();
-    expect(value.panel.render(60)).toEqual([
-      `┌─ Project [modified · workspace] ${"─".repeat(25)}┐`,
+    const empty = value.panel.render(60);
+    expect(empty[0]).toContain("Diff working tree");
+    expect(empty.slice(1)).toEqual([
+      `┌─ Files ${"─".repeat(50)}┐`,
       `│${"No workspace changes — press a for all files".padEnd(58)}│`,
       `│${"".padEnd(58)}│`,
       "└─ demo · modified · workspace · +0 -0 · 0 files · F5/r ref┘",
     ]);
 
-    const special = harness(60, 5);
+    const special = harness(60, 6);
     special.panel.start();
     special.source.refreshCalls[0]?.value.resolve(snapshot({ truncated: true }));
     await settle();
@@ -1234,7 +1414,8 @@ describe("FilesPanel deterministic rendering", () => {
     await settle();
     special.panel.handleInput("\r");
     const binary = special.panel.render(60);
-    expect(binary).toEqual([
+    expect(binary[0]).toContain("Diff working tree");
+    expect(binary.slice(1)).toEqual([
       `┌─ Binary: src/a.ts ${"─".repeat(39)}┐`,
       `│${"Binary file".padEnd(58)}│`,
       `│${"2,048 bytes".padEnd(58)}│`,
@@ -1247,7 +1428,8 @@ describe("FilesPanel deterministic rendering", () => {
     await settle();
     special.panel.handleInput("\r");
     const truncated = special.panel.render(60);
-    expect(truncated).toEqual([
+    expect(truncated[0]).toContain("Diff working tree");
+    expect(truncated.slice(1)).toEqual([
       `┌─ File: src/b.ts ${"─".repeat(41)}┐`,
       `│${"1 partial".padEnd(58)}│`,
       `│${"".padEnd(58)}│`,
@@ -1260,8 +1442,8 @@ describe("FilesPanel deterministic rendering", () => {
     await settle();
     special.panel.handleInput("\r");
     const error = special.panel.render(60);
-    expect(error[0]).toBe(`┌─ Error: src/a.ts ${"─".repeat(40)}┐`);
-    expect(error[1]).toBe(`│${"Error: permission denied".padEnd(58)}│`);
+    expect(error[1]).toBe(`┌─ Error: src/a.ts ${"─".repeat(40)}┐`);
+    expect(error[2]).toBe(`│${"Error: permission denied".padEnd(58)}│`);
     expect(error.join("\n")).not.toContain("\x1b[2J");
     for (const lines of [loading, binary, truncated, error]) expectWidthSafe(lines, 60);
   });
@@ -1273,15 +1455,12 @@ describe("FilesPanel deterministic rendering", () => {
     expect(panel.render(60)).toEqual([]);
     tui.setRows(1);
     const oneRow = panel.render(60);
-    expect(oneRow).toEqual([
-      `┌─ Project [modified · workspace] ${"─".repeat(25)}┐`,
-    ]);
+    expect(oneRow).toHaveLength(1);
+    expect(oneRow[0]).toContain("Diff working tree");
     tui.setRows(2);
     const twoRows = panel.render(60);
-    expect(twoRows).toEqual([
-      `┌─ Project [modified · workspace] ${"─".repeat(25)}┐`,
-      "└─ demo · modified · workspace · +0 -0 · 0 files · refreshi┘",
-    ]);
+    expect(twoRows[0]).toContain("Diff working tree");
+    expect(twoRows[1]).toBe("└─ demo · modified · workspace · +0 -0 · 0 files · refreshi┘");
     expectWidthSafe(oneRow, 60);
     expectWidthSafe(twoRows, 60);
   });
@@ -1309,7 +1488,7 @@ describe("FilesPanel tree collapse", () => {
     readonly collapses: boolean[];
   }> {
     const collapses: boolean[] = [];
-    const value = harness(100, 6, {
+    const value = harness(100, 7, {
       onTreeCollapsedChange: collapsed => collapses.push(collapsed),
       ...overrides,
     });
@@ -1328,20 +1507,20 @@ describe("FilesPanel tree collapse", () => {
     const { value, collapses } = await collapsibleHarness();
     const { panel } = value;
 
-    expect(panel.render(100)[0]).toContain("┬");
+    expect(panel.render(100)[1]).toContain("┬");
 
     panel.handleInput("\\");
     const collapsed = panel.render(100);
     expect(collapses).toEqual([true]);
-    expect(collapsed[0]).toBe(`┌─ File: src/a.ts ${"─".repeat(81)}┐`);
-    expect(collapsed[1]).toBe(`│${"1 alpha".padEnd(98)}│`);
+    expect(collapsed[1]).toBe(`┌─ File: src/a.ts ${"─".repeat(81)}┐`);
+    expect(collapsed[2]).toBe(`│${"1 alpha".padEnd(98)}│`);
     expect(collapsed.at(-1)).toContain("↑↓ scroll");
     expectWidthSafe(collapsed, 100);
 
     // Ctrl+B toggles the tree as well.
     panel.handleInput("\x02");
     expect(collapses).toEqual([true, false]);
-    expect(panel.render(100)[0]).toContain("┬");
+    expect(panel.render(100)[1]).toContain("┬");
   });
 
   test("routes keys to the preview while collapsed and reveals the tree again on tab", async () => {
@@ -1350,14 +1529,14 @@ describe("FilesPanel tree collapse", () => {
 
     panel.handleInput("\\");
     panel.handleInput("j");
-    expect(panel.render(100)[1]).toBe(`│${"2 beta".padEnd(98)}│`);
+    expect(panel.render(100)[2]).toBe(`│${"2 beta".padEnd(98)}│`);
 
     panel.handleInput("\t");
     expect(collapses).toEqual([true, false]);
     const restored = panel.render(100);
-    expect(restored[0]).toContain("┬");
+    expect(restored[1]).toContain("┬");
     // Focus is back on the tree: its selected row keeps the cursor marker.
-    expect(restored[2]).toContain(">   M  a.ts");
+    expect(restored[3]).toContain(">   M  a.ts");
   });
 
   test("escape reveals a collapsed tree before it closes the panel", async () => {
@@ -1367,7 +1546,7 @@ describe("FilesPanel tree collapse", () => {
     panel.handleInput("\\");
     panel.handleInput("\x1b");
     expect(doneResults).toEqual([]);
-    expect(panel.render(100)[0]).toContain("┬");
+    expect(panel.render(100)[1]).toContain("┬");
 
     panel.handleInput("\x1b");
     expect(doneResults).toEqual([undefined]);
@@ -1375,7 +1554,7 @@ describe("FilesPanel tree collapse", () => {
 
   test("opens collapsed when the persisted settings say so, and ] brings the tree back", async () => {
     const collapses: boolean[] = [];
-    const { panel, source } = harness(100, 6, {
+    const { panel, source } = harness(100, 7, {
       treeCollapsed: true,
       onTreeCollapsedChange: collapsed => collapses.push(collapsed),
     });
@@ -1384,16 +1563,16 @@ describe("FilesPanel tree collapse", () => {
     await settle();
 
     const opened = panel.render(100);
-    expect(opened[0]).toBe(`┌─ Preview ${"─".repeat(88)}┐`);
-    expect(opened[1]).toBe(`│${"Select a file to preview".padEnd(98)}│`);
+    expect(opened[1]).toBe(`┌─ Preview ${"─".repeat(88)}┐`);
+    expect(opened[2]).toBe(`│${"Select a file to preview".padEnd(98)}│`);
 
     // Narrowing a hidden tree is a no-op; widening reveals it.
     panel.handleInput("[");
     expect(collapses).toEqual([]);
-    expect(panel.render(100)[0]).toBe(`┌─ Preview ${"─".repeat(88)}┐`);
+    expect(panel.render(100)[1]).toBe(`┌─ Preview ${"─".repeat(88)}┐`);
     panel.handleInput("]");
     expect(collapses).toEqual([false]);
-    expect(panel.render(100)[0]).toContain("┬");
+    expect(panel.render(100)[1]).toContain("┬");
   });
 });
 
@@ -1403,7 +1582,7 @@ describe("FilesPanel diff layout and context", () => {
   async function diffHarness(columns: number, overrides: Partial<FilesPanelOptions> = {}): Promise<
     ReturnType<typeof harness>
   > {
-    const value = harness(columns, 6, overrides);
+    const value = harness(columns, 7, overrides);
     value.panel.start();
     value.source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
@@ -1419,14 +1598,14 @@ describe("FilesPanel diff layout and context", () => {
       onDiffLayoutChange: layout => layouts.push(layout),
     });
 
-    expect(panel.render(100)[3]).toBe(`│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`);
+    expect(panel.render(100)[4]).toBe(`│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`);
 
     panel.handleInput("d");
     const split = panel.render(100);
     expect(layouts).toEqual(["split"]);
-    expect(split[1]).toBe(`│${"  ▼ src/".padEnd(29)}│${DIFF_LINES[0]?.padEnd(68)}│`);
-    expect(split[2]).toBe(`│${">   M  a.ts".padEnd(29)}│${"@@ -1 +1 @@".padEnd(68)}│`);
-    expect(split[3]).toBe(
+    expect(split[2]).toBe(`│${"  ▼ src/".padEnd(29)}│${DIFF_LINES[0]?.padEnd(68)}│`);
+    expect(split[3]).toBe(`│${">   M  a.ts".padEnd(29)}│${"@@ -1 +1 @@".padEnd(68)}│`);
+    expect(split[4]).toBe(
       `│${"    A  b.ts".padEnd(29)}│1 ${"-old".padEnd(31)}│1 ${"+new".padEnd(32)}│`,
     );
     expect(split.at(-1)).toContain("split diff · ctx 3");
@@ -1434,7 +1613,7 @@ describe("FilesPanel diff layout and context", () => {
 
     panel.handleInput("d");
     expect(layouts).toEqual(["split", "unified"]);
-    expect(panel.render(100)[3]).toBe(`│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`);
+    expect(panel.render(100)[4]).toBe(`│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`);
   });
 
   test("keeps the unified layout when the preview pane is too narrow to split", async () => {
@@ -1442,8 +1621,8 @@ describe("FilesPanel diff layout and context", () => {
 
     panel.handleInput("\r");
     const rendered = panel.render(40);
-    expect(rendered[1]).toBe(`│${DIFF_LINES[0]?.padEnd(38)}│`);
-    expect(rendered[3]).toBe(`│${"-old".padEnd(38)}│`);
+    expect(rendered[2]).toBe(`│${DIFF_LINES[0]?.padEnd(38)}│`);
+    expect(rendered[4]).toBe(`│${"-old".padEnd(38)}│`);
   });
 
   test("c cycles the Git context, refetches the preview, and reports the change", async () => {
@@ -1480,7 +1659,7 @@ describe("FilesPanel diff layout and context", () => {
     const lines = ["@@ -1,4 +1,4 @@"];
     for (let index = 1; index <= 8; index += 1) lines.push(`-old ${index}`);
     for (let index = 1; index <= 8; index += 1) lines.push(`+new ${index}`);
-    const { panel, source } = harness(100, 6);
+    const { panel, source } = harness(100, 7);
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
@@ -1494,7 +1673,94 @@ describe("FilesPanel diff layout and context", () => {
     // where the 16-line unified diff would still have 12 lines to go.
     panel.handleInput("\x1b[F");
     const end = panel.render(100);
-    expect(end[1]).toBe(`│${"  ▼ src/".padEnd(29)}│5 ${"-old 5".padEnd(31)}│5 ${"+new 5".padEnd(32)}│`);
-    expect(end[4]).toBe(`│${"".padEnd(29)}│8 ${"-old 8".padEnd(31)}│8 ${"+new 8".padEnd(32)}│`);
+    expect(end[2]).toBe(`│${"  ▼ src/".padEnd(29)}│5 ${"-old 5".padEnd(31)}│5 ${"+new 5".padEnd(32)}│`);
+    expect(end[5]).toBe(`│${"".padEnd(29)}│8 ${"-old 8".padEnd(31)}│8 ${"+new 8".padEnd(32)}│`);
+  });
+});
+
+describe("FilesPanel tree mouse selection", () => {
+  test("clicking a scrolled visible file row focuses the tree and starts that preview", async () => {
+    const paths = Array.from({ length: 8 }, (_, index) => `file-${index}.ts`);
+    const changes = new Map(paths.map(path => [path, change(path, "M")] as const));
+    const { panel, source } = harness(100, 7);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot({
+      allFiles: paths,
+      workspaceChanges: changes,
+      sessionChanges: new Map(),
+      workspaceSummary: { files: paths.length, insertions: paths.length, deletions: 0 },
+      workspaceSummaryByPath: new Map(paths.map(path => [path, { insertions: 1, deletions: 0 }])),
+    }));
+    await settle();
+    panel.render(100);
+    for (let index = 0; index < 5; index += 1) panel.handleInput("n");
+
+    const before = source.previewCalls.length;
+    panel.handleInput("\x1b[<0;5;4M");
+
+    expect(source.previewCalls).toHaveLength(before + 1);
+    expect(source.previewCalls.at(-1)?.path).toBe("file-3.ts");
+    expect(panel.render(100).join("\n")).toContain("> M  file-3.ts");
+  });
+
+  test("clicking a directory selects without expansion or preview", async () => {
+    const { panel, source } = harness(100, 7);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot({
+      allFiles: ["src/a.ts", "src/b.ts"],
+      workspaceChanges: new Map([
+        ["src/a.ts", change("src/a.ts", "M")],
+        ["src/b.ts", change("src/b.ts", "M")],
+      ]),
+      workspaceSummary: { files: 2, insertions: 2, deletions: 0 },
+      workspaceSummaryByPath: new Map([
+        ["src/a.ts", { insertions: 1, deletions: 0 }],
+        ["src/b.ts", { insertions: 1, deletions: 0 }],
+      ]),
+    }));
+    await settle();
+    panel.render(100);
+
+    panel.handleInput("\x1b[<0;5;3M");
+
+    expect(source.previewCalls).toHaveLength(0);
+    expect(panel.render(100).join("\n")).toContain("> ▼ src/");
+    expect(panel.render(100).join("\n")).toContain("a.ts");
+  });
+});
+
+describe("FilesPanel theme masks", () => {
+  test("uses selected and diff background tokens without changing row width", async () => {
+    const calls: string[] = [];
+    const { panel, source } = harness(100, 7, { theme: plainTheme(calls) });
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("n");
+    source.previewCalls.at(-1)?.value.resolve(
+      preview("src/a.ts", "diff", ["@@ -1 +1 @@", "-removed", "+added", " context"]),
+    );
+    await settle();
+    const rendered = panel.render(100);
+
+    expect(calls).toContain("toolDiffAdded/toolSuccessBg");
+    expect(calls).toContain("toolDiffRemoved/toolErrorBg");
+    expect(calls).toContain("text/selectedBg");
+    expectWidthSafe(rendered, 100);
+  });
+});
+
+describe("FilesPanel overview geometry", () => {
+  test("renders overview metadata before pane titles and starts the body at row two", async () => {
+    const { panel, source } = harness(100, 7);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    const lines = panel.render(100);
+    expect(lines[0]).toContain("Diff working tree");
+    expect(lines[0]).toContain("main");
+    expect(lines[1]).toContain("Files");
+    expect(lines[2]).toContain("src/");
   });
 });

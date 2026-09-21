@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULT_DIFF_CONTEXT, FULL_DIFF_CONTEXT, MAX_PREVIEW_BYTES } from "../contracts";
@@ -52,18 +52,21 @@ function commandOutput(
 }
 
 class ScriptedRunner implements ProcessRunner {
+  readonly calls: Array<{ readonly executable: string; readonly args: readonly string[] }> = [];
+
   constructor(
     private readonly response: (args: readonly string[]) => CommandOutput,
   ) {}
 
   async run(
     _cwd: string,
-    _executable: string,
+    executable: string,
     args: readonly string[],
     signal: AbortSignal,
     _maxBytes?: number,
   ): Promise<CommandOutput> {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    this.calls.push({ executable, args: [...args] });
     return this.response(args);
   }
 }
@@ -87,7 +90,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 
 async function initializeRepository(withHead = true): Promise<string> {
   const root = await temporaryDirectory();
-  await git(root, "init", "--quiet");
+  await git(root, "init", "--quiet", "--initial-branch=main");
   await git(root, "config", "user.name", "Pi Files Test");
   await git(root, "config", "user.email", "pi-files@example.invalid");
   if (!withHead) return root;
@@ -131,6 +134,9 @@ test("preserves trailing whitespace in the repository root", async () => {
     if (command === "rev-parse\0--verify\0HEAD") {
       return commandOutput("0123456789abcdef\n");
     }
+    if (command === "symbolic-ref\0-q\0HEAD") {
+      return commandOutput("refs/heads/main\n");
+    }
     return commandOutput();
   });
   const repository = await GitRepository.open(
@@ -169,6 +175,9 @@ test("uses symbolic HEAD structure to recognize an unborn branch", async () => {
   const inspection = await repository.inspect(new AbortController().signal);
 
   expect(inspection.hasHead).toBe(false);
+  expect(inspection.headIdentity).toBe("branch:main");
+  expect(inspection.currentBranch).toBe("main");
+  expect(inspection.detachedAt).toBeUndefined();
 });
 
 test("surfaces the original verification failure when HEAD is not symbolic", async () => {
@@ -220,6 +229,104 @@ test("surfaces structural HEAD inspection failures", async () => {
   );
 });
 
+test("lists local branches in deterministic order and marks the symbolic HEAD", async () => {
+  const root = await initializeRepository();
+  await git(root, "branch", "feature/ui");
+  const repository = await openRepository(root);
+  const signal = new AbortController().signal;
+
+  expect(await repository.branches(signal)).toEqual({
+    branches: [
+      { name: "feature/ui", current: false },
+      { name: "main", current: true },
+    ],
+    current: "main",
+  });
+
+  const inspection = await repository.inspect(signal);
+  expect(inspection.headIdentity).toBe("branch:main");
+  expect(inspection.currentBranch).toBe("main");
+  expect(inspection.detachedAt).toBeUndefined();
+});
+
+test("reports detached HEAD with a short object ID without inventing a branch", async () => {
+  const root = await initializeRepository();
+  const oid = (await git(root, "rev-parse", "HEAD")).trim();
+  await git(root, "switch", "--quiet", "--detach", oid);
+  const repository = await openRepository(root);
+
+  const snapshot = await repository.branches(new AbortController().signal);
+
+  expect(snapshot.branches).toEqual([{ name: "main", current: false }]);
+  expect(snapshot.current).toBeUndefined();
+  expect(snapshot.detachedAt).toBe(oid.slice(0, 7));
+
+  const inspection = await repository.inspect(new AbortController().signal);
+  expect(inspection.headIdentity).toBe(`detached:${oid}`);
+  expect(inspection.currentBranch).toBeUndefined();
+  expect(inspection.detachedAt).toBe(oid.slice(0, 7));
+});
+
+test("switches to a validated local branch and preserves the new symbolic HEAD", async () => {
+  const root = await initializeRepository();
+  await git(root, "branch", "feature/ui");
+  const repository = await openRepository(root);
+  const signal = new AbortController().signal;
+
+  await repository.switchBranch("feature/ui", { signal });
+
+  expect((await git(root, "branch", "--show-current")).trim()).toBe("feature/ui");
+  expect((await repository.inspect(signal)).headIdentity).toBe("branch:feature/ui");
+});
+
+test("refuses a conflicting dirty switch without changing the dirty file", async () => {
+  const root = await initializeRepository();
+  await git(root, "switch", "--quiet", "-c", "feature/ui");
+  await writeFile(join(root, "tracked.ts"), "feature committed\n");
+  await git(root, "add", "tracked.ts");
+  await git(root, "commit", "--quiet", "-m", "feature change");
+  await git(root, "switch", "--quiet", "main");
+  await writeFile(join(root, "tracked.ts"), "local dirty content\n");
+
+  const repository = await openRepository(root);
+  await expect(
+    repository.switchBranch("feature/ui", { signal: new AbortController().signal }),
+  ).rejects.toThrow();
+
+  expect(await readFile(join(root, "tracked.ts"), "utf8")).toBe("local dirty content\n");
+  expect((await git(root, "branch", "--show-current")).trim()).toBe("main");
+});
+
+test("switch execution never invokes a shell or forbidden Git remediation", async () => {
+  const root = resolve("scripted-branch-repository");
+  const runner = new ScriptedRunner((args) => {
+    if (args[0] === "rev-parse" && args[1] === "--show-toplevel") {
+      return commandOutput(`${root}\n`);
+    }
+    if (args[0] === "for-each-ref" || args.includes("refs/heads")) {
+      return commandOutput("feature/ui\0main\0");
+    }
+    if (args[0] === "symbolic-ref") return commandOutput("refs/heads/main\n");
+    if (args[0] === "switch") return commandOutput();
+    throw new Error(`unexpected Git command: ${args.join(" ")}`);
+  });
+  const repository = await GitRepository.open(root, runner, new AbortController().signal);
+  if (!repository) throw new Error("expected scripted repository");
+
+  await repository.switchBranch("feature/ui", {
+    signal: new AbortController().signal,
+  });
+
+  const argv = runner.calls.flatMap(call => [call.executable, ...call.args]).join("\0");
+  expect(argv).not.toContain("stash");
+  expect(argv).not.toContain("force");
+  expect(argv).not.toContain("fetch");
+  expect(runner.calls.every(call => call.executable === "git")).toBe(true);
+  expect(runner.calls.some(call =>
+    call.args.join("\0") === "switch\0--no-guess\0feature/ui"
+  )).toBe(true);
+});
+
 test("parses NUL-safe numstat paths and keys renames by normalized current path", async () => {
   const runner = new ScriptedRunner((args) => {
     const command = args.join("\0");
@@ -228,6 +335,9 @@ test("parses NUL-safe numstat paths and keys renames by normalized current path"
     }
     if (command === "rev-parse\0--verify\0HEAD") {
       return commandOutput("0123456789abcdef\n");
+    }
+    if (command === "symbolic-ref\0-q\0HEAD") {
+      return commandOutput("refs/heads/main\n");
     }
     if (command === "status\0--porcelain=v1\0-z\0--untracked-files=all") {
       return commandOutput("R  新\tname.ts\0old\nname.ts\0 M plain\\path.ts\0");
@@ -275,6 +385,9 @@ test("moves an old-path-only numstat entry onto the rename current path", async 
     if (command === "rev-parse\0--verify\0HEAD") {
       return commandOutput("0123456789abcdef\n");
     }
+    if (command === "symbolic-ref\0-q\0HEAD") {
+      return commandOutput("refs/heads/main\n");
+    }
     if (command === "status\0--porcelain=v1\0-z\0--untracked-files=all") {
       return commandOutput("R  new.ts\0old.ts\0");
     }
@@ -310,6 +423,9 @@ test("preserves per-current-path counts for a rename swap cycle", async () => {
     }
     if (command === "rev-parse\0--verify\0HEAD") {
       return commandOutput("0123456789abcdef\n");
+    }
+    if (command === "symbolic-ref\0-q\0HEAD") {
+      return commandOutput("refs/heads/main\n");
     }
     if (command === "status\0--porcelain=v1\0-z\0--untracked-files=all") {
       return commandOutput("R  b.ts\0a.ts\0R  a.ts\0b.ts\0");
@@ -350,6 +466,9 @@ test("rejects malformed NUL-safe rename numstat records", async () => {
     }
     if (command === "rev-parse\0--verify\0HEAD") {
       return commandOutput("0123456789abcdef\n");
+    }
+    if (command === "symbolic-ref\0-q\0HEAD") {
+      return commandOutput("refs/heads/main\n");
     }
     if (command === "status\0--porcelain=v1\0-z\0--untracked-files=all") {
       return commandOutput(" M tracked.ts\0");
@@ -398,6 +517,7 @@ test("reuses the latest inspection when previewing an unchanged file", async () 
     commands.push(command);
     if (command === "rev-parse\0--show-toplevel") return commandOutput(`${root}\n`);
     if (command === "rev-parse\0--verify\0HEAD") return commandOutput("0123456789abcdef\n");
+    if (command === "symbolic-ref\0-q\0HEAD") return commandOutput("refs/heads/main\n");
     if (command === "status\0--porcelain=v1\0-z\0--untracked-files=all") return commandOutput();
     if (command === "ls-files\0-z\0--cached\0--others\0--exclude-standard") {
       return commandOutput("tracked.ts\0");

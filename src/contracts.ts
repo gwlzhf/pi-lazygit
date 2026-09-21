@@ -62,14 +62,37 @@ export interface ChangeSummary {
   readonly deletions: number;
 }
 
+export interface FileLineSummary {
+  readonly insertions: number;
+  readonly deletions: number;
+}
+
+export interface GitBranch {
+  readonly name: string;
+  readonly current: boolean;
+}
+
+export interface GitBranchSnapshot {
+  readonly branches: readonly GitBranch[];
+  readonly current?: string;
+  readonly detachedAt?: string;
+}
+
+export interface SwitchBranchOptions {
+  readonly signal: AbortSignal;
+}
+
 export interface ProjectSnapshot {
   readonly kind: "git" | "filesystem";
   readonly root: string;
   readonly hasHead: boolean;
+  readonly currentBranch?: string;
+  readonly detachedAt?: string;
   readonly allFiles: readonly string[];
   readonly workspaceChanges: ReadonlyMap<string, ChangeRecord>;
   readonly sessionChanges: ReadonlyMap<string, ChangeRecord>;
   readonly workspaceSummary: ChangeSummary;
+  readonly workspaceSummaryByPath: ReadonlyMap<string, FileLineSummary>;
   readonly sessionSummary: ChangeSummary;
   readonly baselineEstablishedAt?: number;
   readonly truncated: boolean;
@@ -126,6 +149,8 @@ export interface ReviewSource {
   preview(path: string, options: PreviewOptions): Promise<FilePreview>;
   history(options: RefreshOptions): Promise<GitLogSnapshot>;
   commitDiff(oid: string, options: PreviewOptions): Promise<CommitDiffPreview>;
+  branches(options: RefreshOptions): Promise<GitBranchSnapshot>;
+  switchBranch(name: string, options: SwitchBranchOptions): Promise<void>;
   watch(options: WatchOptions): Promise<void>;
 }
 
@@ -136,6 +161,7 @@ export interface BaselineEntry {
 
 export interface RepositoryBaseline {
   readonly root: string;
+  readonly headIdentity: string;
   readonly establishedAt: number;
   readonly entries: ReadonlyMap<string, BaselineEntry>;
 }
