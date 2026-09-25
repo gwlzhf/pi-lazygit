@@ -3,9 +3,11 @@ import * as nodePath from "node:path";
 import {
   DEFAULT_DIFF_CONTEXT,
   DEFAULT_DIFF_LAYOUT,
+  DEFAULT_DIFF_MASK_OPACITY,
   DEFAULT_TREE_RATIO,
   isDiffLayout,
   normalizeDiffContext,
+  normalizeDiffMaskOpacity,
   TREE_MIN_RATIO,
   type DiffLayout,
 } from "./contracts";
@@ -22,6 +24,7 @@ export interface PanelSettings {
   readonly highlightTheme: HighlightThemeName;
   readonly diffLayout: DiffLayout;
   readonly diffContext: number;
+  readonly diffMaskOpacity: number;
 }
 
 /** Storage for {@link PanelSettings}; writes coalesce so a drag is one file write. */
@@ -32,6 +35,7 @@ export interface PanelSettingsStore {
   saveHighlightTheme(theme: HighlightThemeName): void;
   saveDiffLayout(layout: DiffLayout): void;
   saveDiffContext(context: number): void;
+  saveDiffMaskOpacity(opacity: number): void;
   flush(): Promise<void>;
 }
 
@@ -44,6 +48,7 @@ export const DEFAULT_PANEL_SETTINGS: PanelSettings = {
   highlightTheme: DEFAULT_HIGHLIGHT_THEME,
   diffLayout: DEFAULT_DIFF_LAYOUT,
   diffContext: DEFAULT_DIFF_CONTEXT,
+  diffMaskOpacity: DEFAULT_DIFF_MASK_OPACITY,
 };
 
 /** Clamp a stored or reported ratio to the supported minimum, or reject it. */
@@ -120,6 +125,7 @@ export function createPanelSettingsStore(
           highlightTheme?: unknown;
           diffLayout?: unknown;
           diffContext?: unknown;
+          diffMaskOpacity?: unknown;
         };
         current = {
           treeRatio: clampTreeRatio(value.treeRatio) ?? DEFAULT_PANEL_SETTINGS.treeRatio,
@@ -133,6 +139,7 @@ export function createPanelSettingsStore(
             ? value.diffLayout
             : DEFAULT_PANEL_SETTINGS.diffLayout,
           diffContext: normalizeDiffContext(value.diffContext) ?? DEFAULT_PANEL_SETTINGS.diffContext,
+          diffMaskOpacity: normalizeDiffMaskOpacity(value.diffMaskOpacity) ?? DEFAULT_PANEL_SETTINGS.diffMaskOpacity,
         };
         return current;
       } catch {
@@ -170,6 +177,12 @@ export function createPanelSettingsStore(
       const normalized = normalizeDiffContext(context);
       if (normalized === undefined) return;
       current = { ...current, diffContext: normalized };
+      scheduleWrite();
+    },
+    saveDiffMaskOpacity(opacity: number): void {
+      const normalized = normalizeDiffMaskOpacity(opacity);
+      if (normalized === undefined) return;
+      current = { ...current, diffMaskOpacity: normalized };
       scheduleWrite();
     },
 

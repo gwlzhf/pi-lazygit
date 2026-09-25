@@ -2,6 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as nodePath from "node:path";
+import {
+  normalizeDiffMaskOpacity,
+} from "./contracts";
 import { clampTreeRatio, createPanelSettingsStore, DEFAULT_PANEL_SETTINGS } from "./settings";
 
 const temporaryRoots: string[] = [];
@@ -29,6 +32,18 @@ describe("clampTreeRatio", () => {
   });
 });
 
+describe("normalizeDiffMaskOpacity", () => {
+  test("accepts only finite opacity values between zero and one", () => {
+    expect(normalizeDiffMaskOpacity(0)).toBe(0);
+    expect(normalizeDiffMaskOpacity(1)).toBe(1);
+    expect(normalizeDiffMaskOpacity(0.4)).toBe(0.4);
+    expect(normalizeDiffMaskOpacity(-0.1)).toBeUndefined();
+    expect(normalizeDiffMaskOpacity(1.1)).toBeUndefined();
+    expect(normalizeDiffMaskOpacity(Number.NaN)).toBeUndefined();
+    expect(normalizeDiffMaskOpacity("0.4")).toBeUndefined();
+  });
+});
+
 describe("panel settings store", () => {
   test("round-trips every panel preference through the settings file", async () => {
     const file = await settingsFile();
@@ -41,6 +56,7 @@ describe("panel settings store", () => {
     store.saveTreeCollapsed(true);
     store.saveDiffLayout("split");
     store.saveDiffContext(25);
+    store.saveDiffMaskOpacity(0.62);
     await store.flush();
 
     const expected = {
@@ -50,6 +66,7 @@ describe("panel settings store", () => {
       highlightTheme: "nord",
       diffLayout: "split",
       diffContext: 25,
+      diffMaskOpacity: 0.62,
     } as const;
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual(expected);
     expect(await createPanelSettingsStore(async () => file).load()).toEqual(expected);
@@ -108,7 +125,7 @@ describe("panel settings store", () => {
 
     await writeFile(
       file,
-      JSON.stringify({ treeCollapsed: true, diffLayout: "split", diffContext: 10 }),
+      JSON.stringify({ treeCollapsed: true, diffLayout: "split", diffContext: 10, diffMaskOpacity: 0.8 }),
       "utf8",
     );
     expect(await store.load()).toEqual({
@@ -116,6 +133,7 @@ describe("panel settings store", () => {
       treeCollapsed: true,
       diffLayout: "split",
       diffContext: 10,
+      diffMaskOpacity: 0.8,
     });
   });
 

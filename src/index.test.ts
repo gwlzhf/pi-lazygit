@@ -34,6 +34,9 @@ interface ContextHarness {
   readonly customCalls: Array<unknown>;
   readonly customOptions: Array<unknown>;
   readonly notifications: Array<readonly [string, string | undefined]>;
+  readonly editorText: () => string;
+  readonly setEditorText: (text: string) => void;
+  readonly flushScheduled: () => void;
 }
 
 function deferred<T>(): Deferred<T> {
@@ -75,14 +78,23 @@ function createContextHarness(options?: {
   readonly hasUI?: boolean;
   readonly mode?: ExtensionContext["mode"];
   readonly customResult?: Promise<undefined>;
+  readonly draft?: string;
 }): ContextHarness {
   const customCalls: Array<unknown> = [];
   const customOptions: Array<unknown> = [];
   const notifications: Array<readonly [string, string | undefined]> = [];
+  let editorText = options?.draft ?? "";
+  const scheduled: Array<() => void> = [];
 
   const ui = {
     notify(message: string, type?: string) {
       notifications.push([message, type]);
+    },
+    getEditorText() {
+      return editorText;
+    },
+    setEditorText(text: string) {
+      editorText = text;
     },
     async custom(
       factory: (
@@ -105,9 +117,23 @@ function createContextHarness(options?: {
     hasUI: options?.hasUI ?? true,
     mode: options?.mode ?? "tui",
     ui,
+    setTimeout(callback: () => void) {
+      scheduled.push(callback);
+      return {} as NodeJS.Timeout;
+    },
   } as unknown as ExtensionContext;
 
-  return { ctx, customCalls, customOptions, notifications };
+  return {
+    ctx,
+    customCalls,
+    customOptions,
+    notifications,
+    editorText: () => editorText,
+    setEditorText: text => { editorText = text; },
+    flushScheduled: () => {
+      for (const callback of scheduled.splice(0)) callback();
+    },
+  };
 }
 
 function createSource(): ReviewSource {
@@ -145,6 +171,7 @@ function createSettingsStore(overrides: Partial<PanelSettingsStore> = {}): Panel
     saveDiffLayout: () => {},
     saveDiffContext: () => {},
     flush: async () => {},
+    saveDiffMaskOpacity: () => {},
     ...overrides,
   };
 }
@@ -366,6 +393,42 @@ test("restores panel settings, persists changes, and flushes on close", async ()
   expect(savedLayouts).toEqual(["unified"]);
   expect(savedContexts).toEqual([10]);
   expect(flushes).toBe(1);
+});
+
+test("switching reviewed files replaces only the owned mention and chat opens /btw with the diff", async () => {
+  const api = createApiHarness();
+  const closed = deferred<undefined>();
+  let created = deferred<void>();
+  const context = createContextHarness({ draft: "Check this", customResult: closed.promise });
+  let options: FilesPanelOptions | undefined;
+  createExtension(dependencies({
+    createPanel: value => {
+      options = value;
+      created.resolve();
+      return createPanel();
+    },
+  }))(api.api);
+
+  const opening = invokeCommand(api.commands.get("files"), context.ctx);
+  await created.promise;
+  expect(options).toBeDefined();
+  options?.onReviewFileChange?.("src/old name.ts");
+  options?.onReviewFileChange?.("src/new.ts");
+  expect(context.editorText()).toBe("Check this");
+  closed.resolve(undefined);
+  await opening;
+  context.flushScheduled();
+  expect(context.editorText()).toBe("Check this @src/new.ts ");
+
+  context.setEditorText("Check this @src/new.ts and preserve this");
+  created = deferred<void>();
+  const reopening = invokeCommand(api.commands.get("files"), context.ctx);
+  await created.promise;
+  options?.onReviewFileChange?.("dir/a'b name.ts");
+  options?.onChat?.("dir/a'b name.ts", "@@ -1 +1 @@\n-old\n+new");
+  await reopening;
+  context.flushScheduled();
+  expect(context.editorText()).toBe(`/btw Check this and preserve this @"dir/a'b name.ts"\n\nReview diff excerpt:\n    @@ -1 +1 @@\n    -old\n    +new `);
 });
 
 test("passes a highlighter to the panel only when one loads", async () => {

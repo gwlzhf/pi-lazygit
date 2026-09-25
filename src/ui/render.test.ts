@@ -49,6 +49,29 @@ function plainTheme(calls: string[] = []): Theme {
   } as unknown as Theme;
 }
 
+function modernTheme(isLight: boolean): Theme {
+  return {
+    isLight,
+    fg(_color: ThemeColor, text: string): string {
+      return text;
+    },
+    bg(_background: string, text: string): string {
+      return text;
+    },
+    fgOnBg(_color: ThemeColor, _background: string, text: string): string {
+      return text;
+    },
+    getBgHex(background: string): string {
+      return background === "toolSuccessBg" ? "#208040" : "#802020";
+    },
+    getBgAnsi(background: string): string {
+      return background === "toolSuccessBg"
+        ? "\x1b[48;2;32;128;64m"
+        : "\x1b[48;2;128;32;32m";
+    },
+  } as unknown as Theme;
+}
+
 function expectFits(line: string, width: number): void {
   expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 }
@@ -173,7 +196,7 @@ describe("preview line rendering", () => {
   });
 
   test("wraps long unified and split changes without losing CJK cells or color", () => {
-    const calls: ThemeColor[] = [];
+    const calls: string[] = [];
     const theme = plainTheme(calls);
     const unified = renderWrappedDiffLine("+猫猫abcdefgh", 5, theme);
     expect(unified).toEqual(["+猫猫", "abcde", "fgh  "]);
@@ -193,16 +216,36 @@ describe("preview line rendering", () => {
     for (const line of split) expect(visibleWidth(line)).toBe(21);
   });
 
-  test("uses deeper blue and green for changed lines on light and dark themes", () => {
+  test("uses deeper green and red for changed lines on light and dark themes", () => {
     for (const isLight of [true, false]) {
       const theme = { ...plainTheme(), isLight } as Theme;
       const added = renderDiffLine("+new", 8, theme);
       const removed = renderDiffLine("-old", 8, theme);
       expect(added).toContain(isLight ? "\x1b[38;2;37;114;74m" : "\x1b[38;2;67;156;106m");
-      expect(removed).toContain(isLight ? "\x1b[38;2;40;100;135m" : "\x1b[38;2;76;142;174m");
+      expect(removed).toContain(isLight ? "\x1b[38;2;177;45;48m" : "\x1b[38;2;225;82;82m");
       expect(added).toEndWith("\x1b[39m");
       expect(removed).toEndWith("\x1b[39m");
     }
+  });
+
+  test("paints opacity-adjusted modern masks and covers split gutters", () => {
+    const theme = modernTheme(true);
+    const half = renderDiffLine("+x", 4, theme, undefined, 0.5);
+    expect(half).toContain("\x1b[48;2;144;192;160m");
+    expect(half).not.toContain("\x1b[48;2;32;128;64m");
+
+    const opaque = renderDiffLine("+x", 4, theme, undefined, 1);
+    expect(opaque).toContain("\x1b[48;2;32;128;64m");
+    expect(opaque).toEndWith("\x1b[49m");
+
+    const row = parseUnifiedDiff(["@@ -1 +1 @@", "-old", "+new"])?.[1];
+    expect(row?.kind).toBe("pair");
+    if (row?.kind !== "pair") return;
+    const split = renderDiffSplitRow(row, 21, theme, 1, 0.5);
+    expect(split).toContain("\x1b[48;2;192;144;144m");
+    expect(sanitizeTerminalText(split)).toContain("1 -old");
+    expect(sanitizeTerminalText(split)).toContain("1 +new");
+    expect(visibleWidth(split)).toBe(21);
   });
 
   test("sanitizes before styling and handles tiny widths", () => {

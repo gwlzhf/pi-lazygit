@@ -15,14 +15,14 @@ The extension targets the OMP 18.0.11 interactive TUI in Windows PowerShell and 
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.6.1
+omp plugin install github:gwlzhf/pi-lazygit#v0.6.3
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.6.1
+omp plugin install github:gwlzhf/pi-lazygit#v0.6.3
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
@@ -60,13 +60,13 @@ The single-pane layout has no divider to move — the visible pane spans the pan
 
 `\` (also `Ctrl+B`) collapses the tree pane so the preview uses the full panel width, and restores it again. While the tree is collapsed the preview holds focus and every key routes to it; `\`, `Ctrl+B`, `Tab`, `Esc`, `Left`/`h`, and `]` all bring the tree back and return focus to it. `Esc` therefore takes two presses to close the panel from a collapsed tree: one to reveal it, one to close.
 
-The width, collapsed state, syntax theme, and diff view settings are stored in `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden), so they survive panel closes and OMP restarts. Width is stored as a ratio of the panel interior. Rapid changes are coalesced into a single write; unreadable, invalid, or unwritable settings fall back to the 30% width, expanded tree, Pi syntax theme, and unified 3-line diff without interrupting the session.
+The width, collapsed state, syntax theme, diff view, and diff mask opacity settings are stored in `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden), so they survive panel closes and OMP restarts. Width is stored as a ratio of the panel interior. Rapid changes are coalesced into a single write; unreadable, invalid, or unwritable settings fall back to the 30% width, expanded tree, Pi syntax theme, unified 3-line diff, and the default mask opacity without interrupting the session.
 
 The mouse wheel moves the selection in the left pane and scrolls the preview pane, following the pointer in the side-by-side layout and the focused pane in the single-pane layout.
 
 Left-clicking a visible row in the left pane focuses that pane and selects the row. In the project tree a file click starts its preview immediately, and a directory click selects it without expanding or collapsing it — expansion stays on the keyboard. History and branch rows behave the same way: a click selects only. Clicks on the overview header, the pane-title row, the footer, the padding below the last row, and the divider select nothing; divider dragging and preview text selection keep their existing meaning.
 
-Selected rows are painted across the full pane width using the active OMP theme's selection background. Runtimes older than the `Theme.fgOnBg` helper fall back to a plain foreground over the same background token instead of failing to render. Diff previews mask whole rows as well: added lines use the theme's success background, removed lines its error background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. Hunk and context rows keep ordinary theme colors. The masks change neither the visible width nor the text that a selection copies; changed-line foregrounds use the deeper blue/green palette described below.
+Selected rows are painted across the full pane width using the active OMP theme's selection background. Runtimes older than the `Theme.fgOnBg` helper fall back to a plain foreground over the same background token instead of failing to render. Diff previews mask whole rows as well: added lines use the theme's success background, removed lines its error background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. These darker masks change neither the visible width nor the text that a selection copies; changed-line foregrounds use the deeper red/green palette described below.
 
 ## Copying preview text
 
@@ -76,11 +76,17 @@ The copy is an OSC 52 clipboard write, so it reaches the system clipboard of the
 
 The selection is cleared by scrolling, by selecting another file, and by any change to the pane geometry — resizing or collapsing the tree, or switching the diff layout or context.
 
+## Host editor handoff
+
+Press `i` from either pane to leave the fullscreen review and return to the bottom OMP editor's `/btw` input. The extension prepares the turn with an `@`-mention for the selected file and a diff excerpt: selected diff text when available, otherwise the visible diff excerpt. It does not auto-submit the input.
+
+The latest reviewed file becomes the host editor's `@`-mention when the panel closes, replacing only the mention the extension previously added and leaving the rest of the draft intact. The mention is not a guarantee that `/btw` will read the file automatically, so the selected or visible excerpt is included for context. This handoff targets the host OMP editor only; subagent support is not available.
+
 ## Syntax highlighting
 
 Text previews use OMP's highlighter with four palettes: Pi (default, using the active OMP theme), Catppuccin, Nord, and Tokyo Night. Press `t` from either pane to cycle them in that order. The selected palette affects code syntax only; panel borders and status colors continue to use the active OMP theme. The language is detected from the file path — TypeScript, JavaScript/Node, C#, Go, C/C++, Rust, Python, Java, Kotlin, Ruby, PHP, shell, JSON, YAML, and the other languages OMP supports. Files whose language is unknown or unsupported render as plain text.
 
-Diffs keep per-line colors instead of language highlighting: additions use a deeper green and removals a deeper blue, with separate shades for light/dark themes. Preview content is sanitized before it is highlighted, so file contents can never emit their own terminal escape sequences.
+Diffs keep per-line colors instead of language highlighting: additions use a deeper green and removals a deeper red, with separate shades for light/dark themes. Preview content is sanitized before it is highlighted, so file contents can never emit their own terminal escape sequences.
 
 ## Diff views
 
@@ -96,6 +102,8 @@ Long diff lines wrap within the preview instead of being cut off. In split layou
 `c` cycles how much unchanged code surrounds each change: **3** lines (default), **10**, **25**, then **full** — the entire file, with the changed lines still marked. Each press refetches the diff from Git, so the count is exact rather than reconstructed. Whole-file context still obeys the 1 MiB and 5,000-line preview limits.
 
 The footer reports the active layout and context, for example `split diff · ctx 10`.
+
+Diff change masks cover the full rendered row in unified view. In split view, each changed side's mask covers that entire side's row through its gutter, marker, body, and padding, while the unchanged side keeps the context background. The masks use darker theme green/red backgrounds; press `-` or `=` to lower or raise their opacity in 10% steps. The selected opacity is persisted with the other review settings.
 
 ## Live refresh
 
@@ -145,8 +153,8 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 | `\` or `Ctrl+B` | Collapse the tree pane |
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `d` | Switch the diff preview between unified and split columns |
-| `c` | Cycle the diff context: 3, 10, 25, full file |
-| `v` | Toggle between the default changed-file list and the directory tree |
+| `-` / `=` | Lower/raise diff mask opacity by 10% |
+| `i` | Leave fullscreen review and prepare the bottom OMP editor's `/btw` input with the selected file and diff excerpt; does not submit |
 | `m` | Show modified files in the tree |
 | `a` | Show all visible files in the directory tree (also switches to the tree from the list) |
 | `s` | Toggle workspace/session scope |
@@ -172,8 +180,8 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 | `[` / `]` or `Ctrl+Left` / `Ctrl+Right` | Narrow/widen the tree pane |
 | `\` or `Ctrl+B` | Collapse/restore the tree pane |
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
-| `d` | Switch the diff preview between unified and split columns |
-| `c` | Cycle the diff context: 3, 10, 25, full file |
+| `-` / `=` | Lower/raise diff mask opacity by 10% |
+| `i` | Leave fullscreen review and prepare the bottom OMP editor's `/btw` input with the selected file and diff excerpt; does not submit |
 | `g` | Switch the left pane between the project tree and the commit history |
 | `b` | Switch the left pane to the local branch list |
 | `?` | Show every shortcut |

@@ -11,11 +11,13 @@ import {
 import {
   DEFAULT_DIFF_CONTEXT,
   DEFAULT_DIFF_LAYOUT,
+  DEFAULT_DIFF_MASK_OPACITY,
   DEFAULT_TREE_RATIO,
   diffContextLabel,
   isDiffLayout,
   nextDiffContext,
   normalizeDiffContext,
+  normalizeDiffMaskOpacity,
   TREE_MIN_COLUMNS,
   TREE_MIN_PREVIEW_COLUMNS,
   TREE_MIN_RATIO,
@@ -101,10 +103,17 @@ export interface FilesPanelOptions {
   readonly diffContext?: number;
   /** Reports every diff context change so the host can persist it. */
   readonly onDiffContextChange?: (context: number) => void;
+  /** Diff mask opacity restored from persisted settings (0–1). */
+  readonly diffMaskOpacity?: number;
+  readonly onDiffMaskOpacityChange?: (opacity: number) => void;
   /** Syntax palette restored from persisted settings. */
   readonly highlightTheme?: HighlightThemeName;
   /** Reports every syntax palette change so the host can persist it. */
   readonly onHighlightThemeChange?: (theme: HighlightThemeName) => void;
+  /** Keep the host editor's file mention aligned with the reviewed file. */
+  readonly onReviewFileChange?: (path: string | undefined) => void;
+  /** Leave the overlay for the host chat editor with the visible diff excerpt. */
+  readonly onChat?: (path: string | undefined, excerpt: string | undefined) => void;
   /** Colors text previews; previews render unstyled when omitted. */
   readonly highlight?: Highlighter;
   readonly done: (result: undefined) => void;
@@ -168,6 +177,9 @@ export class FilesPanel implements Component {
   readonly #onDiffLayoutChange: ((layout: DiffLayout) => void) | undefined;
   readonly #onDiffContextChange: ((context: number) => void) | undefined;
   readonly #onHighlightThemeChange: ((theme: HighlightThemeName) => void) | undefined;
+  readonly #onDiffMaskOpacityChange: ((opacity: number) => void) | undefined;
+  readonly #onReviewFileChange: ((path: string | undefined) => void) | undefined;
+  readonly #onChat: ((path: string | undefined, excerpt: string | undefined) => void) | undefined;
   readonly #highlight: Highlighter | undefined;
   readonly #done: (result: undefined) => void;
 
@@ -212,6 +224,7 @@ export class FilesPanel implements Component {
   #treeCollapsed: boolean;
   #diffLayout: DiffLayout;
   #diffContext: number;
+  #diffMaskOpacity: number;
   #highlightTheme: HighlightThemeName;
   #lastWidth = 0;
   #lastPreviewWidth = 0;
@@ -269,12 +282,16 @@ export class FilesPanel implements Component {
     this.#onDiffLayoutChange = options.onDiffLayoutChange;
     this.#onDiffContextChange = options.onDiffContextChange;
     this.#onHighlightThemeChange = options.onHighlightThemeChange;
+    this.#onDiffMaskOpacityChange = options.onDiffMaskOpacityChange;
+    this.#onReviewFileChange = options.onReviewFileChange;
+    this.#onChat = options.onChat;
     this.#highlight = options.highlight;
     this.#treeRatio = Math.max(TREE_MIN_RATIO, options.treeRatio ?? DEFAULT_TREE_RATIO);
     this.#treeCollapsed = options.treeCollapsed ?? false;
     this.#focus = this.#treeCollapsed ? "preview" : "tree";
     this.#diffLayout = isDiffLayout(options.diffLayout) ? options.diffLayout : DEFAULT_DIFF_LAYOUT;
     this.#diffContext = normalizeDiffContext(options.diffContext) ?? DEFAULT_DIFF_CONTEXT;
+    this.#diffMaskOpacity = normalizeDiffMaskOpacity(options.diffMaskOpacity) ?? DEFAULT_DIFF_MASK_OPACITY;
     this.#highlightTheme = options.highlightTheme ?? DEFAULT_HIGHLIGHT_THEME;
     this.#done = options.done;
   }
@@ -315,6 +332,19 @@ export class FilesPanel implements Component {
       return;
     }
     if (this.#helpOpen) return;
+    if (matchesKey(data, "i")) {
+      const selection = this.#selection;
+      const selectedText = selection === undefined
+        ? ""
+        : selectionText(this.#previewRows, selection, this.#lastPreviewWidth);
+      const value = this.#leftMode === "files" ? this.#preview : undefined;
+      const excerpt = selectedText || (value?.kind === "diff"
+        ? this.#previewRows.map(line => sanitizeTerminalText(line).trimEnd()).join("\n").trim()
+        : "");
+      this.#onChat?.(this.#leftMode === "files" ? this.#previewPath : undefined, excerpt || undefined);
+      this.#finish();
+      return;
+    }
     if (matchesKey(data, "f5") || matchesKey(data, "r")) {
       // Queued rather than immediate: watching can have a refresh in flight.
       this.#queueRefresh();
@@ -343,6 +373,17 @@ export class FilesPanel implements Component {
     }
     if (matchesKey(data, "c")) {
       this.#cycleDiffContext();
+      return;
+    }
+    if (matchesKey(data, "-") || matchesKey(data, "=")) {
+      const step = matchesKey(data, "=") ? 1 : -1;
+      const next = Math.max(0, Math.min(1, Math.round(this.#diffMaskOpacity * 10 + step) / 10));
+      if (next !== this.#diffMaskOpacity) {
+        this.#diffMaskOpacity = next;
+        this.#wrappedDiff = undefined;
+        this.#onDiffMaskOpacityChange?.(next);
+        this.#requestRender();
+      }
       return;
     }
     if (matchesKey(data, "[") || matchesKey(data, "ctrl+left")) {
@@ -1405,6 +1446,7 @@ export class FilesPanel implements Component {
     const controller = new AbortController();
     this.#previewController = controller;
     this.#previewPath = path;
+    if (!samePath) this.#onReviewFileChange?.(path);
     if (!samePath) {
       this.#preview = undefined;
       this.#previewScroll = 0;
@@ -1443,6 +1485,7 @@ export class FilesPanel implements Component {
     this.#previewController?.abort();
     this.#previewController = undefined;
     this.#previewPath = undefined;
+    this.#onReviewFileChange?.(undefined);
     this.#preview = undefined;
     this.#previewLoading = false;
     this.#previewScroll = 0;
@@ -1488,10 +1531,10 @@ export class FilesPanel implements Component {
     const rows = this.#splitDiffRows(value, width);
     let lines: readonly string[];
     if (rows === undefined) {
-      lines = value.lines.flatMap(line => renderWrappedDiffLine(line, width, this.#theme));
+      lines = value.lines.flatMap(line => renderWrappedDiffLine(line, width, this.#theme, this.#diffMaskOpacity));
     } else {
       const gutter = diffGutterWidth(rows);
-      lines = rows.flatMap(row => renderWrappedDiffSplitRow(row, width, this.#theme, gutter));
+      lines = rows.flatMap(row => renderWrappedDiffSplitRow(row, width, this.#theme, gutter, this.#diffMaskOpacity));
     }
     this.#wrappedDiff = { preview: value, width, layout: this.#diffLayout, lines };
     return lines;
@@ -1895,6 +1938,7 @@ export class FilesPanel implements Component {
     }
     if (this.#leftMode === "log" ? this.#commitDiff?.kind === "diff" : this.#preview?.kind === "diff") {
       pieces.push(`${this.#diffLayout} diff`, `ctx ${diffContextLabel(this.#diffContext)}`);
+      pieces.push(`mask ${Math.round(this.#diffMaskOpacity * 100)}%`, "-/= mask");
     }
 
     if (this.#leftMode === "branches") {

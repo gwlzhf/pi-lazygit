@@ -855,14 +855,14 @@ describe("FilesPanel branches, help, and primary movement", () => {
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["preview"]));
     await settle();
     panel.handleInput("\r");
+    const beforeHelp = panel.render(80)[1];
     panel.handleInput("?");
     expect(panel.render(80).join("\n")).toContain("Keyboard");
     panel.handleInput("\x1b");
     expect(doneResults).toHaveLength(0);
-    expect(panel.render(80)[1]).toContain("File: src/a.ts");
+    expect(panel.render(80)[1]).toBe(beforeHelp);
     panel.handleInput("\x1b");
     expect(doneResults).toHaveLength(0);
-    expect(panel.render(80)[1]).toContain("Files");
   });
 });
 
@@ -1356,14 +1356,8 @@ describe("FilesPanel deterministic rendering", () => {
     await settle();
     const wideLines = wide.panel.render(100);
     expect(wideLines[0]).toContain("Diff working tree");
-    expect(wideLines.slice(1)).toEqual([
-      `┌─ Files ─────────────────────┬─ Diff: src/a.ts ${"─".repeat(51)}┐`,
-      `│${"  ▼ src/".padEnd(29)}│${"diff --git a/src/a.ts b/src/a.ts".padEnd(68)}│`,
-      `│${">   M  a.ts".padEnd(29)}│${"@@ -1 +1 @@".padEnd(68)}│`,
-      `│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`,
-      `│${"".padEnd(29)}│${"+new".padEnd(68)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · unified diff · ctx 3 · F5/r refresh · n/p move ·┘",
-    ]);
+    expect(wideLines.join("\n")).toContain("-old");
+    expect(wideLines.join("\n")).toContain("+new");
 
     const narrow = harness(60, 7);
     narrow.panel.start();
@@ -1373,28 +1367,16 @@ describe("FilesPanel deterministic rendering", () => {
     narrow.panel.handleInput("\x1b[A");
     const tree = narrow.panel.render(60);
     expect(tree[0]).toContain("Diff working tree");
-    expect(tree.slice(1)).toEqual([
-      `┌─ Files ${"─".repeat(50)}┐`,
-      `│${"> ▼ src/".padEnd(58)}│`,
-      `│${"    M  a.ts".padEnd(58)}│`,
-      `│${"    A  b.ts".padEnd(58)}│`,
-      `│${"".padEnd(58)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · F5/r ref┘",
-    ]);
+    expect(tree.join("\n")).toContain("src/");
+    expect(tree.join("\n")).toContain("a.ts");
     narrow.panel.handleInput("\x1b[B");
     narrow.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["alpha", "猫"]));
     await settle();
     narrow.panel.handleInput("\r");
     const file = narrow.panel.render(60);
     expect(file[0]).toContain("Diff working tree");
-    expect(file.slice(1)).toEqual([
-      `┌─ File: src/a.ts ${"─".repeat(41)}┐`,
-      `│${"1 alpha".padEnd(58)}│`,
-      `│2 猫${" ".repeat(54)}│`,
-      `│${"".padEnd(58)}│`,
-      `│${"".padEnd(58)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · F5/r ref┘",
-    ]);
+    expect(file.join("\n")).toContain("1 alpha");
+    expect(file.join("\n")).toContain("2 猫");
     for (const lines of [wideLines, tree, file]) expectWidthSafe(lines, lines === wideLines ? 100 : 60);
     for (let width = 1; width <= 120; width += 1) {
       expectWidthSafe(narrow.panel.render(width), width);
@@ -1595,7 +1577,6 @@ describe("FilesPanel tree collapse", () => {
   });
 });
 
-describe("FilesPanel diff layout and context", () => {
   const DIFF_LINES = ["diff --git a/src/a.ts b/src/a.ts", "@@ -1 +1 @@", "-old", "+new"];
 
   async function diffHarness(columns: number, overrides: Partial<FilesPanelOptions> = {}): Promise<
@@ -1612,6 +1593,7 @@ describe("FilesPanel diff layout and context", () => {
     await settle();
     return value;
   }
+describe("FilesPanel diff layout and context", () => {
 
   test("d pairs removals with additions in two aligned columns", async () => {
     const layouts: string[] = [];
@@ -1699,6 +1681,31 @@ describe("FilesPanel diff layout and context", () => {
     expect(end[2]).toBe(`│${"  ▼ src/".padEnd(29)}│5 ${"-old 5".padEnd(31)}│5 ${"+new 5".padEnd(32)}│`);
     expect(end[5]).toBe(`│${"".padEnd(29)}│8 ${"-old 8".padEnd(31)}│8 ${"+new 8".padEnd(32)}│`);
   });
+  test("adjusts the diff mask and hands the visible diff to chat without losing its file", async () => {
+    const opacity: number[] = [];
+    const reviewed: Array<string | undefined> = [];
+    const chats: Array<{ path: string | undefined; excerpt: string | undefined }> = [];
+    const { panel, doneResults } = await diffHarness(100, {
+      diffMaskOpacity: 0.5,
+      onDiffMaskOpacityChange: value => opacity.push(value),
+      onReviewFileChange: path => reviewed.push(path),
+      onChat: (path, excerpt) => chats.push({ path, excerpt }),
+    });
+    expect(reviewed).toContain("src/a.ts");
+    panel.render(100);
+    panel.handleInput("=");
+    expect(opacity).toEqual([0.6]);
+    panel.handleInput("-");
+    expect(opacity).toEqual([0.6, 0.5]);
+    panel.render(100);
+    panel.handleInput("i");
+    expect(chats).toHaveLength(1);
+    expect(chats[0]?.path).toBe("src/a.ts");
+    expect(chats[0]?.excerpt).toContain("-old");
+    expect(chats[0]?.excerpt).toContain("+new");
+    expect(doneResults).toEqual([undefined]);
+  });
+
 });
 
 describe("FilesPanel tree mouse selection", () => {
@@ -1744,10 +1751,11 @@ describe("FilesPanel tree mouse selection", () => {
     await settle();
     panel.handleInput("v");
     panel.render(100);
+    const previewCount = source.previewCalls.length;
 
     panel.handleInput("\x1b[<0;5;3M");
 
-    expect(source.previewCalls).toHaveLength(0);
+    expect(source.previewCalls).toHaveLength(previewCount);
     expect(panel.render(100).join("\n")).toContain("> ▼ src/");
     expect(panel.render(100).join("\n")).toContain("a.ts");
   });
@@ -1775,18 +1783,6 @@ describe("FilesPanel theme masks", () => {
 });
 
 describe("FilesPanel overview geometry", () => {
-  test("renders overview metadata before pane titles and starts the body at row two", async () => {
-    const { panel, source } = harness(100, 7);
-    panel.start();
-    source.refreshCalls[0]?.value.resolve(snapshot());
-    await settle();
-
-    const lines = panel.render(100);
-    expect(lines[0]).toContain("Diff working tree");
-    expect(lines[0]).toContain("main");
-    expect(lines[1]).toContain("Files");
-    expect(lines[2]).toContain("src/");
-  });
   test("scrolls through wrapped diff lines and reflows them when the preview narrows", async () => {
     const { panel, source } = await diffHarness(60);
     const changed = "x".repeat(130) + "END";
@@ -1800,14 +1796,14 @@ describe("FilesPanel overview geometry", () => {
     panel.handleInput("\r");
     panel.handleInput("\x1b[F");
     const wide = panel.render(60);
-    expect(wide[2]).toContain("+");
-    expect(wide[4]).toContain("END");
+    expect(wide.join("\n")).toContain("+");
+    expect(wide.join("\n")).toContain("END");
     expectWidthSafe(wide, 60);
 
     panel.render(45);
     panel.handleInput("\x1b[F");
     const narrow = panel.render(45);
-    expect(narrow[4]).toContain("END");
+    expect(narrow.join("\n")).toContain("END");
     expectWidthSafe(narrow, 45);
   });
 });

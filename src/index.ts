@@ -36,11 +36,53 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function fileMention(path: string): string {
+  if (!/[\s@'"]/u.test(path)) return `@${path}`;
+  // The host parser accepts either quote style, but does not define escapes.
+  // Pick a delimiter that can contain the complete path whenever possible.
+  if (!path.includes('"')) return `@"${path}"`;
+  if (!path.includes("'")) return `@'${path}'`;
+  return `@"${path}"`;
+}
+
+function removeOwnedMention(editor: string, mention: string): string {
+  let index = editor.lastIndexOf(mention);
+  while (index >= 0) {
+    const before = editor[index - 1];
+    const after = editor[index + mention.length];
+    if ((before === undefined || /\s/u.test(before)) && (after === undefined || /\s/u.test(after))) break;
+    index = editor.lastIndexOf(mention, index - 1);
+  }
+  if (index < 0) return editor;
+  let start = index;
+  let end = index + mention.length;
+  const following = editor[end];
+  if (following !== undefined && /\s/u.test(following)) end += 1;
+  else if (start > 0 && /\s/u.test(editor[start - 1] ?? "")) start -= 1;
+  return editor.slice(0, start) + editor.slice(end);
+}
+
+
 export function createExtension(
   dependencies: ExtensionDependencies = productionDependencies,
 ): (pi: ExtensionAPI) => void {
   return pi => {
     let panelOpen = false;
+    let managedMention: string | undefined;
+
+    const updateReviewMention = (ctx: ExtensionContext, path: string | undefined): void => {
+      const editor = ctx.ui.getEditorText();
+      const base = managedMention === undefined
+        ? editor
+        : removeOwnedMention(editor, managedMention);
+      const mention = path === undefined ? undefined : fileMention(path);
+      managedMention = mention;
+      const trimmed = base.trimEnd();
+      const next = mention === undefined
+        ? trimmed
+        : `${trimmed}${trimmed ? " " : ""}${mention} `;
+      if (next !== editor) ctx.ui.setEditorText(next);
+    };
 
     const openFileReview = async (ctx: ExtensionContext): Promise<void> => {
       if (!ctx.hasUI || ctx.mode !== "tui") {
@@ -56,6 +98,9 @@ export function createExtension(
       }
 
       panelOpen = true;
+      let chatExcerpt: string | undefined;
+      let reviewedPath: string | undefined;
+      let chatRequested = false;
       try {
         const source = dependencies.createReviewSource(ctx.cwd);
         const sessionName = pi.getSessionName();
@@ -80,6 +125,7 @@ export function createExtension(
               highlightTheme: settings.highlightTheme,
               diffLayout: settings.diffLayout,
               diffContext: settings.diffContext,
+              diffMaskOpacity: settings.diffMaskOpacity,
               onTreeRatioChange: ratio => {
                 dependencies.settings.saveTreeRatio(ratio);
               },
@@ -94,6 +140,15 @@ export function createExtension(
               },
               onDiffContextChange: diffContext => {
                 dependencies.settings.saveDiffContext(diffContext);
+              },
+              onDiffMaskOpacityChange: opacity => {
+                dependencies.settings.saveDiffMaskOpacity(opacity);
+              },
+              onReviewFileChange: path => { reviewedPath = path; },
+              onChat: (path, excerpt) => {
+                reviewedPath = path;
+                chatExcerpt = excerpt;
+                chatRequested = true;
               },
               ...(highlight === undefined ? {} : { highlight }),
               done,
@@ -116,6 +171,19 @@ export function createExtension(
             },
           },
         );
+        // The /files command is still unwinding when the overlay closes. Touching
+        // the core editor before its submit handler returns can send the mention
+        // as a separate prompt instead of leaving it as a draft.
+        ctx.setTimeout(() => {
+          updateReviewMention(ctx, reviewedPath);
+          if (!chatRequested) return;
+          const draft = ctx.ui.getEditorText();
+          const question = /^\/btw(?:\s|$)/u.test(draft) ? draft : `/btw ${draft}`;
+          const excerpt = chatExcerpt === undefined
+            ? ""
+            : `\n\nReview diff excerpt:\n${chatExcerpt.split("\n").map(line => `    ${line}`).join("\n")}`;
+          ctx.ui.setEditorText(`${question.trimEnd()}${excerpt} `);
+        }, 0);
       } catch (error) {
         ctx.ui.notify(
           `Unable to open files review: ${errorMessage(error)}`,
