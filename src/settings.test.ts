@@ -21,7 +21,7 @@ afterEach(async () => {
 describe("clampTreeRatio", () => {
   test("keeps supported ratios and rejects values that are not finite numbers", () => {
     expect(clampTreeRatio(0.2)).toBe(0.2);
-    expect(clampTreeRatio(0.9)).toBe(0.3);
+    expect(clampTreeRatio(0.9)).toBe(0.9);
     expect(clampTreeRatio(0)).toBe(0.05);
     expect(clampTreeRatio(Number.NaN)).toBeUndefined();
     expect(clampTreeRatio("0.2")).toBeUndefined();
@@ -36,7 +36,7 @@ describe("panel settings store", () => {
 
     expect(await store.load()).toEqual(DEFAULT_PANEL_SETTINGS);
 
-    store.saveTreeRatio(0.18);
+    store.saveTreeRatio(0.45);
     store.saveHighlightTheme("nord");
     store.saveTreeCollapsed(true);
     store.saveDiffLayout("split");
@@ -45,7 +45,7 @@ describe("panel settings store", () => {
 
     const expected = {
       ...DEFAULT_PANEL_SETTINGS,
-      treeRatio: 0.18,
+      treeRatio: 0.45,
       treeCollapsed: true,
       highlightTheme: "nord",
       diffLayout: "split",
@@ -119,7 +119,7 @@ describe("panel settings store", () => {
     });
   });
 
-  test("falls back to defaults for unreadable files and clamps stored width", async () => {
+  test("falls back to defaults for unreadable files and retains stored width", async () => {
     const missing = createPanelSettingsStore(async () => nodePath.join(tmpdir(), "pi-files-absent", "x.json"));
     expect(await missing.load()).toEqual(DEFAULT_PANEL_SETTINGS);
 
@@ -134,7 +134,7 @@ describe("panel settings store", () => {
     await writeFile(file, JSON.stringify({ treeRatio: 0.75 }), "utf8");
     expect(await store.load()).toEqual({
       ...DEFAULT_PANEL_SETTINGS,
-      treeRatio: 0.3,
+      treeRatio: 0.75,
     });
   });
 

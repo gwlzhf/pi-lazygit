@@ -6,6 +6,8 @@ import {
   fitCell,
   renderDiffLine,
   renderDiffSplitRow,
+  renderWrappedDiffLine,
+  renderWrappedDiffSplitRow,
   renderHighlightedLine,
   renderNumberedLine,
   renderSelectedRow,
@@ -170,6 +172,38 @@ describe("preview line rendering", () => {
     ]);
   });
 
+  test("wraps long unified and split changes without losing CJK cells or color", () => {
+    const calls: ThemeColor[] = [];
+    const theme = plainTheme(calls);
+    const unified = renderWrappedDiffLine("+猫猫abcdefgh", 5, theme);
+    expect(unified).toEqual(["+猫猫", "abcde", "fgh  "]);
+    expect(calls).toEqual([
+      "toolDiffAdded/toolSuccessBg",
+      "toolDiffAdded/toolSuccessBg",
+      "toolDiffAdded/toolSuccessBg",
+    ]);
+
+    const row = parseUnifiedDiff(["@@ -1 +1 @@", "-old-abcdefghij", "+new-1234567890"])?.[1];
+    expect(row).toBeDefined();
+    if (row === undefined) return;
+    const split = renderWrappedDiffSplitRow(row, 21, theme, 1);
+    expect(split.length).toBeGreaterThan(1);
+    expect(split.map(line => line.split("│")[0]?.slice(3).trim()).join("")).toBe("old-abcdefghij");
+    expect(split.map(line => line.split("│")[1]?.slice(3).trim()).join("")).toBe("new-1234567890");
+    for (const line of split) expect(visibleWidth(line)).toBe(21);
+  });
+
+  test("uses deeper blue and green for changed lines on light and dark themes", () => {
+    for (const isLight of [true, false]) {
+      const theme = { ...plainTheme(), isLight } as Theme;
+      const added = renderDiffLine("+new", 8, theme);
+      const removed = renderDiffLine("-old", 8, theme);
+      expect(added).toContain(isLight ? "\x1b[38;2;37;114;74m" : "\x1b[38;2;67;156;106m");
+      expect(removed).toContain(isLight ? "\x1b[38;2;40;100;135m" : "\x1b[38;2;76;142;174m");
+      expect(added).toEndWith("\x1b[39m");
+      expect(removed).toEndWith("\x1b[39m");
+    }
+  });
 
   test("sanitizes before styling and handles tiny widths", () => {
     const calls: string[] = [];

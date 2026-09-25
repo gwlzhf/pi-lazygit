@@ -255,18 +255,17 @@ function expectWidthSafe(lines: readonly string[], width: number): void {
 }
 
 describe("FilesPanel state machine", () => {
-  test("starts in modified workspace tree focus and rebuilds rows for a, m, and s", async () => {
+  test("starts in the modified workspace change list and rebuilds tree rows for a, m, and s", async () => {
     const { panel, source } = harness(60, 7);
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
 
     const initial = panel.render(60);
-    expect(initial[0]).toContain("Diff working tree");
-    expect(initial[1]).toContain("Files");
-    expect(initial.join("\n")).toContain("M  a.ts");
-    expect(initial.join("\n")).toContain("A  b.ts");
-    expect(initial.join("\n")).not.toContain("README.md");
+    const rendered = initial.join("\n");
+    expect(rendered).toContain("M  src/a.ts");
+    expect(rendered).toContain("A  src/b.ts");
+    expectWidthSafe(initial, 60);
 
     panel.handleInput("a");
     expect(panel.render(60).join("\n")).toContain("README.md");
@@ -296,7 +295,6 @@ describe("FilesPanel state machine", () => {
     }));
     await settle();
 
-    panel.handleInput("v");
     const list = panel.render(60);
     // The redesign moved the listing and scope detail out of the pane title: the overview row
     // names the review and the footer reports "changes · workspace".
@@ -351,6 +349,8 @@ describe("FilesPanel state machine", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
+    panel.handleInput("\x1b[A");
     panel.handleInput("h");
     expect(panel.render(60).join("\n")).not.toContain("a.ts");
     panel.handleInput("l");
@@ -375,6 +375,8 @@ describe("FilesPanel state machine", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
+    panel.handleInput("\x1b[A");
     panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", Array.from({ length: 10 }, (_, index) => `line ${index + 1}`)));
     await settle();
@@ -421,6 +423,7 @@ describe("FilesPanel state machine", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
     panel.handleInput("\x1b[B");
     panel.handleInput("\x1b[B");
     expect(panel.render(60).join("\n")).toContain(">   A  b.ts");
@@ -436,7 +439,7 @@ describe("FilesPanel state machine", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
-    panel.handleInput("\x1b[B");
+    // The list already selects the first changed file on refresh.
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["before refresh"]));
     await settle();
     panel.handleInput("\r");
@@ -874,6 +877,8 @@ describe("FilesPanel focus and tree width", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
+    panel.handleInput("\x1b[A");
     panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["alpha"]));
     await settle();
@@ -888,30 +893,31 @@ describe("FilesPanel focus and tree width", () => {
     expect(panel.render(60)[1]).toContain("Files");
   });
 
-  test("[ and ] resize the tree pane between the minimum and the 30% cap", async () => {
+  test("[ and ] resize the tree pane between the minimum and the usable-preview cap", async () => {
     const { panel, source, tui } = harness(100, 6);
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
 
-    // 100 columns leave 97 interior columns; the cap is floor(97 * 0.3) = 29.
+    // 100 columns leave 97 interior columns; the default is floor(97 * 0.3) = 29.
     expect(dividerColumn(panel.render(100))).toBe(30);
-    const atCap = tui.renderRequests;
+    const atDefault = tui.renderRequests;
     panel.handleInput("]");
-    expect(dividerColumn(panel.render(100))).toBe(30);
-    expect(tui.renderRequests).toBe(atCap);
+    expect(dividerColumn(panel.render(100))).toBe(31);
+    expect(tui.renderRequests).toBe(atDefault + 1);
 
     panel.handleInput("[");
-    expect(dividerColumn(panel.render(100))).toBe(29);
+    expect(dividerColumn(panel.render(100))).toBe(30);
     panel.handleInput("\x1b[1;5D");
-    expect(dividerColumn(panel.render(100))).toBe(28);
-    panel.handleInput("\x1b[1;5C");
     expect(dividerColumn(panel.render(100))).toBe(29);
+    panel.handleInput("\x1b[1;5C");
+    expect(dividerColumn(panel.render(100))).toBe(30);
 
     for (let press = 0; press < 40; press += 1) panel.handleInput("[");
     expect(dividerColumn(panel.render(100))).toBe(13);
-    for (let press = 0; press < 40; press += 1) panel.handleInput("]");
-    expect(dividerColumn(panel.render(100))).toBe(30);
+    for (let press = 0; press < 60; press += 1) panel.handleInput("]");
+    // The cap leaves 40 columns for the preview: 97 - 40 = 57 tree columns.
+    expect(dividerColumn(panel.render(100))).toBe(58);
   });
 
   test("[ and ] are ignored in the single-pane layout instead of rewriting the stored width", async () => {
@@ -933,7 +939,7 @@ describe("FilesPanel focus and tree width", () => {
     expect(ratios).toEqual([]);
     expect(tui.renderRequests).toBe(atNarrow);
 
-    // Widening the terminal still opens at the untouched default cap.
+    // Widening the terminal still opens at the untouched default width.
     expect(dividerColumn(panel.render(100))).toBe(30);
   });
 
@@ -952,16 +958,16 @@ describe("FilesPanel focus and tree width", () => {
     expect(panel.render(200).at(-1)).not.toContain("[ ] width");
   });
 
-  test("the width ratio survives a terminal width change", async () => {
+  test("the width ratio survives a terminal width change above the default width", async () => {
     const { panel, source } = harness(100, 6);
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
     panel.render(100);
-    for (let press = 0; press < 9; press += 1) panel.handleInput("[");
-    // 20 of 97 interior columns ≈ 20.6% of the 137 interior columns at width 140.
-    expect(dividerColumn(panel.render(100))).toBe(21);
-    expect(dividerColumn(panel.render(140))).toBe(29);
+    for (let press = 0; press < 9; press += 1) panel.handleInput("]");
+    // 38 of 97 interior columns ≈ 39.2% of the 137 interior columns at width 140.
+    expect(dividerColumn(panel.render(100))).toBe(39);
+    expect(dividerColumn(panel.render(140))).toBe(55);
   });
 
   test("dragging the divider resizes the tree pane and stops on release", async () => {
@@ -975,7 +981,7 @@ describe("FilesPanel focus and tree width", () => {
     panel.handleInput("\x1b[<32;21;3M");
     expect(dividerColumn(panel.render(100))).toBe(20);
     panel.handleInput("\x1b[<32;91;3M");
-    expect(dividerColumn(panel.render(100))).toBe(30);
+    expect(dividerColumn(panel.render(100))).toBe(58);
     panel.handleInput("\x1b[<32;3;3M");
     expect(dividerColumn(panel.render(100))).toBe(13);
 
@@ -1001,6 +1007,7 @@ describe("FilesPanel focus and tree width", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
     panel.render(100);
 
     panel.handleInput("\x1b[<65;5;3M");
@@ -1034,17 +1041,18 @@ describe("FilesPanel focus and tree width", () => {
     expect(dividerColumn(panel.render(100))).toBe(18);
 
     for (let press = 0; press < 40; press += 1) panel.handleInput("]");
-    // Reports stop at the cap instead of repeating the unchanged ratio.
-    expect(ratios.at(-1)).toBe(29 / 97);
-    expect(ratios).toHaveLength(14);
+    // Reports stop at the usable-preview cap instead of repeating the unchanged ratio.
+    expect(ratios.at(-1)).toBe(57 / 97);
+    expect(ratios).toHaveLength(42);
+
   });
 
-  test("clamps a restored width that is out of range", async () => {
+  test("clamps a restored width only at the minimum and usable-preview cap", async () => {
     const wide = harness(100, 6, { treeRatio: 0.9 });
     wide.panel.start();
     wide.source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
-    expect(dividerColumn(wide.panel.render(100))).toBe(30);
+    expect(dividerColumn(wide.panel.render(100))).toBe(58);
 
     // 5% of 97 columns is below the 12-column floor, which wins.
     const narrow = harness(100, 6, { treeRatio: -1 });
@@ -1059,6 +1067,8 @@ describe("FilesPanel focus and tree width", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
+    panel.handleInput("\x1b[A");
 
     // The selection starts on the src/ directory, where Right still collapses
     // and expands instead of switching panes.
@@ -1178,6 +1188,8 @@ describe("FilesPanel syntax highlighting", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
+    panel.handleInput("\x1b[A");
     panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["const x = 1;", "export {};"]));
     await settle();
@@ -1291,6 +1303,8 @@ describe("FilesPanel syntax highlighting", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
+    panel.handleInput("\x1b[A");
 
     // Two source lines against one highlighted line: the result is discarded.
     panel.handleInput("\x1b[B");
@@ -1335,6 +1349,8 @@ describe("FilesPanel deterministic rendering", () => {
     wide.panel.start();
     wide.source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    wide.panel.handleInput("v");
+    wide.panel.handleInput("\x1b[A");
     wide.panel.handleInput("\x1b[B");
     wide.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "diff", ["diff --git a/src/a.ts b/src/a.ts", "@@ -1 +1 @@", "-old", "+new"]));
     await settle();
@@ -1353,6 +1369,8 @@ describe("FilesPanel deterministic rendering", () => {
     narrow.panel.start();
     narrow.source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    narrow.panel.handleInput("v");
+    narrow.panel.handleInput("\x1b[A");
     const tree = narrow.panel.render(60);
     expect(tree[0]).toContain("Diff working tree");
     expect(tree.slice(1)).toEqual([
@@ -1397,18 +1415,17 @@ describe("FilesPanel deterministic rendering", () => {
     value.source.refreshCalls[0]?.value.resolve(snapshot({ allFiles: [], workspaceChanges: new Map(), sessionChanges: new Map(), workspaceSummary: { files: 0, insertions: 0, deletions: 0 }, sessionSummary: { files: 0, insertions: 0, deletions: 0 } }));
     await settle();
     const empty = value.panel.render(60);
-    expect(empty[0]).toContain("Diff working tree");
-    expect(empty.slice(1)).toEqual([
-      `┌─ Files ${"─".repeat(50)}┐`,
-      `│${"No workspace changes — press a for all files".padEnd(58)}│`,
-      `│${"".padEnd(58)}│`,
-      "└─ demo · modified · workspace · +0 -0 · 0 files · F5/r ref┘",
-    ]);
+    expect(empty).toHaveLength(5);
+    expect(empty.at(-1)).toContain("0 files");
+    expect(empty.slice(1, -1).some(line => line.trim().length > 0)).toBe(true);
+    expectWidthSafe(empty, 60);
 
     const special = harness(60, 6);
     special.panel.start();
     special.source.refreshCalls[0]?.value.resolve(snapshot({ truncated: true }));
     await settle();
+    special.panel.handleInput("v");
+    special.panel.handleInput("\x1b[A");
     special.panel.handleInput("\x1b[B");
     special.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "binary", [], { byteSize: 2048 }));
     await settle();
@@ -1495,6 +1512,8 @@ describe("FilesPanel tree collapse", () => {
     value.panel.start();
     value.source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    value.panel.handleInput("v");
+    value.panel.handleInput("\x1b[A");
     value.panel.handleInput("\x1b[B");
     value.source.previewCalls.at(-1)?.value.resolve(
       preview("src/a.ts", "text", ["alpha", "beta", "gamma", "delta", "epsilon"]),
@@ -1563,13 +1582,13 @@ describe("FilesPanel tree collapse", () => {
     await settle();
 
     const opened = panel.render(100);
-    expect(opened[1]).toBe(`┌─ Preview ${"─".repeat(88)}┐`);
-    expect(opened[2]).toBe(`│${"Select a file to preview".padEnd(98)}│`);
+    expect(opened[1]).toContain("Loading:");
+    expect(opened[2]).toContain("Loading preview");
 
     // Narrowing a hidden tree is a no-op; widening reveals it.
     panel.handleInput("[");
     expect(collapses).toEqual([]);
-    expect(panel.render(100)[1]).toBe(`┌─ Preview ${"─".repeat(88)}┐`);
+    expect(panel.render(100)[1]).toContain("Loading:");
     panel.handleInput("]");
     expect(collapses).toEqual([false]);
     expect(panel.render(100)[1]).toContain("┬");
@@ -1586,6 +1605,8 @@ describe("FilesPanel diff layout and context", () => {
     value.panel.start();
     value.source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    value.panel.handleInput("v");
+    value.panel.handleInput("\x1b[A");
     value.panel.handleInput("\x1b[B");
     value.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "diff", DIFF_LINES));
     await settle();
@@ -1663,6 +1684,8 @@ describe("FilesPanel diff layout and context", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
+    panel.handleInput("\x1b[A");
     panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "diff", lines));
     await settle();
@@ -1719,6 +1742,7 @@ describe("FilesPanel tree mouse selection", () => {
       ]),
     }));
     await settle();
+    panel.handleInput("v");
     panel.render(100);
 
     panel.handleInput("\x1b[<0;5;3M");
@@ -1762,5 +1786,28 @@ describe("FilesPanel overview geometry", () => {
     expect(lines[0]).toContain("main");
     expect(lines[1]).toContain("Files");
     expect(lines[2]).toContain("src/");
+  });
+  test("scrolls through wrapped diff lines and reflows them when the preview narrows", async () => {
+    const { panel, source } = await diffHarness(60);
+    const changed = "x".repeat(130) + "END";
+    panel.handleInput("c");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "diff", [
+      "@@ -1 +1 @@",
+      "-old",
+      `+${changed}`,
+    ]));
+    await settle();
+    panel.handleInput("\r");
+    panel.handleInput("\x1b[F");
+    const wide = panel.render(60);
+    expect(wide[2]).toContain("+");
+    expect(wide[4]).toContain("END");
+    expectWidthSafe(wide, 60);
+
+    panel.render(45);
+    panel.handleInput("\x1b[F");
+    const narrow = panel.render(45);
+    expect(narrow[4]).toContain("END");
+    expectWidthSafe(narrow, 45);
   });
 });

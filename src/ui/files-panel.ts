@@ -16,8 +16,8 @@ import {
   isDiffLayout,
   nextDiffContext,
   normalizeDiffContext,
-  TREE_MAX_RATIO,
   TREE_MIN_COLUMNS,
+  TREE_MIN_PREVIEW_COLUMNS,
   TREE_MIN_RATIO,
   type ChangeRecord,
   type ChangeScope,
@@ -64,8 +64,8 @@ import {
 } from "./selection";
 import {
   fitCell,
-  renderDiffLine,
-  renderDiffSplitRow,
+  renderWrappedDiffLine,
+  renderWrappedDiffSplitRow,
   renderHighlightedLine,
   renderNumberedLine,
   renderSelectedRow,
@@ -173,7 +173,7 @@ export class FilesPanel implements Component {
 
   #leftMode: LeftMode = "files";
   #viewMode: ViewMode = "modified";
-  #listLayout: ListLayout = "tree";
+  #listLayout: ListLayout = "changes";
   #scope: ChangeScope = "workspace";
   #focus: PanelFocus = "tree";
   #snapshot: ProjectSnapshot | undefined;
@@ -225,6 +225,12 @@ export class FilesPanel implements Component {
     readonly preview: FilePreview | CommitDiffPreview;
     readonly rows: readonly DiffRow[] | undefined;
   } | undefined;
+  #wrappedDiff: {
+    readonly preview: FilePreview | CommitDiffPreview;
+    readonly width: number;
+    readonly layout: DiffLayout;
+    readonly lines: readonly string[];
+  } | undefined;
   #highlighted: {
     readonly preview: FilePreview;
     readonly theme: HighlightThemeName;
@@ -264,7 +270,7 @@ export class FilesPanel implements Component {
     this.#onDiffContextChange = options.onDiffContextChange;
     this.#onHighlightThemeChange = options.onHighlightThemeChange;
     this.#highlight = options.highlight;
-    this.#treeRatio = Math.max(TREE_MIN_RATIO, Math.min(TREE_MAX_RATIO, options.treeRatio ?? DEFAULT_TREE_RATIO));
+    this.#treeRatio = Math.max(TREE_MIN_RATIO, options.treeRatio ?? DEFAULT_TREE_RATIO);
     this.#treeCollapsed = options.treeCollapsed ?? false;
     this.#focus = this.#treeCollapsed ? "preview" : "tree";
     this.#diffLayout = isDiffLayout(options.diffLayout) ? options.diffLayout : DEFAULT_DIFF_LAYOUT;
@@ -495,8 +501,9 @@ export class FilesPanel implements Component {
       return;
     }
     if (matchesKey(data, "a")) {
-      if (this.#snapshot?.kind === "git" && this.#viewMode !== "all") {
+      if (this.#snapshot?.kind === "git" && (this.#viewMode !== "all" || this.#listLayout !== "tree")) {
         this.#viewMode = "all";
+        this.#listLayout = "tree";
         this.#rebuildRows();
         this.#requestRender();
       }
@@ -802,10 +809,10 @@ export class FilesPanel implements Component {
     return !this.#treeCollapsed && width >= WIDE_LAYOUT_MINIMUM;
   }
 
-  /** Tree pane columns for a panel width, clamped to the resize bounds. */
+  /** Tree pane columns for a panel width, reserving usable preview space. */
   #treeWidth(width: number): number {
     const available = Math.max(0, Math.floor(width) - 3);
-    const maximum = Math.floor(available * TREE_MAX_RATIO);
+    const maximum = Math.max(0, available - TREE_MIN_PREVIEW_COLUMNS);
     const minimum = Math.min(maximum, TREE_MIN_COLUMNS);
     return Math.max(minimum, Math.min(maximum, Math.round(available * this.#treeRatio)));
   }
@@ -827,7 +834,7 @@ export class FilesPanel implements Component {
   #setTreeColumns(columns: number): void {
     const available = Math.max(0, this.#lastWidth - 3);
     if (available === 0) return;
-    const maximum = Math.floor(available * TREE_MAX_RATIO);
+    const maximum = Math.max(0, available - TREE_MIN_PREVIEW_COLUMNS);
     const minimum = Math.min(maximum, TREE_MIN_COLUMNS);
     const clamped = Math.max(minimum, Math.min(maximum, Math.round(columns)));
     if (clamped === this.#treeWidth(this.#lastWidth)) return;
@@ -1454,18 +1461,40 @@ export class FilesPanel implements Component {
   }
 
   #previewLineCount(): number {
+    const terminalWidth = Math.max(1, Math.floor(this.#tui.terminal.columns));
+    const width = this.#lastPreviewWidth > 0
+      ? this.#lastPreviewWidth
+      : this.#isWideLayout(terminalWidth)
+        ? terminalWidth - 3 - this.#treeWidth(terminalWidth)
+        : terminalWidth - 2;
     if (this.#leftMode === "log") {
       const commit = this.#commitDiff;
-      if (commit === undefined) return 1;
-      const rows = this.#splitDiffRows(commit, this.#lastPreviewWidth);
-      return rows === undefined ? commit.lines.length : rows.length;
+      return commit === undefined || commit.kind === "error" ? 1 : this.#diffVisualRows(commit, width).length;
     }
     const value = this.#preview;
     if (value === undefined) return 1;
     if (value.kind === "binary") return value.byteSize === undefined ? 1 : 2;
     if (value.kind === "error") return 1;
-    const rows = this.#splitDiffRows(value, this.#lastPreviewWidth);
-    return rows === undefined ? value.lines.length : rows.length;
+    return value.kind === "diff"
+      ? this.#diffVisualRows(value, width).length
+      : value.lines.length;
+  }
+
+  #diffVisualRows(value: FilePreview | CommitDiffPreview, width: number): readonly string[] {
+    const cached = this.#wrappedDiff;
+    if (cached?.preview === value && cached.width === width && cached.layout === this.#diffLayout) {
+      return cached.lines;
+    }
+    const rows = this.#splitDiffRows(value, width);
+    let lines: readonly string[];
+    if (rows === undefined) {
+      lines = value.lines.flatMap(line => renderWrappedDiffLine(line, width, this.#theme));
+    } else {
+      const gutter = diffGutterWidth(rows);
+      lines = rows.flatMap(row => renderWrappedDiffSplitRow(row, width, this.#theme, gutter));
+    }
+    this.#wrappedDiff = { preview: value, width, layout: this.#diffLayout, lines };
+    return lines;
   }
 
   #splitDiffRows(value: FilePreview | CommitDiffPreview, width: number): readonly DiffRow[] | undefined {
@@ -1723,18 +1752,10 @@ export class FilesPanel implements Component {
       const commit = this.#commitDiff;
       if (commit === undefined) return [this.#theme.fg("muted", "Select a commit to preview")];
       if (commit.kind === "error") return [this.#theme.fg("error", `Error: ${errorMessage(commit.error ?? "Unable to load commit")}`)];
-      const rows = this.#splitDiffRows(commit, width);
-      if (rows !== undefined) {
-        const first = Math.max(0, Math.min(this.#previewScroll, Math.max(0, rows.length - height)));
-        this.#previewScroll = first;
-        const numbers = diffGutterWidth(rows);
-        return rows
-          .slice(first, first + height)
-          .map(row => renderDiffSplitRow(row, width, this.#theme, numbers));
-      }
-      const start = Math.max(0, Math.min(this.#previewScroll, Math.max(0, commit.lines.length - height)));
-      this.#previewScroll = start;
-      return commit.lines.slice(start, start + height).map(line => renderDiffLine(line, width, this.#theme));
+      const lines = this.#diffVisualRows(commit, width);
+      const first = Math.max(0, Math.min(this.#previewScroll, Math.max(0, lines.length - height)));
+      this.#previewScroll = first;
+      return lines.slice(first, first + height);
     }
     if (this.#previewLoading && this.#preview === undefined) return [this.#theme.fg("accent", "Loading preview…")];
     const value = this.#preview;
@@ -1749,23 +1770,15 @@ export class FilesPanel implements Component {
     }
 
     if (value.kind === "diff") {
-      const rows = this.#splitDiffRows(value, width);
-      if (rows !== undefined) {
-        const first = Math.max(0, Math.min(this.#previewScroll, Math.max(0, rows.length - height)));
-        this.#previewScroll = first;
-        const numbers = diffGutterWidth(rows);
-        return rows
-          .slice(first, first + height)
-          .map(row => renderDiffSplitRow(row, width, this.#theme, numbers));
-      }
+      const lines = this.#diffVisualRows(value, width);
+      const start = Math.max(0, Math.min(this.#previewScroll, Math.max(0, lines.length - height)));
+      this.#previewScroll = start;
+      return lines.slice(start, start + height);
     }
 
     const start = Math.max(0, Math.min(this.#previewScroll, Math.max(0, value.lines.length - height)));
     this.#previewScroll = start;
     const gutter = String(Math.max(1, value.lines.length)).length;
-    if (value.kind === "diff") {
-      return value.lines.slice(start, start + height).map(line => renderDiffLine(line, width, this.#theme));
-    }
     const colored = this.#highlightedWindow(value, start, start + height);
     return value.lines.slice(start, start + height).map((line, offset) => {
       const number = start + offset + 1;

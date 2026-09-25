@@ -508,9 +508,10 @@ test("inspects visible spaced and Unicode paths while excluding ignored files", 
   expect(inspection.allFiles.some((path) => path.startsWith(".git/"))).toBe(false);
 });
 
-test("reuses the latest inspection when previewing an unchanged file", async () => {
+test("uses live status when previewing after inspection", async () => {
   const root = await temporaryDirectory();
-  await writeFile(join(root, "tracked.ts"), "content\n");
+  await writeFile(join(root, "tracked.ts"), "base\n");
+  let changed = false;
   const commands: string[] = [];
   const runner = new ScriptedRunner((args) => {
     const command = args.join("\0");
@@ -518,11 +519,16 @@ test("reuses the latest inspection when previewing an unchanged file", async () 
     if (command === "rev-parse\0--show-toplevel") return commandOutput(`${root}\n`);
     if (command === "rev-parse\0--verify\0HEAD") return commandOutput("0123456789abcdef\n");
     if (command === "symbolic-ref\0-q\0HEAD") return commandOutput("refs/heads/main\n");
-    if (command === "status\0--porcelain=v1\0-z\0--untracked-files=all") return commandOutput();
+    if (command === "status\0--porcelain=v1\0-z\0--untracked-files=all") {
+      return changed ? commandOutput(" M tracked.ts\0") : commandOutput();
+    }
     if (command === "ls-files\0-z\0--cached\0--others\0--exclude-standard") {
       return commandOutput("tracked.ts\0");
     }
     if (command.startsWith("diff\0--no-ext-diff\0--no-color\0--numstat")) return commandOutput();
+    if (command.startsWith("diff\0--no-ext-diff\0--no-color\0--unified=")) {
+      return commandOutput("--- a/tracked.ts\n+++ b/tracked.ts\n@@ -1 +1 @@\n-base\n+changed\n");
+    }
     throw new Error(`unexpected Git command: ${args.join(" ")}`);
   });
   const repository = await GitRepository.open(
@@ -532,12 +538,20 @@ test("reuses the latest inspection when previewing an unchanged file", async () 
   );
   if (!repository) throw new Error("expected scripted repository");
   await repository.inspect(new AbortController().signal);
-  commands.length = 0;
 
-  const result = await repository.preview("tracked.ts", new AbortController().signal);
+  const unchanged = await repository.preview("tracked.ts", new AbortController().signal);
+  expect(unchanged).toMatchObject({ kind: "text", lines: ["base"] });
 
-  expect(result).toMatchObject({ kind: "text", lines: ["content"] });
-  expect(commands).toEqual([]);
+  changed = true;
+  await writeFile(join(root, "tracked.ts"), "changed\n");
+  const changedPreview = await repository.preview(
+    "tracked.ts",
+    new AbortController().signal,
+  );
+
+  expect(changedPreview).toMatchObject({ kind: "diff" });
+  expect(changedPreview.lines).toContain("-base");
+  expect(changedPreview.lines).toContain("+changed");
 });
 
 test("previews staged plus unstaged edits together against HEAD", async () => {

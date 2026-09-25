@@ -1,5 +1,5 @@
 import type { Theme, ThemeBg, ThemeColor } from "@oh-my-pi/pi-coding-agent";
-import { replaceTabs, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import type { DiffCell, DiffRow } from "./diff-view";
 
 const OSC_SEQUENCE = /(?:\x1b\]|\u009d)[\s\S]*?(?:\x07|\x1b\\|\u009c)/gu;
@@ -130,6 +130,15 @@ function diffColor(line: string): ThemeColor {
   if (line.startsWith("-")) return "toolDiffRemoved";
   return "toolDiffContext";
 }
+/** Deeper blue/green than the host's pastel diff palette, contrasted on light themes. */
+function diffText(theme: Theme, color: ThemeColor, text: string): string {
+  if (color !== "toolDiffAdded" && color !== "toolDiffRemoved") return theme.fg(color, text);
+  if (typeof theme.isLight !== "boolean") return theme.fg(color, text);
+  const rgb = color === "toolDiffAdded"
+    ? theme.isLight ? "37;114;74" : "67;156;106"
+    : theme.isLight ? "40;100;135" : "76;142;174";
+  return `\x1b[38;2;${rgb}m${text}\x1b[39m`;
+}
 
 /**
  * `Theme.fgOnBg` only exists in newer OMP runtimes. Older hosts still expose
@@ -141,13 +150,33 @@ function fgOnBg(theme: Theme, color: ThemeColor, background: ThemeBg, text: stri
   return theme.fg(color, text);
 }
 
-export function renderDiffLine(line: string, width: number, theme: Theme): string {
+function maskedDiffText(
+  theme: Theme,
+  color: ThemeColor,
+  background: ThemeBg,
+  text: string,
+): string {
+  // Keep the host palette on runtimes that do not expose a light/dark hint;
+  // this also avoids replacing a theme's carefully chosen foreground color.
+  const styled = typeof theme.isLight === "boolean" ? diffText(theme, color, text) : text;
+  return fgOnBg(theme, color, background, styled);
+}
+
+export function renderDiffLine(line: string, width: number, theme: Theme, color?: ThemeColor): string {
   const clean = safeLine(line);
   const cell = fitCell(clean, width);
+  const resolvedColor = color ?? diffColor(clean);
+  if (resolvedColor === "toolDiffAdded") return maskedDiffText(theme, resolvedColor, "toolSuccessBg", cell);
+  if (resolvedColor === "toolDiffRemoved") return maskedDiffText(theme, resolvedColor, "toolErrorBg", cell);
+  return diffText(theme, resolvedColor, cell);
+}
+
+/** Visual rows for a diff line, retaining the original line's color on continuations. */
+export function renderWrappedDiffLine(line: string, width: number, theme: Theme): readonly string[] {
+  if (width <= 0) return [];
+  const clean = safeLine(line);
   const color = diffColor(clean);
-  if (color === "toolDiffAdded") return fgOnBg(theme, color, "toolSuccessBg", cell);
-  if (color === "toolDiffRemoved") return fgOnBg(theme, color, "toolErrorBg", cell);
-  return theme.fg(color, cell);
+  return wrapTextWithAnsi(clean, width).map(fragment => renderDiffLine(fragment, width, theme, color));
 }
 
 /** Smallest preview width that still fits two readable diff columns. */
@@ -172,10 +201,10 @@ function renderDiffCell(cell: DiffCell, width: number, theme: Theme, gutterWidth
   const color = diffCellColor(cell.kind);
   const dimPrefix = theme.fg("dim", `${number} `);
   const styledBody = cell.kind === "add"
-    ? fgOnBg(theme, color, "toolSuccessBg", body)
+    ? maskedDiffText(theme, color, "toolSuccessBg", body)
     : cell.kind === "remove"
-      ? fgOnBg(theme, color, "toolErrorBg", body)
-      : theme.fg(color, body);
+      ? maskedDiffText(theme, color, "toolErrorBg", body)
+      : diffText(theme, color, body);
   return `${dimPrefix}${styledBody}`;
 }
 
@@ -205,6 +234,44 @@ export function renderDiffSplitRow(
 /** Pad trusted, single-line text to width, then paint the whole row as selected. */
 export function renderSelectedRow(text: string, width: number, theme: Theme): string {
   return fgOnBg(theme, "text", "selectedBg", fitCell(text, width));
+}
+
+/** Wrap both sides independently while keeping corresponding fragments aligned. */
+export function renderWrappedDiffSplitRow(
+  row: DiffRow,
+  width: number,
+  theme: Theme,
+  gutterWidth: number,
+): readonly string[] {
+  if (width <= 0) return [];
+  if (row.kind !== "pair") return renderWrappedDiffLine(row.text, width, theme);
+  const leftWidth = Math.floor((width - 1) / 2);
+  const rightWidth = width - 1 - leftWidth;
+  if (leftWidth <= gutterWidth + 2 || rightWidth <= gutterWidth + 2) {
+    return [renderDiffSplitRow(row, width, theme, gutterWidth)];
+  }
+  const left = row.left.kind === "empty"
+    ? [""]
+    : wrapTextWithAnsi(safeLine(row.left.text), leftWidth - gutterWidth - 2);
+  const right = row.right.kind === "empty"
+    ? [""]
+    : wrapTextWithAnsi(safeLine(row.right.text), rightWidth - gutterWidth - 2);
+  const count = Math.max(left.length, right.length);
+  const lines: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const leftText = left[index];
+    const rightText = right[index];
+    lines.push(renderDiffSplitRow({
+      kind: "pair",
+      left: leftText === undefined
+        ? { kind: "empty", number: undefined, text: "" }
+        : { ...row.left, number: index === 0 ? row.left.number : undefined, text: leftText },
+      right: rightText === undefined
+        ? { kind: "empty", number: undefined, text: "" }
+        : { ...row.right, number: index === 0 ? row.right.number : undefined, text: rightText },
+    }, width, theme, gutterWidth));
+  }
+  return lines;
 }
 
 export function renderNumberedLine(

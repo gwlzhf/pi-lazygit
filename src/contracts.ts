@@ -2,12 +2,12 @@ export const MAX_PREVIEW_BYTES = 1_048_576;
 export const MAX_PREVIEW_LINES = 5_000;
 export const MAX_FILESYSTEM_ENTRIES = 20_000;
 
-/** Largest share of the panel interior the project tree may occupy. */
-export const TREE_MAX_RATIO = 0.3;
+/** Tree width the panel opens with when nothing was persisted. */
+export const DEFAULT_TREE_RATIO = 0.3;
 /** Smallest share of the panel interior the project tree may occupy. */
 export const TREE_MIN_RATIO = 0.05;
-/** Tree width the panel opens with when nothing was persisted. */
-export const DEFAULT_TREE_RATIO = TREE_MAX_RATIO;
+/** Smallest preview pane width in columns when both panes are shown. */
+export const TREE_MIN_PREVIEW_COLUMNS = 40;
 /** Smallest tree pane width in columns, unless the interior is narrower. */
 export const TREE_MIN_COLUMNS = 12;
 

@@ -324,7 +324,6 @@ function validateCommitOid(oid: string): void {
 
 export class GitRepository {
   private rootPath: string | undefined;
-  private latestInspection: RepositoryInspection | undefined;
 
   constructor(private readonly runner: ProcessRunner = new BunProcessRunner()) {}
 
@@ -466,7 +465,6 @@ export class GitRepository {
     const output = await this.run(args, signal, SMALL_GIT_OUTPUT);
     if (output.truncated) throw new GitOutputError(`git ${args.join(" ")} exceeded its output limit`);
     if (output.exitCode !== 0) throw commandFailure(args, output);
-    this.latestInspection = undefined;
   }
 
   private async addContentSummaries(
@@ -555,7 +553,6 @@ export class GitRepository {
       summaryByPath,
       summary: { files: changes.size, insertions, deletions },
     };
-    this.latestInspection = inspection;
     return inspection;
   }
 
@@ -620,16 +617,11 @@ export class GitRepository {
     let displayPath = normalizeProjectPath(path);
     try {
       displayPath = validateProjectPath(this.root(), path);
-      const cached = this.latestInspection;
-      const [hasHead, changes] = cached === undefined
-        ? await (async () => {
-            const [head, statusChanges] = await Promise.all([
-              this.detectHeadIdentity(signal),
-              this.readStatus(signal),
-            ]);
-            return [head.hasHead, statusChanges] as const;
-          })()
-        : [cached.hasHead, cached.changes] as const;
+      const [head, changes] = await Promise.all([
+        this.detectHeadIdentity(signal),
+        this.readStatus(signal),
+      ]);
+      const hasHead = head.hasHead;
       const change = changes.get(displayPath);
       if (!hasHead || change === undefined || change.status === "?") {
         return await readProjectFilePreview(this.root(), displayPath, signal);

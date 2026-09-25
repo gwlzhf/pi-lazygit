@@ -6,7 +6,6 @@ import {
   DEFAULT_TREE_RATIO,
   isDiffLayout,
   normalizeDiffContext,
-  TREE_MAX_RATIO,
   TREE_MIN_RATIO,
   type DiffLayout,
 } from "./contracts";
@@ -47,10 +46,10 @@ export const DEFAULT_PANEL_SETTINGS: PanelSettings = {
   diffContext: DEFAULT_DIFF_CONTEXT,
 };
 
-/** Clamp a stored or reported ratio into the supported range, or reject it. */
+/** Clamp a stored or reported ratio to the supported minimum, or reject it. */
 export function clampTreeRatio(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  return Math.max(TREE_MIN_RATIO, Math.min(TREE_MAX_RATIO, value));
+  return Math.max(TREE_MIN_RATIO, value);
 }
 
 async function settingsPath(): Promise<string> {

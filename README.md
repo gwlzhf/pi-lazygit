@@ -1,6 +1,6 @@
 # Pi Files Review
 
-Pi Files Review is an Oh My Pi extension for reviewing project files and Git changes inside the current OMP terminal session. It provides a keyboard- and mouse-driven project tree and a selected-file diff or content preview without replacing the editor or leaving OMP. Review itself is read-only; the one repository-mutating action is switching to a local branch, which is always explicit.
+Pi Files Review is an Oh My Pi extension for reviewing project files and Git changes inside the current OMP terminal session. It opens with a keyboard- and mouse-driven list of changed files and a selected-file diff or content preview; press `v` for the directory tree. Review itself is read-only; switching to a local branch is the one explicit repository-mutating action.
 
 ## Prerequisites
 
@@ -15,14 +15,14 @@ The extension targets the OMP 18.0.11 interactive TUI in Windows PowerShell and 
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.5.1
+omp plugin install github:gwlzhf/pi-lazygit#v0.6.1
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.5.1
+omp plugin install github:gwlzhf/pi-lazygit#v0.6.1
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
@@ -42,7 +42,7 @@ Within an interactive OMP session, use either entry point:
 
 Both open the same review panel. Only one panel can be open at a time. Headless, print, RPC, and ACP invocations do not mount the panel; an attempted invocation reports that the interactive UI is unavailable.
 
-At wide terminal widths the project tree and preview appear side by side. At narrow widths, or with the tree collapsed, the tree and preview use a single pane.
+At wide terminal widths the file list (or directory tree) and preview appear side by side. At narrow widths, or with the left pane collapsed, the list/tree and preview use a single pane. Non-Git directories open in the directory tree.
 
 The panel is framed by three chrome rows. The top row is an overview header: on the left the active review (`Diff working tree`, `Diff session`, `Project files`, `History`, or `Switch branch`), on the right the current branch — or `detached <short-oid>` — followed by the visible file count. Below it the pane-title row names the left pane and the selected file; on a diff preview the file is followed by its `+N -N` line summary, taken from the same status inspection that produces the totals, and omitted entirely when the file has no summary. The bottom row carries the status text and the compact key hints for the current mode.
 
@@ -50,11 +50,11 @@ The panel opens as a fullscreen overlay on the terminal's alternate screen, so t
 
 ## Layout
 
-`Tab` and `Shift+Tab` move the operating focus between the project tree and the preview. In the side-by-side layout both panes stay visible and only the focused pane consumes keys; in the single-pane layout the focused pane is the one shown.
+`Tab` and `Shift+Tab` move the operating focus between the file list/tree and the preview. In the side-by-side layout both panes stay visible and only the focused pane consumes keys; in the single-pane layout the focused pane is the one shown.
 
-`Right` / `l` and `Left` / `h` move focus the same way, one pane at a time: from a selected file `Right` enters the preview, and `Left` returns to the tree. On a directory `Right` keeps its tree meaning — expand it, or descend into an already expanded one — because a directory has no preview to enter. In the side-by-side layout a left click anywhere in the preview also takes focus.
+`Right` / `l` and `Left` / `h` move focus one pane at a time: from a selected file `Right` enters the preview, and `Left` returns to the file list or tree. On a directory `Right` expands it, or descends into an already expanded one. In the side-by-side layout a left click anywhere in the preview also takes focus.
 
-The tree pane width is adjustable in the side-by-side layout. Drag the divider between the panes with the left mouse button, or use `[` / `]` (also `Ctrl+Left` / `Ctrl+Right`) to change it one column at a time. The width is capped at 30% of the panel interior and never falls below 12 columns, unless the 30% cap is itself below 12 columns, in which case the cap wins.
+The left pane opens at 30% of the panel interior. Drag its divider with the left mouse button, or use `[` / `]` (also `Ctrl+Left` / `Ctrl+Right`) to change it one column at a time. There is no fixed percentage cap: the pane can grow until 40 preview columns remain, and cannot shrink below 12 columns.
 
 The single-pane layout has no divider to move — the visible pane spans the panel — so the width keys do nothing there and leave the stored width alone, rather than changing it for the next terminal wide enough to show both panes. The footer omits the `[ ] width` hint whenever the panel is showing a single pane, including a collapsed tree.
 
@@ -62,11 +62,11 @@ The single-pane layout has no divider to move — the visible pane spans the pan
 
 The width, collapsed state, syntax theme, and diff view settings are stored in `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden), so they survive panel closes and OMP restarts. Width is stored as a ratio of the panel interior. Rapid changes are coalesced into a single write; unreadable, invalid, or unwritable settings fall back to the 30% width, expanded tree, Pi syntax theme, and unified 3-line diff without interrupting the session.
 
-The mouse wheel moves the selection in the tree pane and scrolls the preview pane, following the pointer in the side-by-side layout and the focused pane in the single-pane layout.
+The mouse wheel moves the selection in the left pane and scrolls the preview pane, following the pointer in the side-by-side layout and the focused pane in the single-pane layout.
 
 Left-clicking a visible row in the left pane focuses that pane and selects the row. In the project tree a file click starts its preview immediately, and a directory click selects it without expanding or collapsing it — expansion stays on the keyboard. History and branch rows behave the same way: a click selects only. Clicks on the overview header, the pane-title row, the footer, the padding below the last row, and the divider select nothing; divider dragging and preview text selection keep their existing meaning.
 
-Selected rows are painted across the full pane width using the active OMP theme's selection background. Runtimes older than the `Theme.fgOnBg` helper fall back to a plain foreground over the same background token instead of failing to render. Diff previews mask whole rows as well: added lines use the theme's success background, removed lines its error background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. Hunk and context rows keep ordinary theme colors. No color is hardcoded, and the masks change neither the visible width nor the text that a selection copies.
+Selected rows are painted across the full pane width using the active OMP theme's selection background. Runtimes older than the `Theme.fgOnBg` helper fall back to a plain foreground over the same background token instead of failing to render. Diff previews mask whole rows as well: added lines use the theme's success background, removed lines its error background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. Hunk and context rows keep ordinary theme colors. The masks change neither the visible width nor the text that a selection copies; changed-line foregrounds use the deeper blue/green palette described below.
 
 ## Copying preview text
 
@@ -78,9 +78,9 @@ The selection is cleared by scrolling, by selecting another file, and by any cha
 
 ## Syntax highlighting
 
-Text previews use OMP's highlighter with four palettes: Pi (default, using the active OMP theme), Catppuccin, Nord, and Tokyo Night. Press `t` from either pane to cycle them in that order. The selected palette affects code syntax only; panel borders, status colors, and diff colors continue to use the active OMP theme. The language is detected from the file path — TypeScript, JavaScript/Node, C#, Go, C/C++, Rust, Python, Java, Kotlin, Ruby, PHP, shell, JSON, YAML, and the other languages OMP supports. Files whose language is unknown or unsupported render as plain text.
+Text previews use OMP's highlighter with four palettes: Pi (default, using the active OMP theme), Catppuccin, Nord, and Tokyo Night. Press `t` from either pane to cycle them in that order. The selected palette affects code syntax only; panel borders and status colors continue to use the active OMP theme. The language is detected from the file path — TypeScript, JavaScript/Node, C#, Go, C/C++, Rust, Python, Java, Kotlin, Ruby, PHP, shell, JSON, YAML, and the other languages OMP supports. Files whose language is unknown or unsupported render as plain text.
 
-Diffs keep their per-line added/removed/hunk coloring instead of language highlighting. Preview content is sanitized before it is highlighted, so file contents can never emit their own terminal escape sequences.
+Diffs keep per-line colors instead of language highlighting: additions use a deeper green and removals a deeper blue, with separate shades for light/dark themes. Preview content is sanitized before it is highlighted, so file contents can never emit their own terminal escape sequences.
 
 ## Diff views
 
@@ -90,6 +90,8 @@ In Git mode a tracked file's preview is a diff, and two keys control how it read
 
 - **Unified** (default) is Git's own single-column output.
 - **Split** shows the old file on the left and the new file on the right, with each column line-numbered and marked `-` or `+`. Removals pair with the additions that replace them; where one side has no counterpart, its column is blank. File and hunk headers stay across the full width. The split layout needs at least 40 columns of preview; a narrower preview keeps the unified layout, as does a combined merge diff, which numbers more than two files per hunk.
+
+Long diff lines wrap within the preview instead of being cut off. In split layout, each side wraps independently and keeps its continuation aligned with the opposite side. Scrolling counts these visual rows, including after a resize.
 
 `c` cycles how much unchanged code surrounds each change: **3** lines (default), **10**, **25**, then **full** — the entire file, with the changed lines still marked. Each press refetches the diff from Git, so the count is exact rather than reconstructed. Whole-file context still obeys the 1 MiB and 5,000-line preview limits.
 
@@ -105,7 +107,7 @@ The watch stops when the panel closes. If it cannot start, or fails later, the f
 
 ## Commit history
 
-Press `g` to swap the left pane between the project tree and the commit history; press it again to return. The history lists the most recent commits as short OID and subject, and selecting an entry previews that commit's diff in the preview pane.
+Press `g` to swap the file list/tree for the commit history; press it again to return. The history lists the most recent commits as short OID and subject, and selecting an entry previews that commit's diff in the preview pane.
 
 The commit diff obeys the same `d` and `c` keys as a file diff, so layout and context carry over between the two views. Changing the context refetches the commit from Git.
 
@@ -113,7 +115,7 @@ History is limited to the 200 most recent commits, and the footer reports `histo
 
 ## Switching branches
 
-Press `b` to swap the left pane for the list of local branches; press `b` again, or `Esc`, to return to the project tree without changing anything. Move the selection with `n` / `p` or `Up` / `Down`, and press `Enter` to switch to the selected branch. The current branch is marked, and `Enter` on it simply returns to the files view without running Git.
+Press `b` to swap the left pane for the list of local branches; press `b` again, or `Esc`, to return to the file list/tree without changing anything. Move the selection with `n` / `p` or `Up` / `Down`, and press `Enter` to switch to the selected branch. The current branch is marked, and `Enter` on it simply returns to the files view without running Git.
 
 **Switching a branch writes to your repository.** It is the only operation in this plugin that does. Everything else remains read-only.
 
@@ -144,9 +146,9 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `d` | Switch the diff preview between unified and split columns |
 | `c` | Cycle the diff context: 3, 10, 25, full file |
-| `v` | Toggle between the directory tree and the modified/untracked change list |
-| `m` | Show modified files |
-| `a` | Show all visible files |
+| `v` | Toggle between the default changed-file list and the directory tree |
+| `m` | Show modified files in the tree |
+| `a` | Show all visible files in the directory tree (also switches to the tree from the list) |
 | `s` | Toggle workspace/session scope |
 | `g` | Switch the left pane between the project tree and the commit history |
 | `b` | Switch the left pane to the local branch list |
@@ -183,7 +185,7 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 
 Selecting a file begins loading its preview immediately. `Enter` transfers focus to the preview.
 
-Press `F5` from either pane to reload repository status and the selected file together. The refreshed tree preserves the selected path when it still exists; otherwise it moves to the nearest surviving row.
+Press `F5` from either pane to reload repository status and the selected file together. The refreshed list/tree preserves the selected path when it still exists; otherwise it moves to the nearest surviving row.
 
 ### Commit history
 
@@ -216,11 +218,11 @@ Replaces the project tree keys while the branch list is shown (`b`).
 
 ## Review modes and scopes
 
-The view mode and change scope are independent:
+The Git panel opens in the change list; `v` switches to the directory tree and back. View mode and change scope are independent:
 
-- **Modified mode** (`m`) shows only files changed in the active scope.
-- **Change list** (`v`) drops the directory nesting and lists full project paths under two dividers: `Modified files` for the tracked files Git reports as changed, then `No version files` for the files Git does not track. Each file is listed once under its status letter, and an empty group is omitted. The dividers are labels only — the cursor steps over them. Press `v` again to return to the tree. The list is unavailable outside a Git repository.
-- **All-files mode** (`a`) shows the complete Git-visible project tree. Status markers and totals still reflect the active scope.
+- **Modified mode** (`m`) shows only files changed in the active scope when viewing the tree.
+- **Change list** (default) shows full project paths under two dividers: `Modified files` for the tracked files Git reports as changed, then `No version files` for the files Git does not track. Each file is listed once under its status letter, and an empty group is omitted. The dividers are labels only — the cursor steps over them. Press `v` for the tree. The list is unavailable outside a Git repository.
+- **All-files mode** (`a`) switches to the complete Git-visible project tree. Status markers and totals still reflect the active scope.
 - **Workspace scope** shows current working-tree changes relative to `HEAD`, including staged and unstaged changes.
 - **Session scope** (`s`) shows changes that differ from the repository snapshot captured for the current OMP session.
 
@@ -228,7 +230,7 @@ The active repository baseline is captured at `session_start`, before the panel 
 
 Session scope is temporal attribution, not Agent attribution. Any edit made after the baseline counts, including edits made by external programs, other terminals, or people. A file restored to its baseline state disappears from session scope.
 
-Tracked files display a `HEAD`-to-working-tree diff that combines staged and unstaged changes, in the layout and context selected with `d` and `c`. Deleted files display their deletion diff. Untracked and unchanged text files display read-only, line-numbered content. Binary files display metadata instead of raw bytes.
+Tracked files display a fresh `HEAD`-to-working-tree diff that combines staged and unstaged changes, even when they changed since the last file-list refresh. Deleted files display their deletion diff. Untracked and unchanged text files display read-only, line-numbered content. Binary files display metadata instead of raw bytes.
 
 ## Non-Git directories
 
