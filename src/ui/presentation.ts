@@ -81,7 +81,7 @@ function actionsFor(input: PanelPresentationInput): readonly PanelAction[] {
     { key: "n", label: "next" },
     { key: "p", label: "previous" },
     { key: "enter", label: "open" },
-    { key: "i", label: "chat /btw" },
+    { key: "i", label: "/btw history" },
   ];
   if (input.sourceKind !== "filesystem") {
     actions.push({ key: "b", label: "branches" }, { key: "g", label: "history" });
@@ -113,7 +113,7 @@ export const PANEL_HELP_GROUPS: readonly {
       { key: "p", label: "previous" },
       { key: "↑/↓", label: "move" },
       { key: "enter", label: "open" },
-      { key: "i", label: "chat about diff" },
+      { key: "i", label: "open /btw history" },
     ],
   },
   {

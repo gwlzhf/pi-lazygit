@@ -2,7 +2,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@oh-my-pi/pi-coding-agent";
-import { Editor, type Component, type TUI } from "@oh-my-pi/pi-tui";
+import { Editor, type TUI } from "@oh-my-pi/pi-tui";
 import type { ReviewSource } from "./contracts";
 import {
   clearSessionBaselines,
@@ -38,28 +38,10 @@ function errorMessage(error: unknown): string {
 }
 
 
-/** The fullscreen overlay owns focus, but the core composer remains mounted. */
+/** The fullscreen overlay owns focus; native /btw still submits through the core editor. */
 function hostEditor(tui: TUI): Editor | undefined {
   const focused = tui.getFocused();
   return focused instanceof Editor ? focused : undefined;
-}
-
-/** Reuse the native /btw response while the fullscreen review hides the transcript. */
-function btwResponse(tui: TUI, width: number): readonly string[] {
-  // OMP mounts /btw below a root container even while its fullscreen overlay
-  // hides the root. Search only that level; never traverse the transcript.
-  for (const root of tui.children) {
-    for (const child of (root as Component & { children?: Component[] }).children ?? []) {
-      const panel = child as Component & {
-        isCopyable?: () => boolean;
-        getCopyText?: () => string | undefined;
-        children?: Component[];
-      };
-      if (typeof panel.isCopyable !== "function" || typeof panel.getCopyText !== "function") continue;
-      return panel.children?.[1]?.render(width) ?? [];
-    }
-  }
-  return [];
 }
 
 
@@ -96,7 +78,7 @@ export function createExtension(
         await ctx.ui.custom<undefined>(
           (tui, theme, keybindings, done) => {
             const editor = hostEditor(tui);
-            if (editor === undefined) throw new Error("The OMP editor is not available for embedded chat.");
+            if (editor?.onSubmit === undefined) throw new Error("The OMP editor is not available for /btw history.");
             const panel = dependencies.createPanel({
               cwd: ctx.cwd,
               source,
@@ -128,18 +110,15 @@ export function createExtension(
               onDiffMaskOpacityChange: opacity => {
                 dependencies.settings.saveDiffMaskOpacity(opacity);
               },
-              onChat: excerpt => {
+              onBtwHistory: async () => {
                 const draft = ctx.ui.getEditorText();
-                const question = /^\/btw(?:\s|$)/u.test(draft) ? draft : `/btw ${draft}`;
-                const selected = excerpt === undefined
-                  ? ""
-                  : `\n\nReview diff excerpt:\n${excerpt.split("\n").map(line => `    ${line}`).join("\n")}`;
-                ctx.ui.setEditorText(`${question.trimEnd()} ${selected}`);
-                editor.moveToMessageStart();
-                editor.moveToLineEnd();
+                try {
+                  await editor.onSubmit?.("/btw");
+                  if (draft && ctx.ui.getEditorText() === "") ctx.ui.setEditorText(draft);
+                } catch (error) {
+                  ctx.ui.notify(`Unable to open /btw history: ${errorMessage(error)}`, "error");
+                }
               },
-              chatEditor: editor,
-              chatResponse: width => btwResponse(tui, width),
               ...(highlight === undefined ? {} : { highlight }),
               done,
             });

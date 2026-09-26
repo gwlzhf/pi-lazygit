@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "bun:test";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
-import { Editor, visibleWidth, type EditorTheme, type KeybindingsManager, type TUI } from "@oh-my-pi/pi-tui";
+import { visibleWidth, type KeybindingsManager, type TUI } from "@oh-my-pi/pi-tui";
 import type {
   ChangeRecord,
   FilePreview,
@@ -183,21 +183,6 @@ function plainTheme(calls: string[] = []): Theme {
   } as unknown as Theme;
 }
 
-function nativeEditor(): Editor {
-  const box = {
-    topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘",
-    horizontal: "─", vertical: "│", teeDown: "┬", teeUp: "┴",
-    teeLeft: "┤", teeRight: "├", cross: "┼",
-  };
-  return new Editor({
-    borderColor: text => text,
-    selectList: {} as EditorTheme["selectList"],
-    symbols: {
-      cursor: ">", inputCursor: "|", boxRound: box, boxSharp: box,
-      table: box, quoteBorder: "│", hrChar: "─", spinnerFrames: ["-"],
-    },
-  });
-}
 
 interface FakeTui extends TUI {
   renderRequests: number;
@@ -1689,52 +1674,25 @@ describe("FilesPanel diff layout and context", () => {
     expect(end[2]).toBe(`│${"  ▼ src/".padEnd(29)}│5 ${"-old 5".padEnd(31)}│5 ${"+new 5".padEnd(32)}│`);
     expect(end[5]).toBe(`│${"".padEnd(29)}│8 ${"-old 8".padEnd(31)}│8 ${"+new 8".padEnd(32)}│`);
   });
-  test("native composer stays mounted while /btw is edited and submitted from review", async () => {
+  test("i opens native /btw history without rendering a second composer or closing review", async () => {
     const opacity: number[] = [];
-    const chats: Array<string | undefined> = [];
-    const submissions: string[] = [];
-    let answer: readonly string[] = [];
-    const editor = nativeEditor();
-    editor.onSubmit = text => { submissions.push(text); editor.setText(""); };
-    const { panel, doneResults, tui } = await diffHarness(100, {
+    const openings: string[] = [];
+    const { panel, doneResults } = await diffHarness(100, {
       diffMaskOpacity: 0.5,
       onDiffMaskOpacityChange: value => opacity.push(value),
-      onChat: excerpt => {
-        chats.push(excerpt);
-        editor.setText(`/btw ${excerpt ? `\n\nReview diff excerpt:\n${excerpt}` : ""}`);
-        editor.moveToMessageStart();
-        editor.moveToLineEnd();
-      },
-      chatEditor: editor,
-      chatResponse: () => answer,
+      onBtwHistory: () => openings.push("open"),
     });
-    panel.render(100);
     panel.handleInput("=");
-    expect(opacity).toEqual([0.6]);
     panel.handleInput("-");
     expect(opacity).toEqual([0.6, 0.5]);
-    panel.render(100);
+    const before = panel.render(100);
     panel.handleInput("i");
-    expect(chats[0]).toContain("@@ -1 +1 @@");
-    expect(panel.render(100).join("\n")).toContain("/btw ");
-    panel.handleInput("why?");
-    const draft = editor.getText();
-    panel.handleInput("\x1b");
-    expect(editor.getText()).toBe(draft);
-    panel.handleInput("i");
-    panel.handleInput("\r");
-    expect(submissions[0]?.startsWith("/btw why?\n\nReview diff excerpt:\n")).toBe(true);
-    expect(submissions[0]).toContain("@@ -1 +1 @@");
-    tui.setRows(16);
-    answer = ["Native /btw answer"];
-    expect(panel.render(100).join("\n")).toContain("Native /btw answer");
+    expect(openings).toEqual(["open"]);
+    expect(panel.render(100)).toEqual(before);
+    expect(before.join("\n")).not.toContain("/btw answer");
     expect(doneResults).toEqual([]);
-    panel.handleInput("\x1b");
     panel.handleInput("\x1b[B");
     expect(panel.render(100).join("\n")).toContain("src/b.ts");
-    panel.handleInput("i");
-    expect(chats.at(-1)).toBeUndefined();
-    expect(editor.getText()).toBe("/btw ");
   });
 
 });

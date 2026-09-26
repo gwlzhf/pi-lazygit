@@ -35,6 +35,7 @@ interface ContextHarness {
   readonly customCalls: Array<unknown>;
   readonly customOptions: Array<unknown>;
   readonly notifications: Array<readonly [string, string | undefined]>;
+  readonly submissions: string[];
   readonly editorText: () => string;
 }
 
@@ -82,6 +83,7 @@ function createContextHarness(options?: {
   const customCalls: Array<unknown> = [];
   const customOptions: Array<unknown> = [];
   const notifications: Array<readonly [string, string | undefined]> = [];
+  const submissions: string[] = [];
   let editorText = options?.draft ?? "";
 
   const ui = {
@@ -107,10 +109,11 @@ function createContextHarness(options?: {
       customOptions.push(customOptionsArgument);
       factory({
         getFocused: () => Object.assign(Object.create(Editor.prototype), {
-          moveToMessageStart() {},
-          moveToLineEnd() {},
+          onSubmit: async (text: string) => {
+            submissions.push(text);
+            editorText = "";
+          },
         }),
-        children: [],
       }, {}, {}, () => {});
       return options?.customResult ?? Promise.resolve(undefined);
     },
@@ -128,6 +131,7 @@ function createContextHarness(options?: {
     customCalls,
     customOptions,
     notifications,
+    submissions,
     editorText: () => editorText,
   };
 }
@@ -400,7 +404,7 @@ test("closing review leaves the editor draft unchanged", async () => {
   expect(context.editorText()).toBe("Check this");
 });
 
-test("embedded /btw draft keeps user mentions without adding the reviewed file", async () => {
+test("i opens native /btw history without replacing an existing draft or closing review", async () => {
   const api = createApiHarness();
   const closed = deferred<undefined>();
   const created = deferred<void>();
@@ -419,12 +423,13 @@ test("embedded /btw draft keeps user mentions without adding the reviewed file",
 
   const opening = invokeCommand(api.commands.get("files"), context.ctx);
   await created.promise;
-  options?.onChat?.("@@ -1 +1 @@\n-old\n+new");
-  const draft = `/btw Check this @docs/manual.md \n\nReview diff excerpt:\n    @@ -1 +1 @@\n    -old\n    +new`;
-  expect(context.editorText()).toBe(draft);
+  await options?.onBtwHistory?.();
+  expect(context.submissions).toEqual(["/btw"]);
+  expect(context.editorText()).toBe("Check this @docs/manual.md");
+  expect(context.customCalls).toHaveLength(1);
   closed.resolve(undefined);
   await opening;
-  expect(context.editorText()).toBe(draft);
+  expect(context.editorText()).toBe("Check this @docs/manual.md");
 });
 
 test("passes a highlighter to the panel only when one loads", async () => {

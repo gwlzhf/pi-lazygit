@@ -4,25 +4,25 @@ Pi Files Review is an Oh My Pi extension for reviewing project files and Git cha
 
 ## Prerequisites
 
-- Oh My Pi (OMP) 18.0.11 or newer
+- Oh My Pi (OMP) 18.3.1 or newer (native `/btw` history required)
 - Bun 1.3.14 or newer
 - Git installed and available on `PATH` for Git mode
 
-The extension targets the OMP 18.0.11 interactive TUI in Windows PowerShell and Windows Terminal. Git repositories without an initial commit are supported. A non-Git directory uses the read-only filesystem fallback.
+The extension targets the OMP 18.3.1 interactive TUI in Windows PowerShell and Windows Terminal. Git repositories without an initial commit are supported. A non-Git directory uses the read-only filesystem fallback.
 
 ## Install
 
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.6.5
+omp plugin install github:gwlzhf/pi-lazygit#v0.6.6
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.6.5
+omp plugin install github:gwlzhf/pi-lazygit#v0.6.6
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
@@ -44,7 +44,7 @@ Both open the same review panel. Only one panel can be open at a time. Headless,
 
 At wide terminal widths the file list (or directory tree) and preview appear side by side. At narrow widths, or with the left pane collapsed, the list/tree and preview use a single pane. Non-Git directories open in the directory tree.
 
-The panel keeps the current OMP composer mounted beneath its footer. The top row is an overview header: on the left the active review (`Diff working tree`, `Diff session`, `Project files`, `History`, or `Switch branch`), on the right the current branch — or `detached <short-oid>` — followed by the visible file count. Below it the pane-title row names the left pane and the selected file; on a diff preview the file is followed by its `+N -N` line summary, taken from the same status inspection that produces the totals, and omitted entirely when the file has no summary. The footer carries status and key hints.
+The panel fills the terminal without a separate input box. The top row is an overview header: on the left the active review (`Diff working tree`, `Diff session`, `Project files`, `History`, or `Switch branch`), on the right the current branch — or `detached <short-oid>` — followed by the visible file count. Below it the pane-title row names the left pane and the selected file; on a diff preview the file is followed by its `+N -N` line summary, taken from the same status inspection that produces the totals, and omitted entirely when the file has no summary. The footer carries status and key hints.
 
 The panel opens as a fullscreen overlay on the terminal's alternate screen, so the OMP transcript stays intact underneath and the terminal reports mouse events to the panel. The terminal's own text selection is unavailable while the panel is open; the preview pane provides its own (see [Copying preview text](#copying-preview-text)).
 
@@ -76,11 +76,11 @@ The copy is an OSC 52 clipboard write, so it reaches the system clipboard of the
 
 The selection is cleared by scrolling, by selecting another file, and by any change to the pane geometry — resizing or collapsing the tree, or switching the diff layout or context.
 
-## Chat while reviewing
+## `/btw` history while reviewing
 
-Press `i` from either pane to focus the **same OMP editor** at the bottom of the fullscreen review. The draft starts with `/btw` and the selected diff text or visible diff excerpt when available. No file `@`-mention is inserted or changed: neither entering chat, navigating files, nor closing review edits an existing mention. Type a question and press `Enter` to run OMP's native ephemeral `/btw` command; its answer appears above the composer without closing review. `Esc` leaves chat focus and returns to the review panes without modifying the draft. Press `i` again to resume editing.
+Press `i` in either review pane to open OMP's **native `/btw` history** over the review. Its left pane lists side conversations; its right pane displays the selected conversation and answers. `Up`/`Down` choose a topic; `Tab` or `Right`/`Left` switch between the list and details. Press `f` or `Enter` on a topic to use OMP's own follow-up input. `Esc` closes history and returns to the same review panel. The review does not render an input box or an answer of its own.
 
-The included diff excerpt supplies review context; for non-diff files, describe the relevant code or add a file mention yourself. The core composer and its native submission are reused, not a separate chat session. Chat targets the main OMP editor, not a focused subagent.
+The shortcut opens history without submitting a question or injecting the selected diff or a file mention. Your existing main-editor draft remains unchanged. To start a new topic, leave review and use `/btw <question>` in the main OMP editor; then return to review and press `i` to browse it.
 
 ## Syntax highlighting
 
@@ -154,7 +154,7 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `d` | Switch the diff preview between unified and split columns |
 | `-` / `=` | Lower/raise diff mask opacity by 10% |
-| `i` | Focus the embedded OMP `/btw` editor with a diff excerpt, without inserting a file mention or submitting |
+| `i` | Open native `/btw` history above review |
 | `m` | Show modified files in the tree |
 | `a` | Show all visible files in the directory tree (also switches to the tree from the list) |
 | `s` | Toggle workspace/session scope |
@@ -181,7 +181,7 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 | `\` or `Ctrl+B` | Collapse/restore the tree pane |
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `-` / `=` | Lower/raise diff mask opacity by 10% |
-| `i` | Focus the embedded OMP `/btw` editor with a diff excerpt, without inserting a file mention or submitting |
+| `i` | Open native `/btw` history above review |
 | `g` | Switch the left pane between the project tree and the commit history |
 | `b` | Switch the left pane to the local branch list |
 | `?` | Show every shortcut |
@@ -195,13 +195,14 @@ Selecting a file begins loading its preview immediately. `Enter` transfers focus
 
 Press `F5` from either pane to reload repository status and the selected file together. The refreshed list/tree preserves the selected path when it still exists; otherwise it moves to the nearest surviving row.
 
-### Embedded chat
+### Native `/btw` history
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Submit the question to OMP's native `/btw` side channel; review stays open |
-| `Esc` | Return to the review pane without discarding the draft |
-| `i` (from a review pane) | Resume editing the current draft |
+| `Up` / `Down` | Select a side conversation |
+| `Tab` or `Left` / `Right` | Switch between conversation list and details |
+| `f` / `Enter` | Open OMP's native follow-up input for the selected topic |
+| `Esc` | Close `/btw` history and return to review |
 
 ### Commit history
 

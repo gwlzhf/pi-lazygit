@@ -1,6 +1,6 @@
 {
   "name": "pi-lazygit",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Review project files and Git diffs inside Oh My Pi",
   "type": "module",
   "private": true,
@@ -35,12 +35,12 @@
     "extensions": ["./src/index.ts"]
   },
   "peerDependencies": {
-    "@oh-my-pi/pi-coding-agent": ">=18.0.11 <19",
-    "@oh-my-pi/pi-tui": ">=18.0.11 <19"
+    "@oh-my-pi/pi-coding-agent": ">=18.3.1 <19",
+    "@oh-my-pi/pi-tui": ">=18.3.1 <19"
   },
   "devDependencies": {
-    "@oh-my-pi/pi-coding-agent": "18.0.11",
-    "@oh-my-pi/pi-tui": "18.0.11",
+    "@oh-my-pi/pi-coding-agent": "18.3.1",
+    "@oh-my-pi/pi-tui": "18.3.1",
     "@types/bun": "latest",
     "typescript": "^5.9.2"
   }

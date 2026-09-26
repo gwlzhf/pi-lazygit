@@ -1,7 +1,5 @@
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import {
-  CURSOR_MARKER,
-  Editor,
   matchesKey,
   routeSgrMouseInput,
   visibleWidth,
@@ -112,12 +110,8 @@ export interface FilesPanelOptions {
   readonly highlightTheme?: HighlightThemeName;
   /** Reports every syntax palette change so the host can persist it. */
   readonly onHighlightThemeChange?: (theme: HighlightThemeName) => void;
-  /** Prepares the native /btw draft when chat takes focus. */
-  readonly onChat?: (excerpt: string | undefined) => void;
-  /** The existing OMP composer; it retains its native key handling and submission. */
-  readonly chatEditor?: Editor;
-  /** Native /btw answer, normally hidden behind the fullscreen overlay. */
-  readonly chatResponse?: (width: number) => readonly string[];
+  /** Opens OMP's native /btw history above the review panel. */
+  readonly onBtwHistory?: () => void;
   /** Colors text previews; previews render unstyled when omitted. */
   readonly highlight?: Highlighter;
   readonly done: (result: undefined) => void;
@@ -169,6 +163,7 @@ function pluralFiles(files: number): string {
   return `${files} ${files === 1 ? "file" : "files"}`;
 }
 
+
 export class FilesPanel implements Component {
   readonly #cwd: string;
   readonly #source: ReviewSource;
@@ -182,11 +177,7 @@ export class FilesPanel implements Component {
   readonly #onDiffContextChange: ((context: number) => void) | undefined;
   readonly #onHighlightThemeChange: ((theme: HighlightThemeName) => void) | undefined;
   readonly #onDiffMaskOpacityChange: ((opacity: number) => void) | undefined;
-  readonly #onChat: ((excerpt: string | undefined) => void) | undefined;
-  readonly #chatEditor: Editor | undefined;
-  readonly #chatResponse: ((width: number) => readonly string[]) | undefined;
-  #chatActive = false;
-  #chatStarted = false;
+  readonly #onBtwHistory: (() => void) | undefined;
   #panelRows = 0;
   readonly #highlight: Highlighter | undefined;
   readonly #done: (result: undefined) => void;
@@ -291,9 +282,7 @@ export class FilesPanel implements Component {
     this.#onDiffContextChange = options.onDiffContextChange;
     this.#onHighlightThemeChange = options.onHighlightThemeChange;
     this.#onDiffMaskOpacityChange = options.onDiffMaskOpacityChange;
-    this.#onChat = options.onChat;
-    this.#chatEditor = options.chatEditor;
-    this.#chatResponse = options.chatResponse;
+    this.#onBtwHistory = options.onBtwHistory;
     this.#highlight = options.highlight;
     this.#treeRatio = Math.max(TREE_MIN_RATIO, options.treeRatio ?? DEFAULT_TREE_RATIO);
     this.#treeCollapsed = options.treeCollapsed ?? false;
@@ -315,25 +304,6 @@ export class FilesPanel implements Component {
     if (this.#disposed || this.#doneCalled) return;
     if (data.startsWith(MOUSE_REPORT_PREFIX)) {
       routeSgrMouseInput(data, event => this.#routeMouse(event));
-      return;
-    }
-    if (this.#chatActive) {
-      if (matchesKey(data, "escape") && !this.#chatEditor?.isAutocompleteActive()) {
-        this.#chatActive = false;
-        if (this.#chatEditor) this.#chatEditor.focused = false;
-        this.#requestRender();
-        return;
-      }
-      if (this.#chatEditor?.getText().length === 0 && !matchesKey(data, "escape")) {
-        this.#onChat?.(undefined);
-      }
-      if (matchesKey(data, "enter") && !/^\/btw\s+\S/u.test(this.#chatEditor?.getText() ?? "")) {
-        return;
-      }
-      const editor = this.#chatEditor as Editor & { handleDraftEdit?: (input: string) => void };
-      if (editor.handleDraftEdit) editor.handleDraftEdit(data);
-      else editor.handleInput(data);
-      this.#requestRender();
       return;
     }
     const interrupted = this.#keybindings.matches(data, "app.interrupt");
@@ -360,22 +330,8 @@ export class FilesPanel implements Component {
       return;
     }
     if (this.#helpOpen) return;
-    if (matchesKey(data, "i") && this.#chatEditor !== undefined) {
-      const selection = this.#selection;
-      const selectedText = selection === undefined
-        ? ""
-        : selectionText(this.#previewRows, selection, this.#lastPreviewWidth);
-      const value = this.#leftMode === "files" ? this.#preview : undefined;
-      const excerpt = selectedText || (value?.kind === "diff"
-        ? this.#previewRows.map(line => sanitizeTerminalText(line).trimEnd()).join("\n").trim()
-        : "");
-      if (!this.#chatStarted || this.#chatEditor.getText().length === 0) {
-        this.#onChat?.(this.#chatStarted ? undefined : excerpt || undefined);
-      }
-      this.#chatStarted = true;
-      this.#chatActive = true;
-      this.#chatEditor.focused = true;
-      this.#requestRender();
+    if (matchesKey(data, "i")) {
+      this.#onBtwHistory?.();
       return;
     }
     if (matchesKey(data, "f5") || matchesKey(data, "r")) {
@@ -458,29 +414,9 @@ export class FilesPanel implements Component {
     this.#lastWidth = safeWidth;
     const reportedRows = Math.floor(this.#tui.terminal.rows);
     const terminalRows = Number.isFinite(reportedRows) ? Math.max(0, reportedRows) : 0;
-    // The host owns the composer and /btw response. Rendering them here keeps
-    // native editing and the ephemeral answer visible on the alternate screen.
-    const editorLines = this.#chatEditor?.render(safeWidth) ?? [];
-    const response = this.#chatResponse?.(Math.max(1, safeWidth - 2)) ?? [];
-    const available = Math.max(0, terminalRows - 4);
-    const editorHeight = Math.min(editorLines.length, available);
-    const cursorRow = editorLines.findIndex(line => line.includes(CURSOR_MARKER));
-    const editorStart = editorLines.length <= editorHeight
-      ? 0
-      : cursorRow >= 0
-        ? Math.max(0, Math.min(cursorRow - 1, editorLines.length - editorHeight))
-        : this.#chatStarted && this.#chatEditor?.getCursor().line === 0
-          ? 0
-          : editorLines.length - editorHeight;
-    const responseRoom = Math.max(0, available - editorHeight - 3);
-    const responseHeight = response.length > 0 && responseRoom >= 2
-      ? Math.min(response.length + 1, responseRoom, 7)
-      : 0;
-    this.#panelRows = terminalRows - editorHeight - responseHeight;
+    this.#panelRows = terminalRows;
     const cached = this.#cache;
     if (
-      !this.#chatActive &&
-      responseHeight === 0 &&
       cached !== undefined &&
       cached.width === safeWidth &&
       cached.rows === terminalRows &&
@@ -489,7 +425,6 @@ export class FilesPanel implements Component {
     ) {
       return cached.lines;
     }
-
     let lines: readonly string[];
     if (this.#panelRows === 0) {
       lines = Object.freeze([]);
@@ -508,16 +443,7 @@ export class FilesPanel implements Component {
         ? this.#renderWide(safeWidth, contentHeight)
         : this.#renderNarrow(safeWidth, contentHeight);
     }
-    const result = Object.freeze([
-      ...lines,
-      ...(responseHeight > 1
-        ? [
-          renderSingleBorder("/btw answer", safeWidth, "top", this.#theme),
-          ...response.slice(1 - responseHeight).map(line => renderSingleRow(line, safeWidth, this.#theme)),
-        ]
-        : []),
-      ...editorLines.slice(editorStart, editorStart + editorHeight),
-    ]);
+    const result = Object.freeze([...lines]);
     this.#cache = {
       width: safeWidth,
       rows: terminalRows,
@@ -537,7 +463,6 @@ export class FilesPanel implements Component {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    if (this.#chatEditor) this.#chatEditor.focused = false;
     this.#dividerDrag = false;
     this.#selectionDrag = false;
     this.#selection = undefined;
@@ -2012,10 +1937,6 @@ export class FilesPanel implements Component {
 
     if (this.#copyNotice !== undefined) pieces.push(this.#copyNotice);
 
-    if (this.#chatActive) {
-      pieces.push("chat /btw · Enter ask · Esc review");
-      return pieces.join(" · ");
-    }
     // `[` / `]` only move a divider that the side-by-side layout draws, so the
     // hint is omitted when the panel is showing a single pane.
     const width = this.#isWideLayout(this.#lastWidth) ? "[ ] width" : undefined;
@@ -2030,7 +1951,7 @@ export class FilesPanel implements Component {
           : project?.kind === "filesystem"
             ? ["F5/r refresh", "n/p move", "→/l preview", "↵ open", "tab", "\\ tree", width, "esc"]
             : ["F5/r refresh", "n/p move", "→/l preview", "↵ open", "tab", "\\ tree", "g log", "b branches", width, "v list", "m/a", "s", "esc"];
-    pieces.push("i chat", hints.filter(hint => hint !== undefined).join(" · "));
+    pieces.push("i /btw history", hints.filter(hint => hint !== undefined).join(" · "));
     return pieces.join(" · ");
   }
 }
