@@ -2,6 +2,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@oh-my-pi/pi-coding-agent";
+import { Editor, type Component, type TUI } from "@oh-my-pi/pi-tui";
 import type { ReviewSource } from "./contracts";
 import {
   clearSessionBaselines,
@@ -57,9 +58,33 @@ function removeOwnedMention(editor: string, mention: string): string {
   let start = index;
   let end = index + mention.length;
   const following = editor[end];
-  if (following !== undefined && /\s/u.test(following)) end += 1;
-  else if (start > 0 && /\s/u.test(editor[start - 1] ?? "")) start -= 1;
+  if (following !== undefined && /[ \t]/u.test(following)) end += 1;
+  else if (start > 0 && /[ \t]/u.test(editor[start - 1] ?? "")) start -= 1;
   return editor.slice(0, start) + editor.slice(end);
+}
+
+/** The fullscreen overlay owns focus, but the core composer remains mounted. */
+function hostEditor(tui: TUI): Editor | undefined {
+  const focused = tui.getFocused();
+  return focused instanceof Editor ? focused : undefined;
+}
+
+/** Reuse the native /btw response while the fullscreen review hides the transcript. */
+function btwResponse(tui: TUI, width: number): readonly string[] {
+  // OMP mounts /btw below a root container even while its fullscreen overlay
+  // hides the root. Search only that level; never traverse the transcript.
+  for (const root of tui.children) {
+    for (const child of (root as Component & { children?: Component[] }).children ?? []) {
+      const panel = child as Component & {
+        isCopyable?: () => boolean;
+        getCopyText?: () => string | undefined;
+        children?: Component[];
+      };
+      if (typeof panel.isCopyable !== "function" || typeof panel.getCopyText !== "function") continue;
+      return panel.children?.[1]?.render(width) ?? [];
+    }
+  }
+  return [];
 }
 
 
@@ -77,10 +102,13 @@ export function createExtension(
         : removeOwnedMention(editor, managedMention);
       const mention = path === undefined ? undefined : fileMention(path);
       managedMention = mention;
-      const trimmed = base.trimEnd();
+      const lineEnd = base.indexOf("\n");
+      const firstLine = lineEnd < 0 ? base : base.slice(0, lineEnd);
+      const remainder = lineEnd < 0 ? "" : base.slice(lineEnd);
+      const trimmed = firstLine.trimEnd();
       const next = mention === undefined
-        ? trimmed
-        : `${trimmed}${trimmed ? " " : ""}${mention} `;
+        ? `${trimmed}${remainder}`
+        : `${trimmed}${trimmed ? " " : ""}${mention} ${remainder}`;
       if (next !== editor) ctx.ui.setEditorText(next);
     };
 
@@ -98,9 +126,8 @@ export function createExtension(
       }
 
       panelOpen = true;
-      let chatExcerpt: string | undefined;
       let reviewedPath: string | undefined;
-      let chatRequested = false;
+      let chatting = false;
       try {
         const source = dependencies.createReviewSource(ctx.cwd);
         const sessionName = pi.getSessionName();
@@ -113,6 +140,8 @@ export function createExtension(
         ]);
         await ctx.ui.custom<undefined>(
           (tui, theme, keybindings, done) => {
+            const editor = hostEditor(tui);
+            if (editor === undefined) throw new Error("The OMP editor is not available for embedded chat.");
             const panel = dependencies.createPanel({
               cwd: ctx.cwd,
               source,
@@ -144,12 +173,29 @@ export function createExtension(
               onDiffMaskOpacityChange: opacity => {
                 dependencies.settings.saveDiffMaskOpacity(opacity);
               },
-              onReviewFileChange: path => { reviewedPath = path; },
+              onReviewFileChange: path => {
+                reviewedPath = path;
+                if (chatting) {
+                  updateReviewMention(ctx, path);
+                  editor.moveToMessageStart();
+                  editor.moveToLineEnd();
+                }
+              },
               onChat: (path, excerpt) => {
                 reviewedPath = path;
-                chatExcerpt = excerpt;
-                chatRequested = true;
+                chatting = true;
+                updateReviewMention(ctx, path);
+                const draft = ctx.ui.getEditorText();
+                const question = /^\/btw(?:\s|$)/u.test(draft) ? draft : `/btw ${draft}`;
+                const selected = excerpt === undefined
+                  ? ""
+                  : `\n\nReview diff excerpt:\n${excerpt.split("\n").map(line => `    ${line}`).join("\n")}`;
+                ctx.ui.setEditorText(`${question}${selected}`);
+                editor.moveToMessageStart();
+                editor.moveToLineEnd();
               },
+              chatEditor: editor,
+              chatResponse: width => btwResponse(tui, width),
               ...(highlight === undefined ? {} : { highlight }),
               done,
             });
@@ -171,19 +217,8 @@ export function createExtension(
             },
           },
         );
-        // The /files command is still unwinding when the overlay closes. Touching
-        // the core editor before its submit handler returns can send the mention
-        // as a separate prompt instead of leaving it as a draft.
-        ctx.setTimeout(() => {
-          updateReviewMention(ctx, reviewedPath);
-          if (!chatRequested) return;
-          const draft = ctx.ui.getEditorText();
-          const question = /^\/btw(?:\s|$)/u.test(draft) ? draft : `/btw ${draft}`;
-          const excerpt = chatExcerpt === undefined
-            ? ""
-            : `\n\nReview diff excerpt:\n${chatExcerpt.split("\n").map(line => `    ${line}`).join("\n")}`;
-          ctx.ui.setEditorText(`${question.trimEnd()}${excerpt} `);
-        }, 0);
+        // The /files command may still be unwinding when the overlay closes.
+        ctx.setTimeout(() => updateReviewMention(ctx, reviewedPath), 0);
       } catch (error) {
         ctx.ui.notify(
           `Unable to open files review: ${errorMessage(error)}`,

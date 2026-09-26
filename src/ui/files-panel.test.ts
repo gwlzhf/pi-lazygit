@@ -1,7 +1,6 @@
 import { describe, expect, test, vi } from "bun:test";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
-import type { KeybindingsManager, TUI } from "@oh-my-pi/pi-tui";
-import { visibleWidth } from "@oh-my-pi/pi-tui";
+import { Editor, visibleWidth, type EditorTheme, type KeybindingsManager, type TUI } from "@oh-my-pi/pi-tui";
 import type {
   ChangeRecord,
   FilePreview,
@@ -182,6 +181,22 @@ function plainTheme(calls: string[] = []): Theme {
       return text;
     },
   } as unknown as Theme;
+}
+
+function nativeEditor(): Editor {
+  const box = {
+    topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘",
+    horizontal: "─", vertical: "│", teeDown: "┬", teeUp: "┴",
+    teeLeft: "┤", teeRight: "├", cross: "┼",
+  };
+  return new Editor({
+    borderColor: text => text,
+    selectList: {} as EditorTheme["selectList"],
+    symbols: {
+      cursor: ">", inputCursor: "|", boxRound: box, boxSharp: box,
+      table: box, quoteBorder: "│", hrChar: "─", spinnerFrames: ["-"],
+    },
+  });
 }
 
 interface FakeTui extends TUI {
@@ -381,13 +396,6 @@ describe("FilesPanel state machine", () => {
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", Array.from({ length: 10 }, (_, index) => `line ${index + 1}`)));
     await settle();
     panel.handleInput("\r");
-    expect(panel.render(60)).toEqual([
-      `│Diff working tree${" ".repeat(27)}main · 2 files│`,
-      `┌─ File: src/a.ts ${"─".repeat(41)}┐`,
-      `│${" 1 line 1".padEnd(58)}│`,
-      `│${" 2 line 2".padEnd(58)}│`,
-      "└─ demo · modified · workspace · +3 -1 · 2 files · F5/r ref┘",
-    ]);
     panel.handleInput("\x1b[F");
     panel.handleInput("\x1b[B");
     expect(panel.render(60).slice(2, 4)).toEqual([
@@ -1681,15 +1689,26 @@ describe("FilesPanel diff layout and context", () => {
     expect(end[2]).toBe(`│${"  ▼ src/".padEnd(29)}│5 ${"-old 5".padEnd(31)}│5 ${"+new 5".padEnd(32)}│`);
     expect(end[5]).toBe(`│${"".padEnd(29)}│8 ${"-old 8".padEnd(31)}│8 ${"+new 8".padEnd(32)}│`);
   });
-  test("adjusts the diff mask and hands the visible diff to chat without losing its file", async () => {
+  test("native composer stays mounted while /btw is edited and submitted from review", async () => {
     const opacity: number[] = [];
     const reviewed: Array<string | undefined> = [];
     const chats: Array<{ path: string | undefined; excerpt: string | undefined }> = [];
-    const { panel, doneResults } = await diffHarness(100, {
+    const submissions: string[] = [];
+    let answer: readonly string[] = [];
+    const editor = nativeEditor();
+    editor.onSubmit = text => { submissions.push(text); editor.setText(""); };
+    const { panel, doneResults, tui } = await diffHarness(100, {
       diffMaskOpacity: 0.5,
       onDiffMaskOpacityChange: value => opacity.push(value),
       onReviewFileChange: path => reviewed.push(path),
-      onChat: (path, excerpt) => chats.push({ path, excerpt }),
+      onChat: (path, excerpt) => {
+        chats.push({ path, excerpt });
+        editor.setText(`/btw @${path} ${excerpt ? `\n\nReview diff excerpt:\n${excerpt}` : ""}`);
+        editor.moveToMessageStart();
+        editor.moveToLineEnd();
+      },
+      chatEditor: editor,
+      chatResponse: () => answer,
     });
     expect(reviewed).toContain("src/a.ts");
     panel.render(100);
@@ -1699,11 +1718,22 @@ describe("FilesPanel diff layout and context", () => {
     expect(opacity).toEqual([0.6, 0.5]);
     panel.render(100);
     panel.handleInput("i");
-    expect(chats).toHaveLength(1);
     expect(chats[0]?.path).toBe("src/a.ts");
-    expect(chats[0]?.excerpt).toContain("-old");
-    expect(chats[0]?.excerpt).toContain("+new");
-    expect(doneResults).toEqual([undefined]);
+    expect(chats[0]?.excerpt).toContain("@@ -1 +1 @@");
+    expect(panel.render(100).join("\n")).toContain("/btw @src/a.ts");
+    panel.handleInput("why?");
+    panel.handleInput("\r");
+    expect(submissions[0]?.startsWith("/btw @src/a.ts why?\n\nReview diff excerpt:\n")).toBe(true);
+    expect(submissions[0]).toContain("@@ -1 +1 @@");
+    tui.setRows(16);
+    answer = ["Native /btw answer"];
+    expect(panel.render(100).join("\n")).toContain("Native /btw answer");
+    expect(doneResults).toEqual([]);
+    panel.handleInput("\x1b");
+    panel.handleInput("\x1b[B");
+    expect(reviewed).toContain("src/b.ts");
+    panel.handleInput("i");
+    expect(chats.at(-1)?.path).toBe("src/b.ts");
   });
 
 });

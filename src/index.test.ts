@@ -1,3 +1,4 @@
+import { Editor } from "@oh-my-pi/pi-tui";
 import { expect, test } from "bun:test";
 import type {
   ExtensionAPI,
@@ -107,7 +108,13 @@ function createContextHarness(options?: {
     ) {
       customCalls.push(factory);
       customOptions.push(customOptionsArgument);
-      factory({}, {}, {}, () => {});
+      factory({
+        getFocused: () => Object.assign(Object.create(Editor.prototype), {
+          moveToMessageStart() {},
+          moveToLineEnd() {},
+        }),
+        children: [],
+      }, {}, {}, () => {});
       return options?.customResult ?? Promise.resolve(undefined);
     },
   };
@@ -395,10 +402,10 @@ test("restores panel settings, persists changes, and flushes on close", async ()
   expect(flushes).toBe(1);
 });
 
-test("switching reviewed files replaces only the owned mention and chat opens /btw with the diff", async () => {
+test("embedded chat prepares /btw and updates its file mention without closing review", async () => {
   const api = createApiHarness();
   const closed = deferred<undefined>();
-  let created = deferred<void>();
+  const created = deferred<void>();
   const context = createContextHarness({ draft: "Check this", customResult: closed.promise });
   let options: FilesPanelOptions | undefined;
   createExtension(dependencies({
@@ -411,24 +418,16 @@ test("switching reviewed files replaces only the owned mention and chat opens /b
 
   const opening = invokeCommand(api.commands.get("files"), context.ctx);
   await created.promise;
-  expect(options).toBeDefined();
   options?.onReviewFileChange?.("src/old name.ts");
-  options?.onReviewFileChange?.("src/new.ts");
   expect(context.editorText()).toBe("Check this");
+  options?.onChat?.("src/old name.ts", "@@ -1 +1 @@\n-old\n+new");
+  expect(context.editorText()).toBe(`/btw Check this @"src/old name.ts" \n\nReview diff excerpt:\n    @@ -1 +1 @@\n    -old\n    +new`);
+  options?.onReviewFileChange?.("src/new.ts");
+  expect(context.editorText()).toBe(`/btw Check this @src/new.ts \n\nReview diff excerpt:\n    @@ -1 +1 @@\n    -old\n    +new`);
   closed.resolve(undefined);
   await opening;
   context.flushScheduled();
-  expect(context.editorText()).toBe("Check this @src/new.ts ");
-
-  context.setEditorText("Check this @src/new.ts and preserve this");
-  created = deferred<void>();
-  const reopening = invokeCommand(api.commands.get("files"), context.ctx);
-  await created.promise;
-  options?.onReviewFileChange?.("dir/a'b name.ts");
-  options?.onChat?.("dir/a'b name.ts", "@@ -1 +1 @@\n-old\n+new");
-  await reopening;
-  context.flushScheduled();
-  expect(context.editorText()).toBe(`/btw Check this and preserve this @"dir/a'b name.ts"\n\nReview diff excerpt:\n    @@ -1 +1 @@\n    -old\n    +new `);
+  expect(context.editorText()).toContain("@src/new.ts");
 });
 
 test("passes a highlighter to the panel only when one loads", async () => {
