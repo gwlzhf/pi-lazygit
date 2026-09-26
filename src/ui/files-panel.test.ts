@@ -1691,8 +1691,7 @@ describe("FilesPanel diff layout and context", () => {
   });
   test("native composer stays mounted while /btw is edited and submitted from review", async () => {
     const opacity: number[] = [];
-    const reviewed: Array<string | undefined> = [];
-    const chats: Array<{ path: string | undefined; excerpt: string | undefined }> = [];
+    const chats: Array<string | undefined> = [];
     const submissions: string[] = [];
     let answer: readonly string[] = [];
     const editor = nativeEditor();
@@ -1700,17 +1699,15 @@ describe("FilesPanel diff layout and context", () => {
     const { panel, doneResults, tui } = await diffHarness(100, {
       diffMaskOpacity: 0.5,
       onDiffMaskOpacityChange: value => opacity.push(value),
-      onReviewFileChange: path => reviewed.push(path),
-      onChat: (path, excerpt) => {
-        chats.push({ path, excerpt });
-        editor.setText(`/btw @${path} ${excerpt ? `\n\nReview diff excerpt:\n${excerpt}` : ""}`);
+      onChat: excerpt => {
+        chats.push(excerpt);
+        editor.setText(`/btw ${excerpt ? `\n\nReview diff excerpt:\n${excerpt}` : ""}`);
         editor.moveToMessageStart();
         editor.moveToLineEnd();
       },
       chatEditor: editor,
       chatResponse: () => answer,
     });
-    expect(reviewed).toContain("src/a.ts");
     panel.render(100);
     panel.handleInput("=");
     expect(opacity).toEqual([0.6]);
@@ -1718,12 +1715,15 @@ describe("FilesPanel diff layout and context", () => {
     expect(opacity).toEqual([0.6, 0.5]);
     panel.render(100);
     panel.handleInput("i");
-    expect(chats[0]?.path).toBe("src/a.ts");
-    expect(chats[0]?.excerpt).toContain("@@ -1 +1 @@");
-    expect(panel.render(100).join("\n")).toContain("/btw @src/a.ts");
+    expect(chats[0]).toContain("@@ -1 +1 @@");
+    expect(panel.render(100).join("\n")).toContain("/btw ");
     panel.handleInput("why?");
+    const draft = editor.getText();
+    panel.handleInput("\x1b");
+    expect(editor.getText()).toBe(draft);
+    panel.handleInput("i");
     panel.handleInput("\r");
-    expect(submissions[0]?.startsWith("/btw @src/a.ts why?\n\nReview diff excerpt:\n")).toBe(true);
+    expect(submissions[0]?.startsWith("/btw why?\n\nReview diff excerpt:\n")).toBe(true);
     expect(submissions[0]).toContain("@@ -1 +1 @@");
     tui.setRows(16);
     answer = ["Native /btw answer"];
@@ -1731,9 +1731,10 @@ describe("FilesPanel diff layout and context", () => {
     expect(doneResults).toEqual([]);
     panel.handleInput("\x1b");
     panel.handleInput("\x1b[B");
-    expect(reviewed).toContain("src/b.ts");
+    expect(panel.render(100).join("\n")).toContain("src/b.ts");
     panel.handleInput("i");
-    expect(chats.at(-1)?.path).toBe("src/b.ts");
+    expect(chats.at(-1)).toBeUndefined();
+    expect(editor.getText()).toBe("/btw ");
   });
 
 });

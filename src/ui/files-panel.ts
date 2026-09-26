@@ -112,10 +112,8 @@ export interface FilesPanelOptions {
   readonly highlightTheme?: HighlightThemeName;
   /** Reports every syntax palette change so the host can persist it. */
   readonly onHighlightThemeChange?: (theme: HighlightThemeName) => void;
-  /** Tracks the selected file for the embedded host composer. */
-  readonly onReviewFileChange?: (path: string | undefined) => void;
   /** Prepares the native /btw draft when chat takes focus. */
-  readonly onChat?: (path: string | undefined, excerpt: string | undefined) => void;
+  readonly onChat?: (excerpt: string | undefined) => void;
   /** The existing OMP composer; it retains its native key handling and submission. */
   readonly chatEditor?: Editor;
   /** Native /btw answer, normally hidden behind the fullscreen overlay. */
@@ -184,8 +182,7 @@ export class FilesPanel implements Component {
   readonly #onDiffContextChange: ((context: number) => void) | undefined;
   readonly #onHighlightThemeChange: ((theme: HighlightThemeName) => void) | undefined;
   readonly #onDiffMaskOpacityChange: ((opacity: number) => void) | undefined;
-  readonly #onReviewFileChange: ((path: string | undefined) => void) | undefined;
-  readonly #onChat: ((path: string | undefined, excerpt: string | undefined) => void) | undefined;
+  readonly #onChat: ((excerpt: string | undefined) => void) | undefined;
   readonly #chatEditor: Editor | undefined;
   readonly #chatResponse: ((width: number) => readonly string[]) | undefined;
   #chatActive = false;
@@ -294,7 +291,6 @@ export class FilesPanel implements Component {
     this.#onDiffContextChange = options.onDiffContextChange;
     this.#onHighlightThemeChange = options.onHighlightThemeChange;
     this.#onDiffMaskOpacityChange = options.onDiffMaskOpacityChange;
-    this.#onReviewFileChange = options.onReviewFileChange;
     this.#onChat = options.onChat;
     this.#chatEditor = options.chatEditor;
     this.#chatResponse = options.chatResponse;
@@ -329,7 +325,7 @@ export class FilesPanel implements Component {
         return;
       }
       if (this.#chatEditor?.getText().length === 0 && !matchesKey(data, "escape")) {
-        this.#onChat?.(this.#leftMode === "files" ? this.#previewPath : undefined, undefined);
+        this.#onChat?.(undefined);
       }
       if (matchesKey(data, "enter") && !/^\/btw\s+\S/u.test(this.#chatEditor?.getText() ?? "")) {
         return;
@@ -374,8 +370,7 @@ export class FilesPanel implements Component {
         ? this.#previewRows.map(line => sanitizeTerminalText(line).trimEnd()).join("\n").trim()
         : "");
       if (!this.#chatStarted || this.#chatEditor.getText().length === 0) {
-        this.#onChat?.(this.#leftMode === "files" ? this.#previewPath : undefined,
-          this.#chatStarted ? undefined : excerpt || undefined);
+        this.#onChat?.(this.#chatStarted ? undefined : excerpt || undefined);
       }
       this.#chatStarted = true;
       this.#chatActive = true;
@@ -1516,7 +1511,6 @@ export class FilesPanel implements Component {
     const controller = new AbortController();
     this.#previewController = controller;
     this.#previewPath = path;
-    if (!samePath) this.#onReviewFileChange?.(path);
     if (!samePath) {
       this.#preview = undefined;
       this.#previewScroll = 0;
@@ -1555,7 +1549,6 @@ export class FilesPanel implements Component {
     this.#previewController?.abort();
     this.#previewController = undefined;
     this.#previewPath = undefined;
-    this.#onReviewFileChange?.(undefined);
     this.#preview = undefined;
     this.#previewLoading = false;
     this.#previewScroll = 0;

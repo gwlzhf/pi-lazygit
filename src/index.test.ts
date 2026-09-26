@@ -36,8 +36,6 @@ interface ContextHarness {
   readonly customOptions: Array<unknown>;
   readonly notifications: Array<readonly [string, string | undefined]>;
   readonly editorText: () => string;
-  readonly setEditorText: (text: string) => void;
-  readonly flushScheduled: () => void;
 }
 
 function deferred<T>(): Deferred<T> {
@@ -85,7 +83,6 @@ function createContextHarness(options?: {
   const customOptions: Array<unknown> = [];
   const notifications: Array<readonly [string, string | undefined]> = [];
   let editorText = options?.draft ?? "";
-  const scheduled: Array<() => void> = [];
 
   const ui = {
     notify(message: string, type?: string) {
@@ -124,10 +121,6 @@ function createContextHarness(options?: {
     hasUI: options?.hasUI ?? true,
     mode: options?.mode ?? "tui",
     ui,
-    setTimeout(callback: () => void) {
-      scheduled.push(callback);
-      return {} as NodeJS.Timeout;
-    },
   } as unknown as ExtensionContext;
 
   return {
@@ -136,10 +129,6 @@ function createContextHarness(options?: {
     customOptions,
     notifications,
     editorText: () => editorText,
-    setEditorText: text => { editorText = text; },
-    flushScheduled: () => {
-      for (const callback of scheduled.splice(0)) callback();
-    },
   };
 }
 
@@ -402,11 +391,23 @@ test("restores panel settings, persists changes, and flushes on close", async ()
   expect(flushes).toBe(1);
 });
 
-test("embedded chat prepares /btw and updates its file mention without closing review", async () => {
+test("closing review leaves the editor draft unchanged", async () => {
+  const api = createApiHarness();
+  const context = createContextHarness({ draft: "Check this" });
+  createExtension(dependencies())(api.api);
+
+  await invokeCommand(api.commands.get("files"), context.ctx);
+  expect(context.editorText()).toBe("Check this");
+});
+
+test("embedded /btw draft keeps user mentions without adding the reviewed file", async () => {
   const api = createApiHarness();
   const closed = deferred<undefined>();
   const created = deferred<void>();
-  const context = createContextHarness({ draft: "Check this", customResult: closed.promise });
+  const context = createContextHarness({
+    draft: "Check this @docs/manual.md",
+    customResult: closed.promise,
+  });
   let options: FilesPanelOptions | undefined;
   createExtension(dependencies({
     createPanel: value => {
@@ -418,16 +419,12 @@ test("embedded chat prepares /btw and updates its file mention without closing r
 
   const opening = invokeCommand(api.commands.get("files"), context.ctx);
   await created.promise;
-  options?.onReviewFileChange?.("src/old name.ts");
-  expect(context.editorText()).toBe("Check this");
-  options?.onChat?.("src/old name.ts", "@@ -1 +1 @@\n-old\n+new");
-  expect(context.editorText()).toBe(`/btw Check this @"src/old name.ts" \n\nReview diff excerpt:\n    @@ -1 +1 @@\n    -old\n    +new`);
-  options?.onReviewFileChange?.("src/new.ts");
-  expect(context.editorText()).toBe(`/btw Check this @src/new.ts \n\nReview diff excerpt:\n    @@ -1 +1 @@\n    -old\n    +new`);
+  options?.onChat?.("@@ -1 +1 @@\n-old\n+new");
+  const draft = `/btw Check this @docs/manual.md \n\nReview diff excerpt:\n    @@ -1 +1 @@\n    -old\n    +new`;
+  expect(context.editorText()).toBe(draft);
   closed.resolve(undefined);
   await opening;
-  context.flushScheduled();
-  expect(context.editorText()).toContain("@src/new.ts");
+  expect(context.editorText()).toBe(draft);
 });
 
 test("passes a highlighter to the panel only when one loads", async () => {

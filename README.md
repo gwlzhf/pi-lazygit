@@ -15,14 +15,14 @@ The extension targets the OMP 18.0.11 interactive TUI in Windows PowerShell and 
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.6.4
+omp plugin install github:gwlzhf/pi-lazygit#v0.6.5
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.6.4
+omp plugin install github:gwlzhf/pi-lazygit#v0.6.5
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
@@ -78,9 +78,9 @@ The selection is cleared by scrolling, by selecting another file, and by any cha
 
 ## Chat while reviewing
 
-Press `i` from either pane to focus the **same OMP editor** at the bottom of the fullscreen review. The draft starts with `/btw`, an `@`-mention for the reviewed file, and the selected diff text or visible diff excerpt when available. Type a question and press `Enter` to run OMP's native ephemeral `/btw` command; its answer appears above the composer without closing review. `Esc` leaves chat focus and returns to the review panes. Navigate to another file and its mention replaces the previous one in the draft; user-written text stays intact. Press `i` again to resume editing.
+Press `i` from either pane to focus the **same OMP editor** at the bottom of the fullscreen review. The draft starts with `/btw` and the selected diff text or visible diff excerpt when available. No file `@`-mention is inserted or changed: neither entering chat, navigating files, nor closing review edits an existing mention. Type a question and press `Enter` to run OMP's native ephemeral `/btw` command; its answer appears above the composer without closing review. `Esc` leaves chat focus and returns to the review panes without modifying the draft. Press `i` again to resume editing.
 
-`@` in `/btw` is not a guarantee that OMP will read the file automatically. The included diff excerpt supplies review context; for non-diff files, describe the relevant code in the question. The core composer and its native submission are reused, not a separate chat session. Chat targets the main OMP editor, not a focused subagent.
+The included diff excerpt supplies review context; for non-diff files, describe the relevant code or add a file mention yourself. The core composer and its native submission are reused, not a separate chat session. Chat targets the main OMP editor, not a focused subagent.
 
 ## Syntax highlighting
 
@@ -154,7 +154,7 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `d` | Switch the diff preview between unified and split columns |
 | `-` / `=` | Lower/raise diff mask opacity by 10% |
-| `i` | Focus the embedded OMP `/btw` editor with the reviewed file and diff excerpt; does not submit |
+| `i` | Focus the embedded OMP `/btw` editor with a diff excerpt, without inserting a file mention or submitting |
 | `m` | Show modified files in the tree |
 | `a` | Show all visible files in the directory tree (also switches to the tree from the list) |
 | `s` | Toggle workspace/session scope |
@@ -181,7 +181,7 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 | `\` or `Ctrl+B` | Collapse/restore the tree pane |
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `-` / `=` | Lower/raise diff mask opacity by 10% |
-| `i` | Focus the embedded OMP `/btw` editor with the reviewed file and diff excerpt; does not submit |
+| `i` | Focus the embedded OMP `/btw` editor with a diff excerpt, without inserting a file mention or submitting |
 | `g` | Switch the left pane between the project tree and the commit history |
 | `b` | Switch the left pane to the local branch list |
 | `?` | Show every shortcut |
