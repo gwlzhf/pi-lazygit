@@ -15,14 +15,14 @@ The extension targets the OMP 18.3.1 interactive TUI in Windows PowerShell and W
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.6.6
+omp plugin install github:gwlzhf/pi-lazygit#v0.6.7
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.6.6
+omp plugin install github:gwlzhf/pi-lazygit#v0.6.7
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
@@ -66,7 +66,7 @@ The mouse wheel moves the selection in the left pane and scrolls the preview pan
 
 Left-clicking a visible row in the left pane focuses that pane and selects the row. In the project tree a file click starts its preview immediately, and a directory click selects it without expanding or collapsing it — expansion stays on the keyboard. History and branch rows behave the same way: a click selects only. Clicks on the overview header, the pane-title row, the footer, the padding below the last row, and the divider select nothing; divider dragging and preview text selection keep their existing meaning.
 
-Selected rows are painted across the full pane width using the active OMP theme's selection background. Runtimes older than the `Theme.fgOnBg` helper fall back to a plain foreground over the same background token instead of failing to render. Diff previews mask whole rows as well: added lines use the theme's success background, removed lines its error background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. These darker masks change neither the visible width nor the text that a selection copies; changed-line foregrounds use the deeper red/green palette described below.
+Selected rows are painted across the full pane width using the active OMP theme's selection background. Runtimes older than the `Theme.fgOnBg` helper fall back to a plain foreground over the same background token instead of failing to render. Diff previews mask whole rows as well: added lines use Claude Code's green background, removed lines its red background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. These darker masks change neither the visible width nor the text that a selection copies; changed-line foregrounds use the deeper red/green palette described below.
 
 ## Copying preview text
 
@@ -86,7 +86,7 @@ The shortcut opens history without submitting a question or injecting the select
 
 Text previews use OMP's highlighter with four palettes: Pi (default, using the active OMP theme), Catppuccin, Nord, and Tokyo Night. Press `t` from either pane to cycle them in that order. The selected palette affects code syntax only; panel borders and status colors continue to use the active OMP theme. The language is detected from the file path — TypeScript, JavaScript/Node, C#, Go, C/C++, Rust, Python, Java, Kotlin, Ruby, PHP, shell, JSON, YAML, and the other languages OMP supports. Files whose language is unknown or unsupported render as plain text.
 
-Diffs keep per-line colors instead of language highlighting: additions use a deeper green and removals a deeper red, with separate shades for light/dark themes. Preview content is sanitized before it is highlighted, so file contents can never emit their own terminal escape sequences.
+Diffs keep per-line colors instead of language highlighting: additions and removals are shown with Claude Code's default diff masks (dark green and dark red backgrounds, lighter shades on light themes) over the terminal's default foreground. Preview content is sanitized before it is highlighted, so file contents can never emit their own terminal escape sequences.
 
 ## Diff views
 
@@ -103,7 +103,7 @@ Long diff lines wrap within the preview instead of being cut off. In split layou
 
 The footer reports the active layout and context, for example `split diff · ctx 10`.
 
-Diff change masks cover the full rendered row in unified view. In split view, each changed side's mask covers that entire side's row through its gutter, marker, body, and padding, while the unchanged side keeps the context background. The masks use darker theme green/red backgrounds; press `-` or `=` to lower or raise their opacity in 10% steps. The selected opacity is persisted with the other review settings.
+Diff change masks cover the full rendered row in unified view. In split view, each changed side's mask covers that entire side's row through its gutter, marker, body, and padding, while the unchanged side keeps the context background. The masks use Claude Code's default green/red backgrounds at 100% opacity; press `-` or `=` to lower or raise their opacity in 10% steps. The selected opacity is persisted with the other review settings.
 
 ## Live refresh
 

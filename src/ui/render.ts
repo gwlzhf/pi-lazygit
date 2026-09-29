@@ -134,14 +134,11 @@ function diffColor(line: string): ThemeColor {
   return "toolDiffContext";
 }
 
-/** Deeper green/red than the host's pastel diff palette, contrasted on light themes. */
+/** Claude Code paints added/removed rows as a background mask over the default foreground. */
 function diffText(theme: Theme, color: ThemeColor, text: string): string {
   if (color !== "toolDiffAdded" && color !== "toolDiffRemoved") return theme.fg(color, text);
   if (typeof theme.isLight !== "boolean") return theme.fg(color, text);
-  const rgb = color === "toolDiffAdded"
-    ? theme.isLight ? "37;114;74" : "67;156;106"
-    : theme.isLight ? "177;45;48" : "225;82;82";
-  return `\x1b[38;2;${rgb}m${text}\x1b[39m`;
+  return text;
 }
 
 /**
@@ -177,36 +174,26 @@ function parseHexColor(value: string): readonly [number, number, number] | undef
   ];
 }
 
-/** Paint an opacity-adjusted RGB background when the modern Theme API is available. */
+/** Claude Code's diff backgrounds at full strength, dark and light themes. */
+const CLAUDE_DIFF_MASKS = {
+  dark: { toolSuccessBg: [34, 92, 43], toolErrorBg: [122, 41, 54] },
+  light: { toolSuccessBg: [105, 219, 124], toolErrorBg: [255, 168, 180] },
+} as const;
+
+/** Paint Claude Code's diff mask, blended toward the theme's base by opacity. */
 function modernDiffMask(
   theme: Theme,
   background: ThemeBg,
   text: string,
   opacity: number,
 ): string | undefined {
-  const api = theme as ThemeMaskApi;
-  if (
-    typeof theme.isLight !== "boolean" ||
-    typeof api.getBgHex !== "function" ||
-    typeof api.getBgAnsi !== "function"
-  ) {
-    return undefined;
-  }
-  try {
-    const original = parseHexColor(api.getBgHex(background));
-    const backgroundAnsi = api.getBgAnsi(background);
-    if (original === undefined) return opacity >= 1 ? `${backgroundAnsi}${text}\x1b[49m` : undefined;
-    const base = theme.isLight ? 255 : 0;
-    const rgb = original.map(channel => Math.round(base + (channel - base) * opacity));
-    const ansi = opacity >= 1
-      ? backgroundAnsi
-      : `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
-    return `${ansi}${text}\x1b[49m`;
-  } catch {
-    return undefined;
-  }
+  if (typeof theme.isLight !== "boolean") return undefined;
+  const palette = CLAUDE_DIFF_MASKS[theme.isLight ? "light" : "dark"];
+  const original = background === "toolSuccessBg" ? palette.toolSuccessBg : palette.toolErrorBg;
+  const base = theme.isLight ? 255 : 0;
+  const rgb = original.map(channel => Math.round(base + (channel - base) * opacity));
+  return `[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m${text}[49m`;
 }
-
 
 function maskedDiffText(
   theme: Theme,

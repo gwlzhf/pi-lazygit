@@ -66,7 +66,7 @@ function modernTheme(isLight: boolean): Theme {
     },
     getBgAnsi(background: string): string {
       return background === "toolSuccessBg"
-        ? "\x1b[48;2;32;128;64m"
+        ? "\x1b[48;2;105;219;124m"
         : "\x1b[48;2;128;32;32m";
     },
   } as unknown as Theme;
@@ -216,33 +216,34 @@ describe("preview line rendering", () => {
     for (const line of split) expect(visibleWidth(line)).toBe(21);
   });
 
-  test("uses deeper green and red for changed lines on light and dark themes", () => {
+  test("masks changed lines with Claude Code backgrounds over the default foreground", () => {
     for (const isLight of [true, false]) {
       const theme = { ...plainTheme(), isLight } as Theme;
       const added = renderDiffLine("+new", 8, theme);
       const removed = renderDiffLine("-old", 8, theme);
-      expect(added).toContain(isLight ? "\x1b[38;2;37;114;74m" : "\x1b[38;2;67;156;106m");
-      expect(removed).toContain(isLight ? "\x1b[38;2;177;45;48m" : "\x1b[38;2;225;82;82m");
-      expect(added).toEndWith("\x1b[39m");
-      expect(removed).toEndWith("\x1b[39m");
+      expect(added).toContain(isLight ? "[48;2;105;219;124m" : "[48;2;34;92;43m");
+      expect(removed).toContain(isLight ? "[48;2;255;168;180m" : "[48;2;122;41;54m");
+      expect(added).not.toContain("[38;");
+      expect(added).toEndWith("[49m");
+      expect(removed).toEndWith("[49m");
     }
   });
 
   test("paints opacity-adjusted modern masks and covers split gutters", () => {
     const theme = modernTheme(true);
     const half = renderDiffLine("+x", 4, theme, undefined, 0.5);
-    expect(half).toContain("\x1b[48;2;144;192;160m");
-    expect(half).not.toContain("\x1b[48;2;32;128;64m");
+    expect(half).toContain("\x1b[48;2;180;237;190m");
+    expect(half).not.toContain("\x1b[48;2;105;219;124m");
 
     const opaque = renderDiffLine("+x", 4, theme, undefined, 1);
-    expect(opaque).toContain("\x1b[48;2;32;128;64m");
+    expect(opaque).toContain("\x1b[48;2;105;219;124m");
     expect(opaque).toEndWith("\x1b[49m");
 
     const row = parseUnifiedDiff(["@@ -1 +1 @@", "-old", "+new"])?.[1];
     expect(row?.kind).toBe("pair");
     if (row?.kind !== "pair") return;
     const split = renderDiffSplitRow(row, 21, theme, 1, 0.5);
-    expect(split).toContain("\x1b[48;2;192;144;144m");
+    expect(split).toContain("\x1b[48;2;255;212;218m");
     expect(sanitizeTerminalText(split)).toContain("1 -old");
     expect(sanitizeTerminalText(split)).toContain("1 +new");
     expect(visibleWidth(split)).toBe(21);

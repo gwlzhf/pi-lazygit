@@ -30,7 +30,7 @@ export const DIFF_CONTEXT_LEVELS: readonly number[] = [3, 10, 25, FULL_DIFF_CONT
 /** Context line count the panel opens with when nothing was persisted. */
 export const DEFAULT_DIFF_CONTEXT = 3;
 /** Default opacity for tinted addition/removal diff masks. */
-export const DEFAULT_DIFF_MASK_OPACITY = 0.35;
+export const DEFAULT_DIFF_MASK_OPACITY = 1;
 
 /** Accept a finite diff mask opacity in the inclusive 0..1 range. */
 export function normalizeDiffMaskOpacity(value: unknown): number | undefined {
