@@ -267,3 +267,18 @@ The panel displays a truncation state when a limit is reached. Git all-files mod
 ## Scope and safety
 
 Pi Files Review is read-only except for one explicit action: switching to a local branch with `Enter` in the branch list (see [Switching branches](#switching-branches)). It does not edit files, stage changes, apply or revert hunks, commit, fetch, stash, force, or create, rename, or delete any ref. It also does not claim that an Agent produced every change shown in session scope.
+
+## License / 许可证
+
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+- Personal noncommercial use, including study, experimentation, entertainment, and hobby projects, is permitted.
+- Commercial use is not licensed. Obtain a separate license from the copyright holder before commercial use.
+- Noncommercial use by the organizations listed in the license, including educational and charitable institutions, is also permitted.
+- Copies and modified versions must retain the license terms or their URL and the required copyright notice.
+
+This is a source-available license, not MIT or an OSI-approved open-source license. Third-party dependencies retain their own licenses. The full license text controls.
+
+本项目允许个人非商业用途，包括学习、实验、娱乐和业余项目；不授予商业使用权，商业使用前须另行取得著作权人的许可。也允许许可证列明的教育、慈善等机构用于条款允许的用途。分发原版或修改版时，须保留许可证全文或其链接，以及必需的版权声明。
+
+这是源码可见的非商业许可证，不是 MIT，也不是 OSI 认可的开源许可证。第三方依赖仍遵循各自的许可证。具体权利和义务以许可证全文为准。

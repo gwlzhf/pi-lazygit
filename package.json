@@ -2,9 +2,11 @@
   "name": "pi-lazygit",
   "version": "0.6.7",
   "description": "Review project files and Git diffs inside Oh My Pi",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "private": true,
   "files": [
+    "LICENSE",
     "src/contracts.ts",
     "src/filesystem.ts",
     "src/index.ts",
