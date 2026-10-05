@@ -299,3 +299,50 @@ test("clear removes every repository baseline", async () => {
   expect(store.get(resolve("one"), "branch:main")).toBeUndefined();
   expect(store.get(resolve("two"), "branch:main")).toBeUndefined();
 });
+
+test("serialize and hydrate preserve the complete baseline", async () => {
+  const root = resolve("round-trip");
+  const source = new BaselineStore();
+  await source.capture(
+    root,
+    "branch:main",
+    changes(change("nested/file.ts", "M"), change("deleted.ts", "D")),
+    fakeHashes(new Map([[resolve(root, "nested/file.ts"), "sha256"]]), []),
+    new AbortController().signal,
+    42,
+  );
+  const serialized = source.serialize(root, "branch:main");
+  const target = new BaselineStore();
+
+  expect(target.hydrate(JSON.parse(JSON.stringify(serialized)))).toBe(true);
+  expect(target.get(root, "branch:main")).toEqual(source.get(root, "branch:main"));
+});
+
+test("invalid hydration is rejected without changing the existing baseline", async () => {
+  const root = resolve("atomic-hydrate");
+  const store = new BaselineStore();
+  await store.capture(
+    root,
+    "branch:main",
+    changes(change("safe.ts", "M")),
+    fakeHashes(new Map([[resolve(root, "safe.ts"), "original"]]), []),
+    new AbortController().signal,
+    1,
+  );
+  const original = store.get(root, "branch:main");
+
+  expect(store.hydrate({
+    root,
+    headIdentity: "branch:main",
+    establishedAt: 2,
+    entries: [
+      { path: "valid.ts", status: "M", hash: "new" },
+      { path: "../escape.ts", status: "M", hash: "invalid" },
+    ],
+  })).toBe(false);
+  expect(store.get(root, "branch:main")).toBe(original);
+});
+
+test("serialize returns undefined when the requested baseline is absent", () => {
+  expect(new BaselineStore().serialize(resolve("missing"), "branch:main")).toBeUndefined();
+});

@@ -21,6 +21,7 @@ import {
   TREE_MIN_COLUMNS,
   TREE_MIN_PREVIEW_COLUMNS,
   TREE_MIN_RATIO,
+  isCommittable,
   type ChangeRecord,
   type ChangeScope,
   type CommitDiffPreview,
@@ -31,9 +32,11 @@ import {
   type GitLogEntry,
   type GitLogSnapshot,
   type ProjectSnapshot,
+  type PushPlan,
   type ReviewSource,
   type ViewMode,
 } from "../contracts";
+import { CommitSelection, canCommit } from "../model/commit-selection";
 import {
   buildChangeList,
   buildTree,
@@ -78,6 +81,7 @@ import {
   sanitizeTerminalText,
   SPLIT_DIFF_MINIMUM_WIDTH,
 } from "./render";
+import { renderCommitDialog } from "./commit-dialog";
 import { PANEL_HELP_GROUPS, panelPresentation, type PanelPresentationInput } from "./presentation";
 
 export interface FilesPanelOptions {
@@ -114,6 +118,9 @@ export interface FilesPanelOptions {
   readonly onBtwHistory?: () => void;
   /** Colors text previews; previews render unstyled when omitted. */
   readonly highlight?: Highlighter;
+  readonly commitTimeoutMs?: number;
+  readonly pushTimeoutMs?: number;
+  readonly protectedBranches?: readonly string[];
   readonly done: (result: undefined) => void;
 }
 
@@ -149,6 +156,33 @@ function errorMessage(error: unknown): string {
 
 function isAbort(error: unknown, signal: AbortSignal): boolean {
   return signal.aborted || (error instanceof Error && error.name === "AbortError");
+}
+
+function editText(value: string, cursor: number, input: string): { value: string; cursor: number } {
+  const characters = [...value];
+  if (matchesKey(input, "left")) return { value, cursor: Math.max(0, cursor - 1) };
+  if (matchesKey(input, "right")) return { value, cursor: Math.min(characters.length, cursor + 1) };
+  if (matchesKey(input, "home")) return { value, cursor: 0 };
+  if (matchesKey(input, "end")) return { value, cursor: characters.length };
+  if (matchesKey(input, "backspace")) {
+    if (cursor === 0) return { value, cursor };
+    characters.splice(cursor - 1, 1);
+    return { value: characters.join(""), cursor: cursor - 1 };
+  }
+  if (matchesKey(input, "delete")) {
+    if (cursor >= characters.length) return { value, cursor };
+    characters.splice(cursor, 1);
+    return { value: characters.join(""), cursor };
+  }
+  const inserted = input
+    .replaceAll("\x1b[200~", "")
+    .replaceAll("\x1b[201~", "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u001f\u007f]/g, "");
+  if (inserted.length === 0) return { value, cursor };
+  const text = [...inserted];
+  characters.splice(cursor, 0, ...text);
+  return { value: characters.join(""), cursor: cursor + text.length };
 }
 
 function collectDirectoryPaths(node: TreeNode, result: Set<string>): void {
@@ -268,6 +302,27 @@ export class FilesPanel implements Component {
   #branchGeneration = 0;
   #switchController: AbortController | undefined;
   #switchGeneration = 0;
+  #commitSelection = new CommitSelection();
+  #selectionInitialized = false;
+  #commitController: AbortController | undefined;
+  #amendController: AbortController | undefined;
+  #pushController: AbortController | undefined;
+  #commitError: string | undefined;
+  #amendError: string | undefined;
+  #pushError: string | undefined;
+  #commitTimeoutMs: number;
+  #pushTimeoutMs: number;
+  #protectedBranches: ReadonlySet<string>;
+  #commitDialog: { readonly kind: "message" | "confirm"; message: string; cursor: number; noVerify: boolean; output?: string } | undefined;
+  #amendDialog: { subject: string; cursor: number; body?: string; noVerify: boolean; pushed: boolean } | undefined;
+  #pushPlan: PushPlan | undefined;
+  #pushStage: "plan" | "write" | undefined;
+  #pushConfirmation = "";
+  #pushConfirmationCursor = 0;
+  #resetSelectionAfterRefresh = false;
+  #commitTimer: NodeJS.Timeout | undefined;
+  #amendTimer: NodeJS.Timeout | undefined;
+  #pushTimer: NodeJS.Timeout | undefined;
 
   constructor(options: FilesPanelOptions) {
     this.#cwd = options.cwd;
@@ -292,6 +347,9 @@ export class FilesPanel implements Component {
     this.#diffMaskOpacity = normalizeDiffMaskOpacity(options.diffMaskOpacity) ?? DEFAULT_DIFF_MASK_OPACITY;
     this.#highlightTheme = options.highlightTheme ?? DEFAULT_HIGHLIGHT_THEME;
     this.#done = options.done;
+    this.#commitTimeoutMs = options.commitTimeoutMs ?? 120_000;
+    this.#pushTimeoutMs = options.pushTimeoutMs ?? 120_000;
+    this.#protectedBranches = new Set(["main", "master", ...(options.protectedBranches ?? [])]);
   }
 
   start(): void {
@@ -307,6 +365,35 @@ export class FilesPanel implements Component {
       return;
     }
     const interrupted = this.#keybindings.matches(data, "app.interrupt");
+    if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.#pushStage !== undefined) {
+      if (matchesKey(data, "escape") || interrupted) {
+        if (this.#pushStage === "write" && this.#pushController !== undefined) this.#finish();
+        else if (this.#pushStage === "plan" && this.#pushController !== undefined) {
+          clearTimeout(this.#pushTimer);
+          this.#pushTimer = undefined;
+          this.#pushController.abort();
+          this.#pushController = undefined;
+          this.#cancelWriteDialog();
+        } else if (this.#commitDialog?.kind === "confirm" && this.#commitController !== undefined) {
+          clearTimeout(this.#commitTimer);
+          this.#commitTimer = undefined;
+          this.#commitController.abort();
+          this.#commitController = undefined;
+          this.#commitDialog = undefined;
+          this.#requestRender();
+        } else if (this.#amendController !== undefined && this.#amendDialog?.subject === "") {
+          clearTimeout(this.#amendTimer);
+          this.#amendTimer = undefined;
+          this.#amendController.abort();
+          this.#amendController = undefined;
+          this.#amendDialog = undefined;
+          this.#requestRender();
+        } else this.#cancelWriteDialog();
+      } else if (this.#commitDialog !== undefined) this.#handleCommitDialogInput(data);
+      else if (this.#amendDialog !== undefined) this.#handleAmendDialogInput(data);
+      else this.#handlePushConfirmation(data);
+      return;
+    }
     if (interrupted || matchesKey(data, "escape")) {
       if (this.#helpOpen) {
         this.#helpOpen = false;
@@ -402,6 +489,15 @@ export class FilesPanel implements Component {
       return;
     }
 
+    if (data === "P") {
+      this.#beginPushPlan();
+      return;
+    }
+    if (this.#focus === "preview" && data === " ") return;
+    if (this.#leftMode === "log" && data === "u") {
+      this.#beginAmend();
+      return;
+    }
     if (this.#focus === "preview") {
       this.#handlePreviewInput(data);
       return;
@@ -435,6 +531,8 @@ export class FilesPanel implements Component {
         this.#renderOverviewRow(safeWidth),
         renderSingleBorder(this.#footer(), safeWidth, "bottom", this.#theme),
       ]);
+    } else if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.#pushStage !== undefined) {
+      lines = this.#renderWriteDialog(safeWidth, this.#panelRows);
     } else if (this.#helpOpen) {
       lines = this.#renderHelp(safeWidth, this.#panelRows);
     } else {
@@ -484,8 +582,15 @@ export class FilesPanel implements Component {
     this.#commitDiffController?.abort();
     this.#watchController?.abort();
     this.#branchController?.abort();
-    this.#switchController?.abort();
-    this.#refreshController = undefined;
+    this.#commitController?.abort();
+    this.#amendController?.abort();
+    this.#pushController?.abort();
+    clearTimeout(this.#commitTimer);
+    clearTimeout(this.#amendTimer);
+    clearTimeout(this.#pushTimer);
+    this.#commitTimer = undefined;
+    this.#amendTimer = undefined;
+    this.#pushTimer = undefined;
     this.#previewController = undefined;
     this.#historyController = undefined;
     this.#commitDiffController = undefined;
@@ -531,13 +636,25 @@ export class FilesPanel implements Component {
       }
       return;
     }
-    if (matchesKey(data, "a")) {
+    if (data === "a") {
       if (this.#snapshot?.kind === "git" && (this.#viewMode !== "all" || this.#listLayout !== "tree")) {
         this.#viewMode = "all";
         this.#listLayout = "tree";
         this.#rebuildRows();
         this.#requestRender();
       }
+      return;
+    }
+    if (this.#usesChangeList() && data === " ") {
+      this.#toggleCommitSelection();
+      return;
+    }
+    if (this.#usesChangeList() && data === "x") {
+      this.#invertCommitSelection();
+      return;
+    }
+    if (this.#usesChangeList() && data === "A") {
+      this.#toggleAllCommitSelection();
       return;
     }
     if (matchesKey(data, "m")) {
@@ -561,6 +678,7 @@ export class FilesPanel implements Component {
     if (matchesKey(data, "s")) {
       if (this.#snapshot?.kind === "git") {
         this.#scope = this.#scope === "workspace" ? "session" : "workspace";
+        this.#commitSelection.reset(this.#activeChanges().values());
         this.#rebuildRows();
         this.#requestRender();
       }
@@ -585,7 +703,11 @@ export class FilesPanel implements Component {
       else this.#expandOrChild();
       return;
     }
-    if (matchesKey(data, "enter")) this.#openSelection();
+    if (matchesKey(data, "enter")) {
+      if (this.#usesChangeList()) {
+        if (this.#scope === "workspace") this.#beginCommitMessage();
+      } else this.#openSelection();
+    }
   }
 
   /** Return to the tree, revealing it first when it is collapsed. */
@@ -885,6 +1007,10 @@ export class FilesPanel implements Component {
       if (this.#refreshTimer !== undefined) clearTimeout(this.#refreshTimer);
       this.#refreshTimer = setTimeout(() => {
         this.#refreshTimer = undefined;
+        if (this.#commitController !== undefined || this.#amendController !== undefined || this.#pushController !== undefined) {
+          this.#refreshQueued = true;
+          return;
+        }
         this.#startQueuedRefresh();
       }, 150);
       return;
@@ -924,8 +1050,20 @@ export class FilesPanel implements Component {
       project => {
         if (!this.#isCurrentRefresh(generation, controller)) return;
         this.#refreshController = undefined;
+        if (this.#commitController !== undefined || this.#amendController !== undefined || this.#pushController !== undefined) {
+          this.#refreshLoading = false;
+          this.#refreshQueued = true;
+          return;
+        }
         this.#refreshLoading = false;
         this.#snapshot = project;
+        if (this.#resetSelectionAfterRefresh) {
+          this.#commitSelection.reset(project.kind === "git"
+            ? (this.#scope === "workspace" ? project.workspaceChanges : project.sessionChanges).values()
+            : []);
+          this.#resetSelectionAfterRefresh = false;
+        }
+        this.#ensureCommitSelection();
         if (project.kind === "git") {
           this.#installWatch();
           if (this.#leftMode === "log") this.#beginHistory();
@@ -978,6 +1116,14 @@ export class FilesPanel implements Component {
     this.#watchGeneration += 1;
     this.#watchController?.abort();
     this.#watchController = undefined;
+  }
+  #pauseWatchAndRefresh(): void {
+    this.#refreshGeneration += 1;
+    this.#refreshController?.abort();
+    this.#refreshController = undefined;
+    this.#refreshLoading = false;
+    this.#refreshQueued = false;
+    this.#stopWatch();
   }
 
   #isCurrentWatch(generation: number, controller: AbortController): boolean {
@@ -1267,6 +1413,490 @@ export class FilesPanel implements Component {
     return !this.#disposed && generation === this.#switchGeneration && this.#switchController === controller;
   }
 
+  #selectedCommitSummary(): { readonly insertions: number; readonly deletions: number } {
+    const summary = { insertions: 0, deletions: 0 };
+    const project = this.#snapshot;
+    if (project?.kind !== "git") return summary;
+    for (const path of this.#commitSelection.selectedPaths()) {
+      const file = project.workspaceSummaryByPath.get(path);
+      if (file === undefined) continue;
+      summary.insertions += file.insertions;
+      summary.deletions += file.deletions;
+    }
+    return summary;
+  }
+  #ensureCommitSelection(): void {
+    const records = this.#activeChanges().values();
+    if (!this.#selectionInitialized) {
+      this.#commitSelection.initialize(records);
+      this.#selectionInitialized = true;
+    } else this.#commitSelection.prune(this.#activeChanges().keys());
+  }
+
+  #toggleCommitSelection(): void {
+    const selected = this.#selectedRow();
+    if (selected?.node.kind === "section") {
+      const paths = this.#sectionPaths(this.#selectedIndex);
+      if (paths.every(path => this.#commitSelection.has(path))) {
+        for (const path of paths) this.#commitSelection.invert(path);
+      } else this.#commitSelection.selectAll(paths);
+    } else if (selected?.node.kind === "file") this.#commitSelection.toggle(selected.node.path);
+    this.#requestRender();
+  }
+
+  #invertCommitSelection(): void {
+    const selected = this.#selectedRow();
+    if (selected?.node.kind === "file") this.#commitSelection.invert(selected.node.path);
+    this.#requestRender();
+  }
+
+  #toggleAllCommitSelection(): void {
+    const paths = [...this.#activeChanges().keys()];
+    if (paths.every(path => this.#commitSelection.has(path))) this.#commitSelection.clear();
+    else this.#commitSelection.selectAll(paths);
+    this.#requestRender();
+  }
+
+  #sectionPaths(index: number): string[] {
+    const paths: string[] = [];
+    for (let row = index + 1; row < this.#rows.length && this.#rows[row]?.node.kind !== "section"; row += 1) {
+      const node = this.#rows[row]?.node;
+      if (node?.kind === "file") paths.push(node.path);
+    }
+    return paths;
+  }
+
+  #beginCommitMessage(): void {
+    if (this.#commitController !== undefined || this.#amendController !== undefined || this.#pushController !== undefined) return;
+    if (!canCommit(this.#scope, this.#commitSelection.size)) return;
+    this.#commitDialog = { kind: "message", message: "", cursor: 0, noVerify: false };
+    this.#commitError = undefined;
+    this.#requestRender();
+  }
+
+  #handleCommitDialogInput(data: string): void {
+    const dialog = this.#commitDialog;
+    if (dialog === undefined || this.#commitController !== undefined) return;
+    if (dialog.kind === "message") {
+      if (matchesKey(data, "enter")) {
+        if (dialog.message.trim().length === 0) return;
+        this.#beginCommit(dialog.message, dialog.noVerify);
+      } else if (matchesKey(data, "ctrl+n")) dialog.noVerify = !dialog.noVerify;
+      else {
+        const edited = editText(dialog.message, dialog.cursor, data);
+        dialog.message = edited.value;
+        dialog.cursor = edited.cursor;
+      }
+      this.#requestRender();
+      return;
+    }
+    if (data === "y") {
+      this.#commitDialog = undefined;
+      this.#executeCommit(dialog.message, dialog.noVerify);
+    } else if (data === "n") this.#cancelWriteDialog();
+    else if (data === "v" || matchesKey(data, "ctrl+n")) {
+      this.#beginCommit(dialog.message, !dialog.noVerify);
+    }
+    this.#requestRender();
+  }
+
+  #beginCommit(message: string, noVerify: boolean): void {
+    const paths = this.#selectedCommitPaths();
+    if (paths.length === 0 || this.#scope !== "workspace" || this.#commitController !== undefined) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`commit timed out after ${this.#commitTimeoutMs}ms`)), this.#commitTimeoutMs);
+    timer.unref?.();
+    this.#commitTimer = timer;
+    this.#commitController = controller;
+    this.#commitDialog = { kind: "confirm", message, cursor: [...message].length, noVerify, output: "Preparing Git dry-run…" };
+    this.#requestRender();
+    void this.#source.commit({ message, paths, dryRun: true, noVerify, signal: controller.signal }).then(
+      result => {
+        if (this.#disposed || this.#commitController !== controller) return;
+        this.#commitDialog = { kind: "confirm", message, cursor: [...message].length, noVerify, output: result.output };
+        this.#commitController = undefined;
+        clearTimeout(timer);
+        this.#commitTimer = undefined;
+        this.#requestRender();
+      },
+      error => this.#writeFailed("commit", error, controller, timer),
+    );
+  }
+
+  #executeCommit(message: string, noVerify: boolean): void {
+    const paths = this.#selectedCommitPaths();
+    if (paths.length === 0 || this.#scope !== "workspace" || this.#commitController !== undefined) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`commit timed out after ${this.#commitTimeoutMs}ms`)), this.#commitTimeoutMs);
+    timer.unref?.();
+    this.#commitTimer = timer;
+    this.#pauseWatchAndRefresh();
+    this.#commitController = controller;
+    this.#commitDialog = { kind: "confirm", message, cursor: [...message].length, noVerify, output: "Committing…" };
+    void this.#source.commit({ message, paths, noVerify, signal: controller.signal }).then(
+      () => {
+        if (this.#disposed || this.#commitController !== controller) return;
+        clearTimeout(timer);
+        this.#commitTimer = undefined;
+        this.#commitController = undefined;
+        this.#commitDialog = undefined;
+        this.#resetSelectionAfterRefresh = true;
+        this.#queueRefresh();
+        this.#requestRender();
+      },
+      error => this.#writeFailed("commit", error, controller, timer),
+    );
+  }
+
+  #selectedCommitPaths(): string[] {
+    const changes = this.#activeChanges();
+    const paths: string[] = [];
+    for (const path of this.#commitSelection.selectedPaths()) {
+      const record = changes.get(path);
+      if (record === undefined || !isCommittable(record)) continue;
+      paths.push(path);
+      if (record.oldPath !== undefined) paths.push(record.oldPath);
+    }
+    return paths;
+  }
+
+  #beginAmend(): void {
+    const project = this.#snapshot;
+    const selected = this.#selectedLogEntry();
+    if (project?.kind !== "git") return;
+    if (!project.hasHead) {
+      this.#amendError = "Cannot amend before the first commit";
+      this.#requestRender();
+      return;
+    }
+    if (project.detachedAt !== undefined) {
+      this.#amendError = "Cannot amend while HEAD is detached";
+      this.#requestRender();
+      return;
+    }
+    if (selected === undefined || selected.oid !== this.#history?.entries[0]?.oid) {
+      this.#amendError = "Only the latest commit can be amended here";
+      this.#requestRender();
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`amend timed out after ${this.#commitTimeoutMs}ms`)), this.#commitTimeoutMs);
+    timer.unref?.();
+    this.#amendTimer = timer;
+    this.#amendController = controller;
+    this.#amendDialog = { subject: "", cursor: 0, noVerify: false, pushed: false };
+    void this.#source.headMessage({ signal: controller.signal }).then(
+      message => {
+        if (this.#disposed || this.#amendController !== controller) return;
+        clearTimeout(timer);
+        this.#amendController = undefined;
+        this.#amendDialog = undefined;
+        if (message === undefined) {
+          this.#requestRender();
+          return;
+        }
+        this.#amendDialog = {
+          subject: message.subject,
+          cursor: [...message.subject].length,
+          ...(message.body !== undefined ? { body: message.body } : {}),
+          noVerify: false,
+          pushed: message.pushed,
+        };
+        this.#requestRender();
+      },
+      error => this.#writeFailed("amend", error, controller, timer),
+    );
+  }
+
+  #handleAmendDialogInput(data: string): void {
+    const dialog = this.#amendDialog;
+    if (dialog === undefined || this.#amendController !== undefined) return;
+    if (matchesKey(data, "enter")) this.#executeAmend(dialog);
+    else if (matchesKey(data, "ctrl+n")) dialog.noVerify = !dialog.noVerify;
+    else {
+      const edited = editText(dialog.subject, dialog.cursor, data);
+      dialog.subject = edited.value;
+      dialog.cursor = edited.cursor;
+    }
+    this.#requestRender();
+  }
+
+  #executeAmend(dialog: { subject: string; body?: string; noVerify: boolean; pushed: boolean }): void {
+    if (dialog.subject.trim().length === 0 || this.#amendController !== undefined) return;
+    this.#pauseWatchAndRefresh();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`amend timed out after ${this.#commitTimeoutMs}ms`)), this.#commitTimeoutMs);
+    timer.unref?.();
+    this.#amendTimer = timer;
+    this.#amendController = controller;
+    void this.#source.amend({
+      subject: dialog.subject,
+      ...(dialog.body !== undefined ? { body: dialog.body } : {}),
+      noVerify: dialog.noVerify,
+      signal: controller.signal,
+    }).then(
+      result => {
+        if (this.#disposed || this.#amendController !== controller) return;
+        clearTimeout(timer);
+        this.#amendTimer = undefined;
+        this.#amendController = undefined;
+        this.#amendDialog = undefined;
+        this.#copyNotice = `Amended message: ${result.subject}`;
+        if (dialog.pushed) this.#amendError = "This commit was already pushed; do not force-push";
+        this.#installWatch();
+        this.#queueRefresh();
+        this.#requestRender();
+      },
+      error => this.#writeFailed("amend", error, controller, timer),
+    );
+  }
+  #beginPushPlan(): void {
+    const project = this.#snapshot;
+    if (project?.kind !== "git") return;
+    if (!project.hasHead) {
+      this.#pushError = "Cannot push before the first commit";
+      this.#requestRender();
+      return;
+    }
+    if (project.detachedAt !== undefined) {
+      this.#pushError = "Cannot push while HEAD is detached";
+      this.#requestRender();
+      return;
+    }
+    if (this.#commitController !== undefined || this.#amendController !== undefined || this.#pushController !== undefined) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`push plan timed out after ${this.#pushTimeoutMs}ms`)), this.#pushTimeoutMs);
+    timer.unref?.();
+    this.#pushTimer = timer;
+    this.#pushController = controller;
+    this.#pushStage = "plan";
+    this.#pushPlan = undefined;
+    this.#pushError = undefined;
+    this.#pushConfirmation = "";
+    this.#pushConfirmationCursor = 0;
+    void this.#source.pushPlan({ signal: controller.signal }).then(
+      plan => {
+        if (this.#disposed || this.#pushController !== controller) return;
+        clearTimeout(timer);
+        this.#pushTimer = undefined;
+        this.#pushController = undefined;
+        this.#pushPlan = plan;
+        this.#pushStage = "plan";
+        this.#pushConfirmation = "";
+        this.#pushConfirmationCursor = 0;
+        this.#requestRender();
+      },
+      error => this.#writeFailed("push", error, controller, timer),
+    );
+  }
+
+  #handlePushConfirmation(data: string): void {
+    if (matchesKey(data, "escape") || (this.#pushStage === "plan" && data === "n")) {
+      if (this.#pushStage === "plan" && this.#pushController !== undefined) {
+        clearTimeout(this.#pushTimer);
+        this.#pushTimer = undefined;
+        this.#pushController.abort();
+        this.#pushController = undefined;
+      }
+      this.#cancelWriteDialog();
+      return;
+    }
+    if (this.#pushStage === "plan") {
+      if (data === "y" && this.#pushPlan?.upstream !== undefined && this.#pushPlan.behind === 0) {
+        this.#pushStage = "write";
+        this.#pushConfirmation = "";
+        this.#pushConfirmationCursor = 0;
+        this.#requestRender();
+      }
+      return;
+    }
+    if (this.#pushStage !== "write") return;
+    const plan = this.#pushPlan;
+    if (plan === undefined || plan.upstream === undefined || plan.behind > 0 || this.#pushController !== undefined) return;
+    if (this.#protectedBranches.has(plan.branch)) {
+      if (matchesKey(data, "enter")) {
+        if (this.#pushConfirmation === plan.branch) this.#executePush(plan);
+      } else {
+        const edited = editText(this.#pushConfirmation, this.#pushConfirmationCursor, data);
+        this.#pushConfirmation = edited.value;
+        this.#pushConfirmationCursor = edited.cursor;
+      }
+      this.#requestRender();
+      return;
+    }
+    if (data === "w") this.#executePush(plan);
+  }
+
+  #executePush(plan: PushPlan): void {
+    if (plan.upstream === undefined || plan.behind > 0 || this.#pushController !== undefined) return;
+    this.#pauseWatchAndRefresh();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`push timed out after ${this.#pushTimeoutMs}ms`)), this.#pushTimeoutMs);
+    timer.unref?.();
+    this.#pushTimer = timer;
+    this.#pushController = controller;
+    void this.#source.push({ branch: plan.branch, upstream: plan.upstream, signal: controller.signal }).then(
+      () => {
+        if (this.#disposed || this.#pushController !== controller) return;
+        clearTimeout(timer);
+        this.#pushTimer = undefined;
+        this.#pushController = undefined;
+        this.#pushStage = undefined;
+        this.#pushPlan = undefined;
+        this.#pushConfirmation = "";
+        this.#pushConfirmationCursor = 0;
+        this.#installWatch();
+        this.#queueRefresh();
+        this.#requestRender();
+      },
+      error => this.#writeFailed("push", error, controller, timer),
+    );
+  }
+  #writeFailed(kind: "commit" | "amend" | "push", error: unknown, controller: AbortController, timer?: NodeJS.Timeout): void {
+    const active = kind === "commit"
+      ? this.#commitController
+      : kind === "amend"
+        ? this.#amendController
+        : this.#pushController;
+    if (this.#disposed || active !== controller) return;
+    clearTimeout(timer);
+    const message = controller.signal.aborted
+      && controller.signal.reason instanceof Error
+      && controller.signal.reason.name !== "AbortError"
+      ? errorMessage(controller.signal.reason)
+      : errorMessage(error);
+    if (kind === "commit") {
+      this.#commitTimer = undefined;
+      this.#commitController = undefined;
+      this.#commitError = message;
+    } else if (kind === "amend") {
+      this.#amendTimer = undefined;
+      this.#amendController = undefined;
+      this.#amendError = message;
+    } else {
+      this.#pushTimer = undefined;
+      this.#pushController = undefined;
+      this.#pushError = message;
+      this.#pushPlan = undefined;
+      this.#pushConfirmation = "";
+      this.#pushConfirmationCursor = 0;
+    }
+    this.#commitDialog = undefined;
+    this.#amendDialog = undefined;
+    this.#pushStage = undefined;
+    this.#installWatch();
+    this.#queueRefresh();
+    this.#requestRender();
+  }
+
+  #cancelWriteDialog(): void {
+    if (this.#commitController !== undefined || this.#amendController !== undefined || this.#pushController !== undefined) return;
+    this.#commitDialog = undefined;
+    this.#amendDialog = undefined;
+    this.#pushStage = undefined;
+    this.#pushPlan = undefined;
+    this.#pushConfirmation = "";
+    this.#pushConfirmationCursor = 0;
+    this.#requestRender();
+  }
+
+  #renderWriteDialog(width: number, rows: number): readonly string[] {
+    const details: string[] = [];
+    let title = "Commit";
+    let input: string | undefined;
+    let inputCursor: number | undefined;
+    let inputLabel: string | undefined;
+    let busy = false;
+    const project = this.#snapshot;
+    if (this.#commitDialog !== undefined) {
+      const dialog = this.#commitDialog;
+      title = dialog.kind === "message" ? "Commit message" : "Confirm commit";
+      const selectedSummary = this.#selectedCommitSummary();
+      details.push(`${this.#commitSelection.size} selected · +${selectedSummary.insertions} -${selectedSummary.deletions}`);
+      details.push(project?.kind === "git" ? project.detachedAt !== undefined ? `WARNING: detached HEAD ${project.detachedAt}` : `Branch: ${project.currentBranch ?? "unknown"}` : "");
+      if (dialog.kind === "confirm") {
+        details.push(`Message: ${dialog.message}`);
+        details.push(...(dialog.output ?? "").split("\n"));
+      }
+      details.push(`no-verify: ${dialog.noVerify ? "on" : "off"} (Ctrl+N/v)`);
+      if (dialog.kind === "message") {
+        input = dialog.message;
+        inputCursor = dialog.cursor;
+      }
+      busy = this.#commitController !== undefined;
+    } else if (this.#amendDialog !== undefined) {
+      title = "Amend HEAD subject";
+      if (this.#amendDialog.pushed) details.push("WARNING: this commit was already pushed; do not force-push");
+      if (this.#amendController !== undefined) details.push("Loading HEAD message…");
+      else details.push(`no-verify: ${this.#amendDialog.noVerify ? "on" : "off"} (Ctrl+N)`);
+      if (this.#amendController === undefined) {
+        input = this.#amendDialog.subject;
+        inputCursor = this.#amendDialog.cursor;
+      }
+      busy = this.#amendController !== undefined;
+    } else if (this.#pushStage !== undefined) {
+      const plan = this.#pushPlan;
+      title = this.#pushStage === "plan" ? "Review push" : "Confirm remote write";
+      if (plan !== undefined) {
+        details.push(`local ${plan.branch} → ${plan.upstream ?? "no upstream"}`);
+        details.push(`ahead ${plan.ahead} · behind ${plan.behind}`);
+        const shownCommits = Math.min(10, plan.commits.length, plan.ahead);
+        if (plan.ahead > shownCommits) details.push(`… and ${plan.ahead - shownCommits} more`);
+        else if (plan.truncated) details.push(`… plan truncated · ${plan.ahead} commits ahead`);
+        if (plan.upstream === undefined) details.push("No upstream configured; set one before pushing");
+        if (plan.behind > 0) details.push("Remote has new commits; pull/rebase first");
+        if (this.#pushStage === "write") details.push("This writes to the remote and cannot be undone.");
+        for (const commit of plan.commits.slice(0, shownCommits)) {
+          details.push(`${commit.shortOid} ${commit.subject}`);
+        }
+        if (this.#pushStage === "write" && this.#protectedBranches.has(plan.branch)) {
+          details.push(`Type ${plan.branch} then Enter to confirm`);
+          input = this.#pushConfirmation;
+          inputCursor = this.#pushConfirmationCursor;
+          inputLabel = "Branch";
+        } else if (this.#pushStage === "write") details.push("Press w to confirm remote write");
+        else if (this.#protectedBranches.has(plan.branch)) details.push("Protected branch: stage 2 requires typing its exact name");
+      }
+      busy = this.#pushController !== undefined;
+    }
+    if (this.#pushError !== undefined) details.push(`Push error: ${this.#pushError}`);
+    if (this.#commitError !== undefined) details.push(`Commit error: ${this.#commitError}`);
+    if (this.#amendError !== undefined) details.push(`Amend error: ${this.#amendError}`);
+    const footer = this.#commitDialog?.kind === "message"
+      ? "Type message · Enter continue · Ctrl+N no-verify · Esc cancel"
+      : this.#commitDialog?.kind === "confirm"
+        ? this.#commitController !== undefined
+          ? "Preparing dry-run · Esc cancel"
+          : "y commit · n/Esc cancel · v/Ctrl+N no-verify"
+        : this.#amendDialog !== undefined
+          ? this.#amendController !== undefined
+            ? "Loading HEAD message · Esc cancel"
+            : "Enter amend HEAD subject · Ctrl+N no-verify · Esc cancel"
+          : this.#pushStage === "plan"
+            ? this.#pushController !== undefined
+              ? "Planning push · Esc cancel"
+              : this.#pushPlan?.upstream === undefined
+                ? "No upstream · Esc cancel"
+                : this.#pushPlan.behind > 0
+                  ? "Pull/rebase first · n/Esc cancel"
+                  : "y continue · n/Esc cancel"
+            : this.#pushStage === "write"
+              ? this.#pushController !== undefined ? "Pushing · Esc close panel" : this.#protectedBranches.has(this.#pushPlan?.branch ?? "") ? "Type exact branch + Enter · Esc cancel" : "w write · Esc cancel"
+              : undefined;
+    const rendered = renderCommitDialog({
+      title,
+      lines: details,
+      ...(input !== undefined ? {
+        input,
+        ...(inputCursor !== undefined ? { inputCursor } : {}),
+        ...(inputLabel !== undefined ? { inputLabel } : {}),
+      } : {}),
+      ...(busy ? { busy } : {}),
+      ...(footer !== undefined ? { footer } : {}),
+    }, width, this.#theme);
+    return Object.freeze(Array.from({ length: rows }, (_, index) => rendered[index] ?? ""));
+  }
+
   #activeChanges(): ReadonlyMap<string, ChangeRecord> {
     const project = this.#snapshot;
     if (project === undefined || project.kind === "filesystem") return EMPTY_CHANGES;
@@ -1289,6 +1919,10 @@ export class FilesPanel implements Component {
         recoverSelection(this.#rows, previousPath, previousIndex),
         1,
       );
+      if (this.#focus === "preview" && this.#selectedRow()?.node.kind === "section") {
+        const firstFileIndex = this.#rows.findIndex(row => row.node.kind === "file");
+        if (firstFileIndex >= 0) this.#selectedIndex = firstFileIndex;
+      }
       this.#treeOffset = Math.min(this.#treeOffset, Math.max(0, this.#rows.length - 1));
       const selectedChange = this.#selectedRow();
       if (selectedChange?.node.kind === "file") {
@@ -1310,7 +1944,6 @@ export class FilesPanel implements Component {
     if (selected?.node.kind === "file") this.#beginPreview(selected.node.path, forcePreview);
     else this.#cancelPreview();
   }
-
   #selectedRow(): TreeRow | undefined {
     return this.#selectedIndex >= 0 ? this.#rows[this.#selectedIndex] : undefined;
   }
@@ -1319,12 +1952,9 @@ export class FilesPanel implements Component {
     return this.#listLayout === "changes" && this.#snapshot?.kind === "git";
   }
 
-  /**
-   * Walks past divider rows so the cursor always lands on a file, searching the
-   * other direction when the preferred one runs out of rows.
-   */
   #skipSections(index: number, step: 1 | -1): number {
     if (index < 0 || this.#rows.length === 0) return this.#rows.length === 0 ? -1 : index;
+    if (this.#usesChangeList()) return Math.max(0, Math.min(this.#rows.length - 1, index));
     for (const direction of [step, -step] as const) {
       for (let cursor = index; cursor >= 0 && cursor < this.#rows.length; cursor += direction) {
         if (this.#rows[cursor]?.node.kind !== "section") return cursor;
@@ -1616,6 +2246,8 @@ export class FilesPanel implements Component {
       ...(currentBranch !== undefined ? { currentBranch } : {}),
       ...(detachedAt !== undefined ? { detachedAt } : {}),
       fileCount,
+      changeList: this.#usesChangeList(),
+      selectedCount: this.#commitSelection.size,
       ...(selectedPath !== undefined ? { selectedPath } : {}),
       ...(selectedSummary !== undefined ? { selectedSummary } : {}),
     };
@@ -1745,9 +2377,11 @@ export class FilesPanel implements Component {
 
   #renderTreeRow(row: TreeRow, index: number, width: number): string {
     if (row.node.kind === "section") {
+      const selected = index === this.#selectedIndex;
       const label = `── ${sanitizeTerminalText(row.node.name).replaceAll("\n", " ")} `;
-      const fill = Math.max(0, width - label.length);
-      return this.#theme.fg("muted", `${label}${"─".repeat(fill)}`);
+      const raw = `${selected ? ">" : " "}${label}${"─".repeat(Math.max(0, width - label.length - 1))}`;
+      if (selected && this.#focus === "tree") return renderSelectedRow(raw, width, this.#theme);
+      return this.#theme.fg("muted", fitCell(raw, width));
     }
     const selected = index === this.#selectedIndex;
     const cursor = selected ? ">" : " ";
@@ -1756,7 +2390,7 @@ export class FilesPanel implements Component {
     if (row.node.kind === "directory") {
       raw = `${cursor} ${indent}${row.expanded ? "▼" : "▶"} ${sanitizeTerminalText(row.node.name).replaceAll("\n", " ")}/`;
     } else {
-      raw = `${cursor} ${indent}${row.node.status ?? " "}  ${sanitizeTerminalText(row.node.name).replaceAll("\n", " ")}`;
+      raw = `${cursor} ${indent}${row.node.status ?? " "}${this.#usesChangeList() ? ` ${this.#commitSelection.has(row.node.path) ? "[x]" : "[ ]"}` : " "}  ${sanitizeTerminalText(row.node.name).replaceAll("\n", " ")}`;
     }
     if (selected && this.#focus === "tree") return renderSelectedRow(raw, width, this.#theme);
     const color: ThemeColor = row.node.status === "U" || row.node.status === "D"
@@ -1890,6 +2524,9 @@ export class FilesPanel implements Component {
   }
 
   #footer(): string {
+    if (this.#commitError !== undefined) return `commit error: ${this.#commitError}`;
+    if (this.#amendError !== undefined) return `amend: ${this.#amendError}`;
+    if (this.#pushError !== undefined) return `push error: ${this.#pushError}`;
     const project = this.#snapshot;
     const pieces: string[] = [];
     if (this.#leftMode === "log" && this.#commitDiff?.truncated) pieces.push("commit preview truncated");
@@ -1934,6 +2571,11 @@ export class FilesPanel implements Component {
       else if (this.#branchLoading) pieces.push("loading branches");
       else if (this.#branchError !== undefined) pieces.push(`error: ${this.#branchError}`);
     }
+    if (this.#commitError !== undefined) pieces.push(`commit error: ${this.#commitError}`);
+    if (this.#amendError !== undefined) pieces.push(`amend: ${this.#amendError}`);
+    if (this.#pushError !== undefined) pieces.push(`push error: ${this.#pushError}`);
+    if (this.#usesChangeList()) pieces.push(`${this.#commitSelection.size} selected`);
+    if (this.#usesChangeList() && this.#scope !== "workspace") pieces.push("commit disabled: switch to workspace scope");
 
     if (this.#copyNotice !== undefined) pieces.push(this.#copyNotice);
 
@@ -1950,7 +2592,7 @@ export class FilesPanel implements Component {
           ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "\\ tree", "←/h/tab/esc tree", "drag copy", width]
           : project?.kind === "filesystem"
             ? ["F5/r refresh", "n/p move", "→/l preview", "↵ open", "tab", "\\ tree", width, "esc"]
-            : ["F5/r refresh", "n/p move", "→/l preview", "↵ open", "tab", "\\ tree", "g log", "b branches", width, "v list", "m/a", "s", "esc"];
+            : ["F5/r refresh", "n/p move", "→/l preview", this.#usesChangeList() && this.#scope === "workspace" ? "↵ commit" : "↵ open", ...(this.#usesChangeList() ? ["space toggle", "x invert", "A select all"] : []), "P push", "tab", "\\ tree", "g log", "b branches", width, "v list", "m/a", "s", "esc"];
     pieces.push("i /btw history", hints.filter(hint => hint !== undefined).join(" · "));
     return pieces.join(" · ");
   }

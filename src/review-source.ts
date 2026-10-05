@@ -2,14 +2,22 @@ import { relative, resolve } from "node:path";
 import {
   emptySummary,
   normalizeProjectPath,
+  type AmendOptions,
+  type AmendResult,
   type ChangeRecord,
   type ChangeSummary,
   type CommitDiffPreview,
+  type CommitOptions,
+  type CommitResult,
   type FilePreview,
   type GitBranchSnapshot,
   type GitLogSnapshot,
+  type HeadMessage,
   type PreviewOptions,
   type ProjectSnapshot,
+  type PushOptions,
+  type PushPlan,
+  type PushResult,
   type RefreshOptions,
   type ReviewSource,
   type SwitchBranchOptions,
@@ -19,11 +27,23 @@ import { FilesystemProject } from "./filesystem";
 import { GitRepository, type RepositoryInspection } from "./git/repository";
 import type { ProcessRunner } from "./git/process";
 import { watchGitRepository } from "./git/watch";
+import { createBaselineCacheStore, type BaselineCacheIdentity, type BaselineCacheStore } from "./model/cache-store";
 import { BaselineStore } from "./model/baseline";
-
 type GitBackend = Pick<
   GitRepository,
-  "inspect" | "contentHash" | "preview" | "history" | "commitDiff" | "branches" | "switchBranch"
+  | "inspect"
+  | "contentHash"
+  | "preview"
+  | "history"
+  | "commitDiff"
+  | "branches"
+  | "switchBranch"
+  | "headMessage"
+  | "commit"
+  | "amend"
+  | "pushPlan"
+  | "push"
+  | "cacheFingerprint"
 >;
 type FilesystemBackend = Pick<FilesystemProject, "inspect" | "preview">;
 
@@ -35,6 +55,7 @@ export interface ReviewSourceFactories {
   ) => Promise<GitBackend | undefined>;
   readonly createFilesystem: (root: string) => FilesystemBackend;
   readonly watchGit?: (root: string, options: WatchOptions) => Promise<void>;
+  readonly cacheStore?: BaselineCacheStore;
 }
 
 type ActiveBackend =
@@ -54,9 +75,25 @@ interface BackendDiscovery {
   readonly inspection?: RepositoryInspection;
 }
 
+interface CacheFingerprint {
+  readonly headOid?: string;
+  readonly indexFingerprint: string;
+}
+
+interface BaselineCheckpoint {
+  readonly root: string;
+  readonly headIdentity: string;
+  readonly identity?: BaselineCacheIdentity;
+  readonly cacheStore?: BaselineCacheStore;
+  readonly generation: number;
+}
+
 interface BaselineCoordinator {
   readonly controller: AbortController;
-  readonly captures: Map<string, Promise<void>>;
+  readonly captures: Map<string, Promise<boolean>>;
+  readonly fingerprints: Map<string, CacheFingerprint>;
+  readonly checkpoints: Map<string, BaselineCheckpoint>;
+  closing: boolean;
 }
 
 const productionFactories: ReviewSourceFactories = {
@@ -64,9 +101,14 @@ const productionFactories: ReviewSourceFactories = {
   createFilesystem: root => new FilesystemProject(root),
   watchGit: watchGitRepository,
 };
+const defaultCacheStore = createBaselineCacheStore();
 const baselineCoordinators = new WeakMap<BaselineStore, BaselineCoordinator>();
+const cacheTails = new Map<string, Promise<void>>();
+const cacheGenerations = new Map<string, number>();
+let runtimeCacheEnabled = true;
 let sessionBaselines = new BaselineStore();
 const sessionSources = new Map<string, ProjectReviewSource>();
+const cacheStoreByRoot = new Map<string, BaselineCacheStore>();
 
 function canonicalRoot(root: string): string {
   const absoluteRoot = resolve(root);
@@ -80,14 +122,53 @@ function coordinatorFor(baselines: BaselineStore): BaselineCoordinator {
   const coordinator: BaselineCoordinator = {
     controller: new AbortController(),
     captures: new Map(),
+    fingerprints: new Map(),
+    checkpoints: new Map(),
+    closing: false,
   };
   baselineCoordinators.set(baselines, coordinator);
   return coordinator;
 }
 
-function waitForCaller(shared: Promise<void>, signal: AbortSignal): Promise<void> {
+function cacheGeneration(root: string): number {
+  return cacheGenerations.get(canonicalRoot(root)) ?? 0;
+}
+
+function serializeCacheOperation<T>(root: string, operation: () => Promise<T>): Promise<T> {
+  const key = canonicalRoot(root);
+  const previous = cacheTails.get(key) ?? Promise.resolve();
+  const current = previous.then(operation, operation);
+  const settled = current.then(() => undefined, () => undefined);
+  cacheTails.set(key, settled);
+  void settled.then(() => {
+    if (cacheTails.get(key) === settled) cacheTails.delete(key);
+  });
+  return current;
+}
+
+function sameFingerprint(left: CacheFingerprint | undefined, right: CacheFingerprint): boolean {
+  return left !== undefined && left.headOid === right.headOid &&
+    left.indexFingerprint === right.indexFingerprint;
+}
+
+function cacheIdentity(
+  root: string,
+  headIdentity: string,
+  fingerprint: CacheFingerprint,
+): BaselineCacheIdentity | undefined {
+  if (fingerprint.headOid === undefined || fingerprint.headOid.length === 0) return undefined;
+  return {
+    canonicalRoot: canonicalRoot(root),
+    headIdentity,
+    headOid: fingerprint.headOid,
+    indexFingerprint: fingerprint.indexFingerprint,
+  };
+}
+
+
+function waitForCaller<T>(shared: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
-  return new Promise<void>((resolveWait, rejectWait) => {
+  return new Promise<T>((resolveWait, rejectWait) => {
     function cleanup(): void {
       signal.removeEventListener("abort", rejectAborted);
     }
@@ -101,12 +182,12 @@ function waitForCaller(shared: Promise<void>, signal: AbortSignal): Promise<void
     }
     signal.addEventListener("abort", rejectAborted, { once: true });
     void shared.then(
-      () => {
+      value => {
         cleanup();
         if (signal.aborted) {
           rejectAborted();
         } else {
-          resolveWait();
+          resolveWait(value);
         }
       },
       error => {
@@ -136,6 +217,7 @@ function sessionSummary(
 
 export class ProjectReviewSource implements ReviewSource {
   readonly #root: string;
+  readonly #cacheStore: BaselineCacheStore | undefined;
   #backend: ActiveBackend | undefined;
 
   constructor(
@@ -145,11 +227,15 @@ export class ProjectReviewSource implements ReviewSource {
     private readonly factories: ReviewSourceFactories = productionFactories,
   ) {
     this.#root = resolve(cwd);
+    this.#cacheStore = factories.cacheStore ??
+      (factories === productionFactories ? defaultCacheStore : undefined);
   }
 
   #registerRepositoryRoot(root: string): void {
     if (this.baselines === sessionBaselines) {
-      sessionSources.set(canonicalRoot(root), this);
+      const key = canonicalRoot(root);
+      sessionSources.set(key, this);
+      if (this.#cacheStore !== undefined) cacheStoreByRoot.set(key, this.#cacheStore);
     }
   }
 
@@ -191,50 +277,164 @@ export class ProjectReviewSource implements ReviewSource {
     };
   }
 
+  async #currentFingerprint(
+    repository: GitBackend,
+    signal: AbortSignal,
+  ): Promise<CacheFingerprint | undefined> {
+    try {
+      const fingerprint = await repository.cacheFingerprint(signal);
+      signal.throwIfAborted();
+      if (fingerprint.indexFingerprint.length === 0) return undefined;
+      return fingerprint;
+    } catch {
+      signal.throwIfAborted();
+      return undefined;
+    }
+  }
+
+  async #persistCheckpoint(checkpoint: BaselineCheckpoint): Promise<void> {
+    const identity = checkpoint.identity;
+    const cacheStore = checkpoint.cacheStore;
+    if (
+      !runtimeCacheEnabled ||
+      identity === undefined ||
+      cacheStore === undefined ||
+      checkpoint.generation !== cacheGeneration(checkpoint.root)
+    ) return;
+    const serialized = this.baselines.serialize(checkpoint.root, checkpoint.headIdentity);
+    if (serialized === undefined) return;
+    try {
+      await serializeCacheOperation(checkpoint.root, async () => {
+        if (
+          !runtimeCacheEnabled ||
+          checkpoint.generation !== cacheGeneration(checkpoint.root)
+        ) return;
+        await cacheStore.save(identity, serialized);
+      });
+    } catch {
+    }
+  }
+
   async #establishInspectedBaseline(
     repository: GitBackend,
     inspection: RepositoryInspection,
     callerSignal: AbortSignal,
   ): Promise<boolean> {
     callerSignal.throwIfAborted();
-    if (this.baselines.get(inspection.root, inspection.headIdentity) !== undefined) return false;
-
     const coordinator = coordinatorFor(this.baselines);
     coordinator.controller.signal.throwIfAborted();
+    if (coordinator.closing) throw new DOMException("Review session ended", "AbortError");
     const key = `${canonicalRoot(inspection.root)}\0${inspection.headIdentity}`;
-    let capture = coordinator.captures.get(key);
-    let created = false;
-    if (capture === undefined) {
-      created = true;
-      const hashFile = this.#hashFile(repository, inspection.root);
-      capture = this.baselines
-        .capture(
+
+    for (;;) {
+      callerSignal.throwIfAborted();
+      const fingerprint = await this.#currentFingerprint(repository, callerSignal);
+      if (coordinator.closing) throw new DOMException("Review session ended", "AbortError");
+      const baseline = this.baselines.get(inspection.root, inspection.headIdentity);
+      const previousFingerprint = coordinator.fingerprints.get(key);
+      if (baseline !== undefined) {
+        if (fingerprint === undefined || previousFingerprint === undefined) return false;
+        if (sameFingerprint(previousFingerprint, fingerprint)) return false;
+        if (previousFingerprint.headOid === fingerprint.headOid) {
+          coordinator.fingerprints.set(key, fingerprint);
+          coordinator.checkpoints.delete(key);
+          if (this.#cacheStore !== undefined) {
+            await clearProjectBaselineCache(inspection.root);
+          }
+          return false;
+        }
+      }
+
+      const existing = coordinator.captures.get(key);
+      if (existing !== undefined) {
+        await waitForCaller(existing, callerSignal);
+        continue;
+      }
+
+      const generation = cacheGeneration(inspection.root);
+      const identity = fingerprint === undefined
+        ? undefined
+        : cacheIdentity(inspection.root, inspection.headIdentity, fingerprint);
+      const cacheStore = this.#cacheStore;
+      const capture = (async (): Promise<boolean> => {
+        if (coordinator.closing) throw new DOMException("Review session ended", "AbortError");
+        if (
+          runtimeCacheEnabled &&
+          cacheStore !== undefined &&
+          identity !== undefined &&
+          generation === cacheGeneration(inspection.root)
+        ) {
+          try {
+            const cached = await serializeCacheOperation(inspection.root, () =>
+              runtimeCacheEnabled && generation === cacheGeneration(inspection.root)
+                ? cacheStore.load(identity)
+                : Promise.resolve(undefined));
+            coordinator.controller.signal.throwIfAborted();
+            const confirmedFingerprint = cached === undefined
+              ? undefined
+              : await this.#currentFingerprint(repository, coordinator.controller.signal);
+            if (
+              runtimeCacheEnabled &&
+              generation === cacheGeneration(inspection.root) &&
+              cached !== undefined &&
+              confirmedFingerprint !== undefined &&
+              sameFingerprint(fingerprint, confirmedFingerprint) &&
+              canonicalRoot(cached.root) === canonicalRoot(inspection.root) &&
+              cached.headIdentity === inspection.headIdentity &&
+              this.baselines.hydrate(cached)
+            ) {
+              coordinator.fingerprints.set(key, fingerprint!);
+              coordinator.checkpoints.set(key, {
+                root: inspection.root,
+                headIdentity: inspection.headIdentity,
+                identity,
+                cacheStore,
+                generation,
+              });
+              return false;
+            }
+          } catch {
+            coordinator.controller.signal.throwIfAborted();
+          }
+        }
+
+        await this.baselines.capture(
           inspection.root,
           inspection.headIdentity,
           inspection.changes,
-          hashFile,
+          this.#hashFile(repository, inspection.root),
           coordinator.controller.signal,
-        )
-        .then(() => undefined);
+        );
+        coordinator.controller.signal.throwIfAborted();
+        if (coordinator.closing) return true;
+        const confirmedFingerprint = await this.#currentFingerprint(
+          repository,
+          coordinator.controller.signal,
+        );
+        coordinator.fingerprints.set(key, fingerprint ?? { indexFingerprint: "" });
+        if (confirmedFingerprint === undefined || !sameFingerprint(fingerprint, confirmedFingerprint)) return true;
+        const checkpoint: BaselineCheckpoint = {
+          root: inspection.root,
+          headIdentity: inspection.headIdentity,
+          ...(identity === undefined ? {} : { identity }),
+          ...(cacheStore === undefined ? {} : { cacheStore }),
+          generation,
+        };
+        coordinator.checkpoints.set(key, checkpoint);
+        if (runtimeCacheEnabled) await this.#persistCheckpoint(checkpoint);
+        return true;
+      })();
       coordinator.captures.set(key, capture);
-      const completedCapture = capture;
       void capture.then(
         () => {
-          if (coordinator.captures.get(key) === completedCapture) {
-            coordinator.captures.delete(key);
-          }
+          if (coordinator.captures.get(key) === capture) coordinator.captures.delete(key);
         },
         () => {
-          if (coordinator.captures.get(key) === completedCapture) {
-            coordinator.captures.delete(key);
-          }
+          if (coordinator.captures.get(key) === capture) coordinator.captures.delete(key);
         },
       );
+      return await waitForCaller(capture, callerSignal);
     }
-
-    await waitForCaller(capture, callerSignal);
-    callerSignal.throwIfAborted();
-    return created;
   }
 
   async establishBaseline(signal: AbortSignal): Promise<void> {
@@ -349,6 +549,31 @@ export class ProjectReviewSource implements ReviewSource {
     const backend = await this.#gitBackend(options.signal);
     return (this.factories.watchGit ?? watchGitRepository)(backend.root, options);
   }
+
+  async headMessage(options: RefreshOptions): Promise<HeadMessage | undefined> {
+    const backend = await this.#gitBackend(options.signal);
+    return backend.project.headMessage(options.signal);
+  }
+
+  async commit(options: CommitOptions): Promise<CommitResult> {
+    const backend = await this.#gitBackend(options.signal);
+    return backend.project.commit(options);
+  }
+
+  async amend(options: AmendOptions): Promise<AmendResult> {
+    const backend = await this.#gitBackend(options.signal);
+    return backend.project.amend(options);
+  }
+
+  async pushPlan(options: RefreshOptions): Promise<PushPlan> {
+    const backend = await this.#gitBackend(options.signal);
+    return backend.project.pushPlan(options);
+  }
+
+  async push(options: PushOptions): Promise<PushResult> {
+    const backend = await this.#gitBackend(options.signal);
+    return backend.project.push(options);
+  }
 }
 
 function sourceFor(
@@ -362,45 +587,110 @@ function sourceFor(
 
   const source = new ProjectReviewSource(cwd, sessionBaselines, runner, factories);
   sessionSources.set(key, source);
+  const cacheStore = factories.cacheStore ??
+    (factories === productionFactories ? defaultCacheStore : undefined);
+  if (cacheStore !== undefined) cacheStoreByRoot.set(key, cacheStore);
   return source;
 }
 
+/** Set whether the active session may read or write persistent baselines. */
+export function setSessionBaselineCacheEnabled(enabled: boolean): void {
+  runtimeCacheEnabled = enabled;
+}
+
+/** Remove one project's persistent baseline cache, invalidating queued writes. */
+export async function clearProjectBaselineCache(cwd: string): Promise<void> {
+  let root = resolve(cwd);
+  try {
+    const repository = await GitRepository.open(cwd);
+    if (repository !== undefined) {
+      const inspection = await repository.inspect(new AbortController().signal);
+      root = inspection.root;
+    }
+  } catch {
+  }
+  const key = canonicalRoot(root);
+  cacheGenerations.set(key, cacheGeneration(root) + 1);
+  const store = cacheStoreByRoot.get(key) ?? defaultCacheStore;
+  try {
+    await serializeCacheOperation(root, () => store.clearForRoot(root));
+  } catch {
+  }
+}
+
 export function createReviewSource(cwd: string): ReviewSource;
+export function createReviewSource(cwd: string, cacheEnabled: boolean): ReviewSource;
 export function createReviewSource(
   cwd: string,
   runner: ProcessRunner | undefined,
   factories: ReviewSourceFactories,
+  cacheEnabled?: boolean,
 ): ReviewSource;
 export function createReviewSource(
   cwd: string,
-  runner?: ProcessRunner,
+  runnerOrCacheEnabled?: ProcessRunner | boolean,
   factories: ReviewSourceFactories = productionFactories,
+  cacheEnabled?: boolean,
 ): ReviewSource {
+  const runner = typeof runnerOrCacheEnabled === "boolean" ? undefined : runnerOrCacheEnabled;
+  const enabled = typeof runnerOrCacheEnabled === "boolean"
+    ? runnerOrCacheEnabled
+    : cacheEnabled;
+  if (enabled !== undefined) setSessionBaselineCacheEnabled(enabled);
   return sourceFor(cwd, runner, factories);
 }
 
 export function prepareSessionBaseline(cwd: string): Promise<void>;
+export function prepareSessionBaseline(cwd: string, cacheEnabled: boolean): Promise<void>;
 export function prepareSessionBaseline(
   cwd: string,
   runner: ProcessRunner | undefined,
   factories: ReviewSourceFactories,
+  cacheEnabled?: boolean,
 ): Promise<void>;
 export async function prepareSessionBaseline(
   cwd: string,
-  runner?: ProcessRunner,
+  runnerOrCacheEnabled?: ProcessRunner | boolean,
   factories: ReviewSourceFactories = productionFactories,
+  cacheEnabled?: boolean,
 ): Promise<void> {
+  const runner = typeof runnerOrCacheEnabled === "boolean" ? undefined : runnerOrCacheEnabled;
+  const enabled = typeof runnerOrCacheEnabled === "boolean"
+    ? runnerOrCacheEnabled
+    : cacheEnabled;
+  if (enabled !== undefined) setSessionBaselineCacheEnabled(enabled);
   await sourceFor(cwd, runner, factories).establishBaseline(
     new AbortController().signal,
   );
 }
 
-export function clearSessionBaselines(): void {
+/** Persist active baseline checkpoints and isolate subsequent session state. */
+export async function clearSessionBaselines(cacheEnabled = runtimeCacheEnabled): Promise<void> {
+  runtimeCacheEnabled = cacheEnabled;
   const previousCoordinator = coordinatorFor(sessionBaselines);
+  previousCoordinator.closing = true;
+  if (cacheEnabled) {
+    await Promise.all([...previousCoordinator.checkpoints.values()].map(async checkpoint => {
+      const identity = checkpoint.identity;
+      const cacheStore = checkpoint.cacheStore;
+      const serialized = sessionBaselines.serialize(checkpoint.root, checkpoint.headIdentity);
+      if (serialized === undefined || identity === undefined || cacheStore === undefined) return;
+      try {
+        await serializeCacheOperation(checkpoint.root, async () => {
+          if (cacheEnabled && checkpoint.generation === cacheGeneration(checkpoint.root)) {
+            await cacheStore.save(identity, serialized);
+          }
+        });
+      } catch {
+      }
+    }));
+  }
   previousCoordinator.controller.abort(
     new DOMException("Review session ended", "AbortError"),
   );
+  while (cacheTails.size > 0) await Promise.all([...cacheTails.values()]);
   sessionBaselines = new BaselineStore();
   coordinatorFor(sessionBaselines);
   sessionSources.clear();
+  cacheStoreByRoot.clear();
 }

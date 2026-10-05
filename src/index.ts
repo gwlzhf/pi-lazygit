@@ -5,18 +5,22 @@ import type {
 import { Editor, type TUI } from "@oh-my-pi/pi-tui";
 import type { ReviewSource } from "./contracts";
 import {
+  clearProjectBaselineCache,
   clearSessionBaselines,
   createReviewSource,
   prepareSessionBaseline,
+  setSessionBaselineCacheEnabled,
 } from "./review-source";
 import { createPanelSettingsStore, type PanelSettingsStore } from "./settings";
 import { FilesPanel, type FilesPanelOptions } from "./ui/files-panel";
 import { loadHighlighter, type Highlighter } from "./ui/highlight";
 
 export interface ExtensionDependencies {
-  readonly createReviewSource: (cwd: string) => ReviewSource;
-  readonly prepareSession: (cwd: string) => Promise<void>;
-  readonly clearSession: () => void;
+  readonly createReviewSource: (cwd: string, cacheEnabled?: boolean) => ReviewSource;
+  readonly prepareSession: (cwd: string, cacheEnabled?: boolean) => Promise<void>;
+  readonly setCacheEnabled: (enabled: boolean) => void;
+  readonly clearSession: (cacheEnabled?: boolean) => void | Promise<void>;
+  readonly clearCache: (cwd: string) => Promise<void>;
   readonly createPanel: (options: FilesPanelOptions) => FilesPanel;
   readonly settings: PanelSettingsStore;
   readonly loadHighlighter: (host?: unknown) => Promise<Highlighter | undefined>;
@@ -25,9 +29,11 @@ export interface ExtensionDependencies {
 export const FILES_SHORTCUT = "alt+q";
 
 const productionDependencies: ExtensionDependencies = {
-  createReviewSource,
-  prepareSession: prepareSessionBaseline,
+  createReviewSource: (cwd, cacheEnabled) => createReviewSource(cwd, cacheEnabled ?? true),
+  prepareSession: (cwd, cacheEnabled) => prepareSessionBaseline(cwd, cacheEnabled ?? true),
+  setCacheEnabled: setSessionBaselineCacheEnabled,
   clearSession: clearSessionBaselines,
+  clearCache: clearProjectBaselineCache,
   createPanel: options => new FilesPanel(options),
   settings: createPanelSettingsStore(),
   loadHighlighter,
@@ -50,7 +56,6 @@ export function createExtension(
 ): (pi: ExtensionAPI) => void {
   return pi => {
     let panelOpen = false;
-
     const openFileReview = async (ctx: ExtensionContext): Promise<void> => {
       if (!ctx.hasUI || ctx.mode !== "tui") {
         ctx.ui.notify(
@@ -66,15 +71,12 @@ export function createExtension(
 
       panelOpen = true;
       try {
-        const source = dependencies.createReviewSource(ctx.cwd);
         const sessionName = pi.getSessionName();
         const [settings, highlight] = await Promise.all([
           dependencies.settings.load(),
-          // `pi.pi` is the host's own coding-agent namespace; its theme
-          // singleton is initialized, unlike the copy a plugin-local import
-          // would resolve to.
           dependencies.loadHighlighter(pi.pi),
         ]);
+        const source = dependencies.createReviewSource(ctx.cwd, settings.cacheEnabled);
         await ctx.ui.custom<undefined>(
           (tui, theme, keybindings, done) => {
             const editor = hostEditor(tui);
@@ -92,6 +94,9 @@ export function createExtension(
               diffLayout: settings.diffLayout,
               diffContext: settings.diffContext,
               diffMaskOpacity: settings.diffMaskOpacity,
+              commitTimeoutMs: settings.commitTimeoutMs,
+              pushTimeoutMs: settings.pushTimeoutMs,
+              protectedBranches: settings.protectedBranches,
               onTreeRatioChange: ratio => {
                 dependencies.settings.saveTreeRatio(ratio);
               },
@@ -125,9 +130,6 @@ export function createExtension(
             panel.start();
             return panel;
           },
-          // A fullscreen overlay paints from screen row 0 and is the only OMP
-          // surface that turns on terminal mouse reporting, which the panel
-          // needs for wheel scrolling and divider drag-resize.
           {
             overlay: true,
             overlayOptions: {
@@ -147,8 +149,6 @@ export function createExtension(
         );
       } finally {
         panelOpen = false;
-        // The panel coalesces width changes; make sure the last one reaches
-        // disk even if the session ends right after the panel closes.
         await dependencies.settings.flush();
       }
     };
@@ -159,6 +159,36 @@ export function createExtension(
         await openFileReview(ctx);
       },
     });
+    pi.registerCommand("files-cache", {
+      description: "Enable or disable persistent session baseline caching",
+      handler: async (args, ctx) => {
+        const setting = args.trim().toLowerCase();
+        if (setting !== "on" && setting !== "off") {
+          ctx.ui.notify("Usage: /files-cache on|off", "warning");
+          return;
+        }
+        await dependencies.settings.load();
+        const enabled = setting === "on";
+        dependencies.settings.saveCacheEnabled(enabled);
+        await dependencies.settings.flush();
+        dependencies.setCacheEnabled(enabled);
+        if (!enabled) await dependencies.clearCache(ctx.cwd);
+        ctx.ui.notify(`Persistent baseline cache ${enabled ? "enabled" : "disabled"}.`);
+      },
+    });
+
+    pi.registerCommand("clear-cache", {
+      description: "Clear the persistent session baseline cache for this project",
+      handler: async (_args, ctx) => {
+        try {
+          await dependencies.clearCache(ctx.cwd);
+          ctx.ui.notify("Persistent session baseline cache cleared.");
+        } catch (error) {
+          ctx.ui.notify(`Unable to clear session baseline cache: ${errorMessage(error)}`, "warning");
+        }
+      },
+    });
+
 
     pi.registerShortcut(FILES_SHORTCUT, {
       description: "Review project files and changes",
@@ -167,7 +197,9 @@ export function createExtension(
 
     pi.on("session_start", async (_event, ctx) => {
       try {
-        await dependencies.prepareSession(ctx.cwd);
+        const settings = await dependencies.settings.load();
+        dependencies.setCacheEnabled(settings.cacheEnabled);
+        await dependencies.prepareSession(ctx.cwd, settings.cacheEnabled);
       } catch (error) {
         ctx.ui.notify(
           `Unable to prepare the files review session baseline: ${errorMessage(error)}`,
@@ -176,8 +208,10 @@ export function createExtension(
       }
     });
 
-    pi.on("session_shutdown", () => {
-      dependencies.clearSession();
+    pi.on("session_shutdown", async (_event, ctx) => {
+      const settings = await dependencies.settings.load();
+      dependencies.setCacheEnabled(settings.cacheEnabled);
+      await dependencies.clearSession(settings.cacheEnabled);
     });
   };
 }

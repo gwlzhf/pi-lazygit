@@ -91,6 +91,91 @@ export interface SwitchBranchOptions {
   readonly signal: AbortSignal;
 }
 
+/**
+ * Whether a change already sits in the index. Porcelain reports the index and
+ * the working tree as the two-character pair `XY`, and an unmerged path or an
+ * untracked one leaves the index column blank or `?`.
+ */
+export function isStaged(record: ChangeRecord): boolean {
+  if (record.status === "U") return false;
+  return record.index !== " " && record.index !== "?";
+}
+
+/** Whether a path can be handed to `git commit -- <paths>` at all. */
+export function isCommittable(record: ChangeRecord): boolean {
+  return record.status !== "U";
+}
+
+/** The HEAD commit message, split so an amend can replace only the subject. */
+export interface HeadMessage {
+  readonly subject: string;
+  readonly body?: string;
+  /** Whether HEAD is already contained in its upstream's history. */
+  readonly pushed: boolean;
+}
+
+export interface CommitOptions {
+  readonly message: string;
+  /** Project paths that may be committed; `git commit -- <paths>` is the fence. */
+  readonly paths: readonly string[];
+  /** Report what would be committed instead of committing it. */
+  readonly dryRun?: boolean;
+  readonly noVerify?: boolean;
+  readonly signal: AbortSignal;
+}
+
+export interface CommitResult {
+  readonly dryRun: boolean;
+  /** Git's own report, shown verbatim in the confirmation surface. */
+  readonly output: string;
+  /** Paths committed, after renames contribute both their old and new name. */
+  readonly files: number;
+}
+
+export interface AmendOptions {
+  readonly subject: string;
+  /** Replayed verbatim so an amend of the title cannot drop the body. */
+  readonly body?: string;
+  readonly noVerify?: boolean;
+  readonly signal: AbortSignal;
+}
+
+export interface AmendResult {
+  readonly oid: string;
+  /** The message Git stored, so a `commit-msg` hook rewrite stays visible. */
+  readonly subject: string;
+  readonly body?: string;
+}
+
+export interface PushCandidate {
+  readonly oid: string;
+  readonly shortOid: string;
+  readonly subject: string;
+}
+
+/** Everything the two-stage push confirmation needs, computed up front. */
+export interface PushPlan {
+  readonly branch: string;
+  /** Absent when the branch tracks nothing and needs `-u` first. */
+  readonly upstream?: string;
+  readonly ahead: number;
+  readonly behind: number;
+  readonly commits: readonly PushCandidate[];
+  readonly truncated: boolean;
+}
+
+export interface PushOptions {
+  readonly branch: string;
+  readonly upstream: string;
+  readonly signal: AbortSignal;
+}
+
+export interface PushResult {
+  readonly branch: string;
+  readonly upstream: string;
+  readonly output: string;
+}
+
 export interface ProjectSnapshot {
   readonly kind: "git" | "filesystem";
   readonly root: string;
@@ -161,6 +246,13 @@ export interface ReviewSource {
   branches(options: RefreshOptions): Promise<GitBranchSnapshot>;
   switchBranch(name: string, options: SwitchBranchOptions): Promise<void>;
   watch(options: WatchOptions): Promise<void>;
+  /** Undefined outside a repository, on an unborn HEAD, or while detached. */
+  headMessage(options: RefreshOptions): Promise<HeadMessage | undefined>;
+  commit(options: CommitOptions): Promise<CommitResult>;
+  amend(options: AmendOptions): Promise<AmendResult>;
+  /** Rejects when the branch tracks nothing, so a blind push cannot happen. */
+  pushPlan(options: RefreshOptions): Promise<PushPlan>;
+  push(options: PushOptions): Promise<PushResult>;
 }
 
 export interface BaselineEntry {

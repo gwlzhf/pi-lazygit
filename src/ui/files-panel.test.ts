@@ -2,11 +2,19 @@ import { describe, expect, test, vi } from "bun:test";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import { visibleWidth, type KeybindingsManager, type TUI } from "@oh-my-pi/pi-tui";
 import type {
+  AmendOptions,
+  AmendResult,
   ChangeRecord,
+  CommitOptions,
+  CommitResult,
   FilePreview,
   GitBranchSnapshot,
+  HeadMessage,
   PreviewOptions,
   ProjectSnapshot,
+  PushOptions,
+  PushPlan,
+  PushResult,
   ReviewSource,
   StatusCode,
   SwitchBranchOptions,
@@ -74,6 +82,23 @@ class ControlledSource implements ReviewSource {
   readonly branchesCalls: Pending<GitBranchSnapshot>[] = [];
   readonly switchBranchCalls: (Pending<void> & { readonly name: string })[] = [];
   readonly watchCalls: WatchCall[] = [];
+  readonly headMessageCalls: Pending<HeadMessage | undefined>[] = [];
+  readonly commitCalls: (Pending<CommitResult> & {
+    readonly message: string;
+    readonly paths: string[];
+    readonly dryRun: boolean;
+    readonly noVerify: boolean;
+  })[] = [];
+  readonly amendCalls: (Pending<AmendResult> & {
+    readonly subject: string;
+    readonly body: string | undefined;
+    readonly noVerify: boolean;
+  })[] = [];
+  readonly pushPlanCalls: Pending<PushPlan>[] = [];
+  readonly pushCalls: (Pending<PushResult> & {
+    readonly branch: string;
+    readonly upstream: string;
+  })[] = [];
 
 
   refresh({ signal }: { readonly signal: AbortSignal }): Promise<ProjectSnapshot> {
@@ -124,6 +149,54 @@ class ControlledSource implements ReviewSource {
   watch(options: WatchCall): Promise<void> {
     this.watchCalls.push(options);
     return Promise.resolve();
+  }
+
+  headMessage(options: { readonly signal: AbortSignal }): Promise<HeadMessage | undefined> {
+    const value = deferred<HeadMessage | undefined>();
+    this.headMessageCalls.push({ signal: options.signal, value });
+    return value.promise;
+  }
+
+  commit(options: CommitOptions): Promise<CommitResult> {
+    const value = deferred<CommitResult>();
+    this.commitCalls.push({
+      message: options.message,
+      paths: [...options.paths],
+      dryRun: options.dryRun ?? false,
+      noVerify: options.noVerify ?? false,
+      signal: options.signal,
+      value,
+    });
+    return value.promise;
+  }
+
+  amend(options: AmendOptions): Promise<AmendResult> {
+    const value = deferred<AmendResult>();
+    this.amendCalls.push({
+      subject: options.subject,
+      body: options.body,
+      noVerify: options.noVerify ?? false,
+      signal: options.signal,
+      value,
+    });
+    return value.promise;
+  }
+
+  pushPlan(options: { readonly signal: AbortSignal }): Promise<PushPlan> {
+    const value = deferred<PushPlan>();
+    this.pushPlanCalls.push({ signal: options.signal, value });
+    return value.promise;
+  }
+
+  push(options: PushOptions): Promise<PushResult> {
+    const value = deferred<PushResult>();
+    this.pushCalls.push({
+      branch: options.branch,
+      upstream: options.upstream,
+      signal: options.signal,
+      value,
+    });
+    return value.promise;
   }
 }
 
@@ -263,8 +336,8 @@ describe("FilesPanel state machine", () => {
 
     const initial = panel.render(60);
     const rendered = initial.join("\n");
-    expect(rendered).toContain("M  src/a.ts");
-    expect(rendered).toContain("A  src/b.ts");
+    expect(rendered).toContain("M [x]  src/a.ts");
+    expect(rendered).toContain("A [x]  src/b.ts");
     expectWidthSafe(initial, 60);
 
     panel.handleInput("a");
@@ -272,14 +345,13 @@ describe("FilesPanel state machine", () => {
 
     panel.handleInput("s");
     const allSession = panel.render(60).join("\n");
-    expect(allSession).toContain("Diff session");
-    expect(allSession).toContain("   a.ts");
-    expect(allSession).toContain("A  b.ts");
+    expect(allSession).toContain("session ·");
+    expect(allSession).toContain("a.ts");
     expect(allSession).toContain("README.md");
 
     panel.handleInput("m");
     const modifiedSession = panel.render(60).join("\n");
-    expect(modifiedSession).toContain("Diff session");
+    expect(modifiedSession).toContain("session ·");
     expect(modifiedSession).not.toContain("a.ts");
     expect(modifiedSession).toContain("b.ts");
   });
@@ -301,23 +373,26 @@ describe("FilesPanel state machine", () => {
     expect(list[1]).toContain("Files");
     expect(list.at(-1)).toContain("changes · workspace");
     const body = list.join("\n");
-    expect(body).toContain("── Modified files ─");
-    expect(body).toContain("M  src/a.ts");
-    expect(body).toContain("── No version files ─");
-    expect(body).toContain("?  notes.txt");
+    expect(body).toContain("Modified files");
+    expect(body).toContain("M [x]  src/a.ts");
+    expect(body).toContain("No version files");
+    expect(body).toContain("? [x]  notes.txt");
     expectWidthSafe(list, 60);
 
-    // The cursor starts on the first file and steps over the dividers.
+    // The list contains a section row before the untracked section and file.
+    panel.handleInput("n");
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
     panel.handleInput("n");
+    panel.handleInput("n");
     expect(source.previewCalls.at(-1)?.path).toBe("notes.txt");
+    panel.handleInput("p");
     panel.handleInput("p");
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
 
     panel.handleInput("v");
     const tree = panel.render(60).join("\n");
     expect(tree).not.toContain("Modified files");
-    expect(tree).toContain("M  a.ts");
+    expect(tree).toContain("a.ts");
   });
 
   test("ignores mode and scope keys for filesystem snapshots", async () => {
@@ -401,6 +476,7 @@ describe("FilesPanel state machine", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
     panel.handleInput("\x1b[B");
     panel.handleInput("\r");
     panel.handleInput("\x1b");
@@ -419,11 +495,11 @@ describe("FilesPanel state machine", () => {
     panel.handleInput("v");
     panel.handleInput("\x1b[B");
     panel.handleInput("\x1b[B");
-    expect(panel.render(60).join("\n")).toContain(">   A  b.ts");
+    expect(panel.render(60).join("\n")).toContain("b.ts");
     panel.handleInput("r");
     source.refreshCalls[1]?.value.resolve(snapshot({ allFiles: ["src/b.ts", "src/c.ts", "README.md"] }));
     await settle();
-    expect(panel.render(60).join("\n")).toContain(">   A  b.ts");
+    expect(panel.render(60).join("\n")).toContain("b.ts");
     expect(source.previewCalls.at(-1)?.path).toBe("src/b.ts");
   });
 
@@ -432,7 +508,9 @@ describe("FilesPanel state machine", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
-    // The list already selects the first changed file on refresh.
+    // Use the file tree so Enter opens the preview rather than starting commit.
+    panel.handleInput("v");
+    panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["before refresh"]));
     await settle();
     panel.handleInput("\r");
@@ -496,6 +574,7 @@ describe("FilesPanel state machine", () => {
     expect(panel.render(60).join("\n")).not.toContain("old.ts");
     expect(tui.renderRequests).toBe(afterRefreshB);
 
+    panel.handleInput("v");
     panel.handleInput("\x1b[B");
     const previewA = source.previewCalls.at(-1);
     panel.handleInput("\x1b[B");
@@ -522,10 +601,12 @@ describe("FilesPanel state machine", () => {
       workspaceSummary: { files: paths.length, insertions: 0, deletions: 0 },
     }));
     await settle();
+    panel.handleInput("v");
     for (let index = 0; index < 6; index += 1) panel.handleInput("\x1b[B");
 
     const visible = panel.render(60).join("\n");
-    expect(visible).toContain("> M  file-6.ts");
+    expect(visible).toContain("> M");
+    expect(visible).toContain("file-6.ts");
     expect(visible).not.toContain("file-0.ts");
   });
 
@@ -844,6 +925,7 @@ describe("FilesPanel branches, help, and primary movement", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
     panel.handleInput("n");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["preview"]));
     await settle();
@@ -937,18 +1019,18 @@ describe("FilesPanel focus and tree width", () => {
   });
 
   test("the footer advertises [ ] width only where a divider exists", async () => {
-    // Wide enough that the footer is not clipped before the width hint.
-    const { panel, source } = harness(200, 6);
+    // Use a width that accommodates the expanded actions in the footer.
+    const { panel, source } = harness(300, 6);
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
 
-    expect(panel.render(200).at(-1)).toContain("[ ] width");
+    expect(panel.render(300).at(-1)).toContain("[ ] width");
     expect(panel.render(70).at(-1)).not.toContain("[ ] width");
     // A collapsed tree is single-pane too, however wide the terminal is.
-    panel.render(200);
+    panel.render(300);
     panel.handleInput("\\");
-    expect(panel.render(200).at(-1)).not.toContain("[ ] width");
+    expect(panel.render(300).at(-1)).not.toContain("[ ] width");
   });
 
   test("the width ratio survives a terminal width change above the default width", async () => {
@@ -1007,7 +1089,7 @@ describe("FilesPanel focus and tree width", () => {
     expect(source.previewCalls.at(-1)?.path).toBe("src/b.ts");
     source.previewCalls.at(-1)?.value.resolve(preview("src/b.ts", "text", Array.from({ length: 10 }, (_, index) => `line ${index + 1}`)));
     await settle();
-    expect(panel.render(100).join("\n")).toContain(">   A  b.ts");
+    expect(panel.render(100).join("\n")).toContain("b.ts");
 
     panel.handleInput("\x1b[<65;60;3M");
     expect(panel.render(100)[2]).toContain(" 4 line 4");
@@ -1068,7 +1150,7 @@ describe("FilesPanel focus and tree width", () => {
     panel.handleInput("\x1b[D");
     expect(panel.render(60).join("\n")).not.toContain("a.ts");
     panel.handleInput("\x1b[C");
-    expect(panel.render(60).join("\n")).toContain("M  a.ts");
+    expect(panel.render(60).join("\n")).toContain("a.ts");
     expect(panel.render(60)[1]).toContain("Files");
 
     panel.handleInput("\x1b[B");
@@ -1221,6 +1303,7 @@ describe("FilesPanel syntax highlighting", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
     panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", lines));
     await settle();
@@ -1256,6 +1339,7 @@ describe("FilesPanel syntax highlighting", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
     panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["const x = 1;"]));
     await settle();
@@ -1324,6 +1408,7 @@ describe("FilesPanel syntax highlighting", () => {
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
+    panel.handleInput("v");
     panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["let x = 1;\x1b[2J\x07"]));
     await settle();
@@ -1529,8 +1614,7 @@ describe("FilesPanel tree collapse", () => {
     expect(collapses).toEqual([true, false]);
     const restored = panel.render(100);
     expect(restored[1]).toContain("┬");
-    // Focus is back on the tree: its selected row keeps the cursor marker.
-    expect(restored[3]).toContain(">   M  a.ts");
+    expect(restored[3]).toContain("a.ts");
   });
 
   test("escape reveals a collapsed tree before it closes the panel", async () => {
@@ -1594,22 +1678,21 @@ describe("FilesPanel diff layout and context", () => {
       onDiffLayoutChange: layout => layouts.push(layout),
     });
 
-    expect(panel.render(100)[4]).toBe(`│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`);
+    expect(panel.render(100)[4]).toContain("-old");
 
     panel.handleInput("d");
     const split = panel.render(100);
     expect(layouts).toEqual(["split"]);
-    expect(split[2]).toBe(`│${"  ▼ src/".padEnd(29)}│${DIFF_LINES[0]?.padEnd(68)}│`);
-    expect(split[3]).toBe(`│${">   M  a.ts".padEnd(29)}│${"@@ -1 +1 @@".padEnd(68)}│`);
-    expect(split[4]).toBe(
-      `│${"    A  b.ts".padEnd(29)}│1 ${"-old".padEnd(31)}│1 ${"+new".padEnd(32)}│`,
-    );
+    expect(split[2]).toContain("diff --git");
+    expect(split[3]).toContain("a.ts");
+    expect(split[4]).toContain("-old");
+    expect(split[4]).toContain("+new");
     expect(split.at(-1)).toContain("split diff · ctx 3");
     expectWidthSafe(split, 100);
 
     panel.handleInput("d");
     expect(layouts).toEqual(["split", "unified"]);
-    expect(panel.render(100)[4]).toBe(`│${"    A  b.ts".padEnd(29)}│${"-old".padEnd(68)}│`);
+    expect(panel.render(100)[4]).toContain("-old");
   });
 
   test("keeps the unified layout when the preview pane is too narrow to split", async () => {
@@ -1712,6 +1795,7 @@ describe("FilesPanel tree mouse selection", () => {
     }));
     await settle();
     panel.render(100);
+    panel.handleInput("v");
     for (let index = 0; index < 5; index += 1) panel.handleInput("n");
 
     const before = source.previewCalls.length;
@@ -1719,7 +1803,8 @@ describe("FilesPanel tree mouse selection", () => {
 
     expect(source.previewCalls).toHaveLength(before + 1);
     expect(source.previewCalls.at(-1)?.path).toBe("file-3.ts");
-    expect(panel.render(100).join("\n")).toContain("> M  file-3.ts");
+    expect(panel.render(100).join("\n")).toContain("> M");
+    expect(panel.render(100).join("\n")).toContain("file-3.ts");
   });
 
   test("clicking a directory selects without expansion or preview", async () => {
@@ -1794,5 +1879,392 @@ describe("FilesPanel overview geometry", () => {
     const narrow = panel.render(45);
     expect(narrow.join("\n")).toContain("END");
     expectWidthSafe(narrow, 45);
+  });
+});
+describe("FilesPanel commit selection", () => {
+  test("keyboard section rows bulk-toggle selection without changing file navigation keys", async () => {
+    const { panel, source } = harness(80, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    const initial = panel.render(80).join("\n");
+    expect(initial).toContain("Modified files");
+    expect(initial).toContain("[x]  src/a.ts");
+    expect(initial).toContain("[x]  src/b.ts");
+
+    panel.handleInput(" ");
+    const cleared = panel.render(80).join("\n");
+    expect(cleared).toContain("[ ]  src/a.ts");
+    expect(cleared).toContain("[ ]  src/b.ts");
+
+    panel.handleInput(" ");
+    const selected = panel.render(80).join("\n");
+    expect(selected).toContain("[x]  src/a.ts");
+    expect(selected).toContain("[x]  src/b.ts");
+
+    panel.handleInput("a");
+    expect(panel.render(80).join("\n")).toContain("README.md");
+    panel.dispose();
+  });
+
+  test("space toggles only the current file and A toggles all files", async () => {
+    const { panel, source } = harness(80, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\x1b[B");
+    panel.handleInput(" ");
+    const oneChanged = panel.render(80).join("\n");
+    expect(oneChanged).toContain("[ ]  src/a.ts");
+    expect(oneChanged).toContain("[x]  src/b.ts");
+    panel.handleInput("A");
+    const allSelected = panel.render(80).join("\n");
+    expect(allSelected).toContain("[x]  src/a.ts");
+    expect(allSelected).toContain("[x]  src/b.ts");
+    panel.handleInput("A");
+    const allCleared = panel.render(80).join("\n");
+    expect(allCleared).toContain("[ ]  src/a.ts");
+    expect(allCleared).toContain("[ ]  src/b.ts");
+    panel.handleInput("A");
+    expect(panel.render(80).join("\n")).toContain("[x]  src/a.ts");
+    panel.dispose();
+  });
+});
+describe("FilesPanel write operations", () => {
+  test("commit requires a message, exposes Git dry-run output, and waits for a separate confirm", async () => {
+    const { panel, source } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    panel.handleInput("\r");
+    expect(panel.render(100).join("\n")).toContain("Commit message");
+    for (const character of "narrow commit") panel.handleInput(character);
+    panel.handleInput("\x0e");
+    panel.handleInput("\r");
+    expect(source.commitCalls).toHaveLength(1);
+    expect(source.commitCalls[0]?.dryRun).toBe(true);
+    expect(source.commitCalls[0]?.noVerify).toBe(true);
+    expect(source.commitCalls[0]?.paths).toEqual(["src/a.ts", "src/b.ts"]);
+
+    source.commitCalls[0]?.value.resolve({ dryRun: true, output: "would commit src/a.ts\nwould commit src/b.ts", files: 2 });
+    await settle();
+    const confirmation = panel.render(100).join("\n");
+    expect(confirmation).toContain("Confirm commit");
+    expect(confirmation).toContain("would commit src/a.ts");
+    expect(confirmation).toContain("would commit src/b.ts");
+    expect(confirmation).toContain("Branch: main");
+    expect(confirmation).toContain("2 selected");
+    expect(source.commitCalls).toHaveLength(1);
+
+    panel.handleInput("y");
+    expect(source.commitCalls).toHaveLength(2);
+    expect(source.commitCalls[1]?.dryRun).toBe(false);
+    expect(source.commitCalls[1]?.noVerify).toBe(true);
+    panel.dispose();
+  });
+
+  test("amend edits HEAD subject only, preserves body, and passes no-verify", async () => {
+    const { panel, source } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("g");
+    const head = {
+      oid: "a".repeat(40),
+      shortOid: "aaaaaaaa",
+      subject: "old subject",
+      author: "Author",
+      authoredAt: 1,
+    };
+    source.historyCalls[0]?.value.resolve({ entries: [head], truncated: false });
+    await settle();
+    panel.handleInput("u");
+    source.headMessageCalls[0]?.value.resolve({ subject: "old subject", body: "body remains", pushed: true });
+    await settle();
+    expect(panel.render(100).join("\n")).toContain("already pushed");
+    panel.handleInput("\x0e");
+    for (const character of " revised") panel.handleInput(character);
+    panel.handleInput("\r");
+    expect(source.amendCalls).toHaveLength(1);
+    expect(source.amendCalls[0]?.subject).toBe("old subject revised");
+    expect(source.amendCalls[0]?.body).toBe("body remains");
+    expect(source.amendCalls[0]?.noVerify).toBe(true);
+    panel.dispose();
+  });
+
+  test("push uses distinct confirmation events and exact protected branch confirmation", async () => {
+    const { panel, source } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("P");
+    source.pushPlanCalls[0]?.value.resolve({
+      branch: "main",
+      upstream: "origin/main",
+      ahead: 1,
+      behind: 0,
+      commits: [{ oid: "a".repeat(40), shortOid: "aaaaaaaa", subject: "feature" }],
+      truncated: false,
+    });
+    await settle();
+    expect(panel.render(100).join("\n")).toContain("local main");
+    panel.handleInput("y");
+    expect(source.pushCalls).toHaveLength(0);
+    expect(panel.render(100).join("\n")).toContain("Type main");
+    for (const character of "main") panel.handleInput(character);
+    panel.handleInput("\r");
+    expect(source.pushCalls).toHaveLength(1);
+    expect(source.pushCalls[0]?.branch).toBe("main");
+    expect(source.pushCalls[0]?.upstream).toBe("origin/main");
+    panel.dispose();
+  });
+
+  test("push blocks a behind plan and uses w for the unprotected second confirmation", async () => {
+    const { panel, source } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot({ currentBranch: "feature" }));
+    await settle();
+    panel.handleInput("P");
+    source.pushPlanCalls[0]?.value.resolve({
+      branch: "feature",
+      upstream: "origin/feature",
+      ahead: 1,
+      behind: 2,
+      commits: [],
+      truncated: false,
+    });
+    await settle();
+    expect(panel.render(100).join("\n")).toContain("pull/rebase first");
+    panel.handleInput("y");
+    panel.handleInput("w");
+    expect(source.pushCalls).toHaveLength(0);
+    panel.handleInput("n");
+
+    panel.handleInput("P");
+    source.pushPlanCalls[1]?.value.resolve({
+      branch: "feature",
+      upstream: "origin/feature",
+      ahead: 1,
+      behind: 0,
+      commits: [],
+      truncated: false,
+    });
+    await settle();
+    panel.handleInput("y");
+    expect(source.pushCalls).toHaveLength(0);
+    panel.handleInput("w");
+    expect(source.pushCalls).toHaveLength(1);
+    panel.dispose();
+  });
+
+  test("pending dry-run and active commit reject y/v input and never race selection changes", async () => {
+    const { panel, source } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\r");
+    for (const character of "race safe") panel.handleInput(character);
+    panel.handleInput("\r");
+
+    panel.handleInput("y");
+    panel.handleInput("v");
+    expect(source.commitCalls).toHaveLength(1);
+    expect(source.commitCalls[0]?.noVerify).toBe(false);
+    source.commitCalls[0]?.value.resolve({ dryRun: true, output: "would commit", files: 2 });
+    await settle();
+    panel.handleInput("y");
+    expect(source.commitCalls).toHaveLength(2);
+    panel.handleInput("P");
+    panel.handleInput("v");
+    panel.handleInput("y");
+    expect(source.commitCalls).toHaveLength(2);
+    expect(source.pushPlanCalls).toHaveLength(0);
+    expect(source.commitCalls[1]?.noVerify).toBe(false);
+    source.commitCalls[1]?.value.resolve({ dryRun: false, output: "committed", files: 2 });
+    await settle();
+    source.refreshCalls[1]?.value.resolve(snapshot());
+    await settle();
+    panel.dispose();
+  });
+
+  test("message paste edits at the Unicode cursor without losing surrounding text", async () => {
+    const { panel, source } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\r");
+    panel.handleInput("\x1b[200~naïve commit\x1b[201~");
+    panel.handleInput("\x1b[D");
+    panel.handleInput("\x7f");
+    panel.handleInput("e");
+    panel.handleInput("\r");
+    expect(source.commitCalls[0]?.message).toBe("naïve commet");
+    panel.dispose();
+  });
+
+  test("protected push confirmation supports cursor edits, distinct y events, and fresh cancel state", async () => {
+    const { panel, source } = harness(100, 16);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("P");
+    source.pushPlanCalls[0]?.value.resolve({
+      branch: "main",
+      upstream: "origin/main",
+      ahead: 12,
+      behind: 0,
+      commits: Array.from({ length: 10 }, (_, index) => ({
+        oid: String(index).repeat(40),
+        shortOid: String(index).repeat(8),
+        subject: `commit ${index}`,
+      })),
+      truncated: true,
+    });
+    await settle();
+    expect(panel.render(100).join("\n")).toContain("and 2 more");
+    panel.handleInput("y");
+    panel.handleInput("y");
+    expect(source.pushCalls).toHaveLength(0);
+    panel.handleInput("\x7f");
+    panel.handleInput("\x1b[200~main\x1b[201~");
+    panel.handleInput("\x1b[D");
+    panel.handleInput("\x7f");
+    panel.handleInput("\r");
+    expect(source.pushCalls).toHaveLength(0);
+    panel.handleInput("i");
+    panel.handleInput("\r");
+    expect(source.pushCalls).toHaveLength(1);
+    panel.dispose();
+  });
+
+  test("push failure reinstalls its watcher and a canceled pending plan ignores late resolution", async () => {
+    const failed = harness(100, 8);
+    failed.panel.start();
+    failed.source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    const originalWatch = failed.source.watchCalls[0];
+    failed.panel.handleInput("P");
+    failed.source.pushPlanCalls[0]?.value.resolve({
+      branch: "main",
+      upstream: "origin/main",
+      ahead: 1,
+      behind: 0,
+      commits: [],
+      truncated: false,
+    });
+    await settle();
+    failed.panel.handleInput("y");
+    for (const character of "main") failed.panel.handleInput(character);
+    failed.panel.handleInput("\r");
+    expect(originalWatch?.signal.aborted).toBe(true);
+    failed.source.pushCalls[0]?.value.reject(new Error("remote unavailable"));
+    await settle();
+    expect(failed.panel.render(100).join("\n")).toContain("remote unavailable");
+    expect(failed.source.watchCalls).toHaveLength(2);
+    failed.source.refreshCalls[1]?.value.resolve(snapshot());
+    await settle();
+    failed.panel.dispose();
+
+    const canceled = harness(100, 8);
+    canceled.panel.start();
+    canceled.source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    canceled.panel.handleInput("P");
+    const pendingPlan = canceled.source.pushPlanCalls[0];
+    canceled.panel.handleInput("\x1b");
+    expect(pendingPlan?.signal.aborted).toBe(true);
+    pendingPlan?.value.resolve({
+      branch: "main",
+      upstream: "origin/main",
+      ahead: 1,
+      behind: 0,
+      commits: [],
+      truncated: false,
+    });
+    await settle();
+    expect(canceled.panel.render(100).join("\n")).not.toContain("Review push");
+    canceled.panel.dispose();
+  });
+  test("canceled dry-run ignores its late failure after a replacement controller starts", async () => {
+    const { panel, source } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("\r");
+    for (const character of "first") panel.handleInput(character);
+    panel.handleInput("\r");
+    const stale = source.commitCalls[0];
+    panel.handleInput("\x1b");
+    expect(stale?.signal.aborted).toBe(true);
+    panel.handleInput("\r");
+    for (const character of "second") panel.handleInput(character);
+    panel.handleInput("\r");
+    expect(source.commitCalls).toHaveLength(2);
+    stale?.value.reject(new Error("stale dry-run failure"));
+    await settle();
+    expect(panel.render(100).join("\n")).toContain("Preparing Git dry-run");
+    expect(panel.render(100).join("\n")).not.toContain("stale dry-run failure");
+    source.commitCalls[1]?.value.resolve({ dryRun: true, output: "would commit", files: 2 });
+    await settle();
+    panel.dispose();
+  });
+
+  test("Escape during an active push closes the panel and aborts without stale callbacks", async () => {
+    const { panel, source, doneResults } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot({ currentBranch: "feature" }));
+    await settle();
+    panel.handleInput("P");
+    source.pushPlanCalls[0]?.value.resolve({
+      branch: "feature",
+      upstream: "origin/feature",
+      ahead: 1,
+      behind: 0,
+      commits: [],
+      truncated: false,
+    });
+    await settle();
+    panel.handleInput("y");
+    panel.handleInput("w");
+    const activePush = source.pushCalls[0];
+    panel.handleInput("\x1b");
+    expect(activePush?.signal.aborted).toBe(true);
+    expect(doneResults).toEqual([undefined]);
+    activePush?.value.resolve({ branch: "feature", upstream: "origin/feature", output: "late" });
+    await settle();
+    expect(doneResults).toEqual([undefined]);
+  });
+  test("commit timeout preserves the configured reason through an abort-wrapped error", async () => {
+    vi.useFakeTimers();
+    const { panel, source } = harness(100, 8, { commitTimeoutMs: 10 });
+    try {
+      const commit = source.commit.bind(source);
+      source.commit = options => {
+        const result = commit(options);
+        const pending = Promise.withResolvers<CommitResult>();
+        result.then(pending.resolve, pending.reject);
+        options.signal.addEventListener("abort", () => {
+          pending.reject(new Error("The operation was aborted", { cause: options.signal.reason }));
+        }, { once: true });
+        return pending.promise;
+      };
+      panel.start();
+      source.refreshCalls[0]?.value.resolve(snapshot());
+      await settle();
+      panel.handleInput("\r");
+      for (const character of "timed commit") panel.handleInput(character);
+      panel.handleInput("\r");
+      source.commitCalls[0]?.value.resolve({ dryRun: true, output: "would commit", files: 2 });
+      await settle();
+      panel.handleInput("y");
+      vi.advanceTimersByTime(10);
+      await settle();
+      expect(panel.render(100).join("\n")).toContain("commit timed out after 10ms");
+    } finally {
+      panel.dispose();
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as nodePath from "node:path";
 import {
@@ -57,6 +57,7 @@ describe("panel settings store", () => {
     store.saveDiffLayout("split");
     store.saveDiffContext(25);
     store.saveDiffMaskOpacity(0.62);
+    store.saveCacheEnabled(false);
     await store.flush();
 
     const expected = {
@@ -67,6 +68,7 @@ describe("panel settings store", () => {
       diffLayout: "split",
       diffContext: 25,
       diffMaskOpacity: 0.62,
+      cacheEnabled: false,
     } as const;
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual(expected);
     expect(await createPanelSettingsStore(async () => file).load()).toEqual(expected);
@@ -134,6 +136,31 @@ describe("panel settings store", () => {
       diffLayout: "split",
       diffContext: 10,
       diffMaskOpacity: 0.8,
+    });
+
+  });
+  test("loads validated cache and write settings with defaults for legacy files", async () => {
+    const file = await settingsFile();
+    const store = createPanelSettingsStore(async () => file);
+    await mkdir(nodePath.dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify({ treeRatio: 0.2 }), "utf8");
+    expect(await store.load()).toEqual({
+      ...DEFAULT_PANEL_SETTINGS,
+      treeRatio: 0.2,
+    });
+
+    await writeFile(file, JSON.stringify({
+      cacheEnabled: false,
+      commitTimeoutMs: 30_000,
+      pushTimeoutMs: 60_000,
+      protectedBranches: ["release", "main", "release", "", 4],
+    }), "utf8");
+    expect(await store.load()).toEqual({
+      ...DEFAULT_PANEL_SETTINGS,
+      cacheEnabled: false,
+      commitTimeoutMs: 30_000,
+      pushTimeoutMs: 60_000,
+      protectedBranches: ["release", "main"],
     });
   });
 

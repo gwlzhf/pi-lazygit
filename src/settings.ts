@@ -25,6 +25,10 @@ export interface PanelSettings {
   readonly diffLayout: DiffLayout;
   readonly diffContext: number;
   readonly diffMaskOpacity: number;
+  readonly cacheEnabled: boolean;
+  readonly commitTimeoutMs: number;
+  readonly pushTimeoutMs: number;
+  readonly protectedBranches: readonly string[];
 }
 
 /** Storage for {@link PanelSettings}; writes coalesce so a drag is one file write. */
@@ -36,6 +40,7 @@ export interface PanelSettingsStore {
   saveDiffLayout(layout: DiffLayout): void;
   saveDiffContext(context: number): void;
   saveDiffMaskOpacity(opacity: number): void;
+  saveCacheEnabled(enabled: boolean): void;
   flush(): Promise<void>;
 }
 
@@ -49,6 +54,10 @@ export const DEFAULT_PANEL_SETTINGS: PanelSettings = {
   diffLayout: DEFAULT_DIFF_LAYOUT,
   diffContext: DEFAULT_DIFF_CONTEXT,
   diffMaskOpacity: DEFAULT_DIFF_MASK_OPACITY,
+  cacheEnabled: true,
+  commitTimeoutMs: 120_000,
+  pushTimeoutMs: 120_000,
+  protectedBranches: ["main", "master"],
 };
 
 /** Clamp a stored or reported ratio to the supported minimum, or reject it. */
@@ -56,6 +65,19 @@ export function clampTreeRatio(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return Math.max(TREE_MIN_RATIO, value);
 }
+function normalizeTimeout(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : fallback;
+}
+
+function normalizeProtectedBranches(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return DEFAULT_PANEL_SETTINGS.protectedBranches;
+  return [...new Set(value.filter(
+    (branch): branch is string => typeof branch === "string" && branch.trim().length > 0,
+  ).map(branch => branch.trim()))];
+}
+
 
 async function settingsPath(): Promise<string> {
   // Imported lazily: the OMP entry point is a heavy module graph and only the
@@ -126,6 +148,10 @@ export function createPanelSettingsStore(
           diffLayout?: unknown;
           diffContext?: unknown;
           diffMaskOpacity?: unknown;
+          cacheEnabled?: unknown;
+          commitTimeoutMs?: unknown;
+          pushTimeoutMs?: unknown;
+          protectedBranches?: unknown;
         };
         current = {
           treeRatio: clampTreeRatio(value.treeRatio) ?? DEFAULT_PANEL_SETTINGS.treeRatio,
@@ -140,6 +166,12 @@ export function createPanelSettingsStore(
             : DEFAULT_PANEL_SETTINGS.diffLayout,
           diffContext: normalizeDiffContext(value.diffContext) ?? DEFAULT_PANEL_SETTINGS.diffContext,
           diffMaskOpacity: normalizeDiffMaskOpacity(value.diffMaskOpacity) ?? DEFAULT_PANEL_SETTINGS.diffMaskOpacity,
+          cacheEnabled: typeof value.cacheEnabled === "boolean"
+            ? value.cacheEnabled
+            : DEFAULT_PANEL_SETTINGS.cacheEnabled,
+          commitTimeoutMs: normalizeTimeout(value.commitTimeoutMs, DEFAULT_PANEL_SETTINGS.commitTimeoutMs),
+          pushTimeoutMs: normalizeTimeout(value.pushTimeoutMs, DEFAULT_PANEL_SETTINGS.pushTimeoutMs),
+          protectedBranches: normalizeProtectedBranches(value.protectedBranches),
         };
         return current;
       } catch {
@@ -154,6 +186,12 @@ export function createPanelSettingsStore(
       current = { ...current, treeRatio: clamped };
       scheduleWrite();
     },
+    saveCacheEnabled(enabled: boolean): void {
+      if (typeof enabled !== "boolean") return;
+      current = { ...current, cacheEnabled: enabled };
+      scheduleWrite();
+    },
+
 
     saveTreeCollapsed(collapsed: boolean): void {
       if (typeof collapsed !== "boolean") return;

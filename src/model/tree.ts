@@ -2,8 +2,8 @@ import type { ChangeRecord, StatusCode, ViewMode } from "../contracts";
 import { normalizeProjectPath } from "../contracts";
 
 /**
- * `section` marks a non-selectable divider row the change list draws above each
- * group of files; it never appears in a directory tree.
+ * `section` marks a keyboard-addressable divider in the flat change list.
+ * It groups files for selection and never appears in a directory tree.
  */
 export type TreeNodeKind = "directory" | "file" | "section";
 

@@ -159,6 +159,21 @@ function createSource(): ReviewSource {
     watch: async () => {
       throw new Error("not used by entry tests");
     },
+    headMessage: async () => {
+      throw new Error("not used by entry tests");
+    },
+    commit: async () => {
+      throw new Error("not used by entry tests");
+    },
+    amend: async () => {
+      throw new Error("not used by entry tests");
+    },
+    pushPlan: async () => {
+      throw new Error("not used by entry tests");
+    },
+    push: async () => {
+      throw new Error("not used by entry tests");
+    },
   };
 }
 
@@ -171,6 +186,7 @@ function createSettingsStore(overrides: Partial<PanelSettingsStore> = {}): Panel
     saveDiffLayout: () => {},
     saveDiffContext: () => {},
     flush: async () => {},
+    saveCacheEnabled: () => {},
     saveDiffMaskOpacity: () => {},
     ...overrides,
   };
@@ -183,7 +199,9 @@ function dependencies(
   return {
     createReviewSource: createSource,
     prepareSession: async () => {},
+    setCacheEnabled: () => {},
     clearSession: () => {},
+    clearCache: async () => {},
     createPanel,
     settings: createSettingsStore(),
     loadHighlighter: async () => undefined,
@@ -204,9 +222,10 @@ function createPanel(): FilesPanel {
 async function invokeCommand(
   command: CommandRegistration | undefined,
   ctx: ExtensionContext,
+  args = "",
 ): Promise<void> {
   expect(command).toBeDefined();
-  await command?.handler("", ctx as never);
+  await command?.handler(args, ctx as never);
 }
 
 async function invokeShortcut(
@@ -230,8 +249,65 @@ test("registers /files, Alt+Q, and session lifecycle handlers", () => {
   expect(harness.shortcuts.get("alt+q")).toBeDefined();
   expect(harness.shortcuts.get("ctrl+shift+g")).toBeUndefined();
   expect(harness.lifecycle.get("session_start")).toBeDefined();
+
   expect(harness.lifecycle.get("session_shutdown")).toBeDefined();
 });
+test("cache commands persist enablement and clear the current project's cache", async () => {
+  const api = createApiHarness();
+  const context = createContextHarness({ cwd: "C:\\repo" });
+  const actions: string[] = [];
+  const settings = createSettingsStore({
+    saveCacheEnabled: enabled => actions.push(`cache:${enabled}`),
+    flush: async () => {
+      actions.push("flush");
+    },
+  });
+
+  createExtension(dependencies({
+    settings,
+    setCacheEnabled: enabled => actions.push(`runtime:${enabled}`),
+    clearCache: async cwd => {
+      actions.push(`clear:${cwd}`);
+    },
+  }))(api.api);
+
+  await invokeCommand(api.commands.get("files-cache"), context.ctx);
+  await invokeCommand(api.commands.get("files-cache"), context.ctx, "off");
+  await invokeCommand(api.commands.get("clear-cache"), context.ctx);
+
+  expect(actions).toEqual([
+    "cache:false",
+    "flush",
+    "runtime:false",
+    "clear:C:\\repo",
+    "clear:C:\\repo",
+  ]);
+  expect(context.notifications).toEqual([
+    ["Usage: /files-cache on|off", "warning"],
+    ["Persistent baseline cache disabled.", undefined],
+    ["Persistent session baseline cache cleared.", undefined],
+  ]);
+});
+test("loads cache preference before creating the review source", async () => {
+  const api = createApiHarness();
+  const context = createContextHarness();
+  const enabledValues: boolean[] = [];
+  const settings = createSettingsStore({
+    load: async () => ({ ...DEFAULT_PANEL_SETTINGS, cacheEnabled: false }),
+  });
+
+  createExtension(dependencies({
+    settings,
+    createReviewSource: (_cwd, cacheEnabled) => {
+      enabledValues.push(cacheEnabled ?? true);
+      return createSource();
+    },
+  }))(api.api);
+
+  await invokeCommand(api.commands.get("files"), context.ctx);
+  expect(enabledValues).toEqual([false]);
+});
+
 
 test("registration performs no source, panel, or lifecycle work", () => {
   const harness = createApiHarness();

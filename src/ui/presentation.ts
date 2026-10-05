@@ -17,6 +17,8 @@ export interface PanelPresentationInput {
   readonly selectedPath?: string;
   readonly selectedSummary?: FileLineSummary;
   readonly status?: string;
+  readonly changeList?: boolean;
+  readonly selectedCount?: number;
 }
 
 export interface PanelPresentation {
@@ -71,6 +73,8 @@ function actionsFor(input: PanelPresentationInput): readonly PanelAction[] {
       { key: "n", label: "next" },
       { key: "p", label: "previous" },
       { key: "enter", label: "open" },
+      { key: "u", label: "amend HEAD message" },
+      ...(input.sourceKind === "git" ? [{ key: "P", label: "push" }] : []),
       { key: "g", label: "files" },
       { key: "b", label: "branches" },
       { key: "?", label: "all" },
@@ -80,16 +84,28 @@ function actionsFor(input: PanelPresentationInput): readonly PanelAction[] {
     { key: "tab", label: "focus preview" },
     { key: "n", label: "next" },
     { key: "p", label: "previous" },
-    { key: "enter", label: "open" },
+    { key: "enter", label: input.changeList
+      ? input.scope !== "workspace"
+        ? "commit disabled in session scope"
+        : (input.selectedCount ?? 0) > 0 ? "commit" : "select files"
+      : "open" },
     { key: "i", label: "/btw history" },
   ];
-  if (input.sourceKind !== "filesystem") {
-    actions.push({ key: "b", label: "branches" }, { key: "g", label: "history" });
+  if (input.changeList && input.focus === "tree") {
+    actions.push(
+      { key: "space", label: "toggle selection" },
+      { key: "x", label: "invert selected file" },
+      { key: "A", label: "toggle all selection" },
+    );
+  }
+  if (input.sourceKind === "git") {
+    actions.push({ key: "P", label: "push" }, { key: "b", label: "branches" }, { key: "g", label: "history" });
   }
   actions.push({ key: "?", label: "all" });
   return actions;
 }
 
+/** Build the labels and enabled actions for the panel's current state. */
 export function panelPresentation(input: PanelPresentationInput): PanelPresentation {
   return {
     overviewTitle: overviewTitle(input),
@@ -112,8 +128,8 @@ export const PANEL_HELP_GROUPS: readonly {
       { key: "n", label: "next" },
       { key: "p", label: "previous" },
       { key: "↑/↓", label: "move" },
-      { key: "enter", label: "open" },
-      { key: "i", label: "open /btw history" },
+      { key: "enter", label: "open / commit in workspace change list" },
+      { key: "u", label: "amend HEAD subject in history" },
     ],
   },
   {
@@ -123,7 +139,15 @@ export const PANEL_HELP_GROUPS: readonly {
       { key: "g", label: "history" },
       { key: "m/a", label: "modified/all" },
       { key: "s", label: "scope" },
-      { key: "r", label: "refresh" },
+      { key: "space", label: "select file / section" },
+      { key: "x", label: "invert file selection" },
+      { key: "A", label: "toggle all selection" },
+      { key: "Enter", label: "commit: message → dry-run → y confirm" },
+      { key: "Ctrl+N", label: "toggle --no-verify for commit/amend" },
+      { key: "P", label: "review push plan" },
+      { key: "y", label: "continue to distinct push write confirmation" },
+      { key: "w", label: "confirm unprotected remote write" },
+      { key: "branch name + Enter", label: "confirm protected remote write" },
     ],
   },
   {

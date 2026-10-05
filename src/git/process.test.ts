@@ -17,6 +17,8 @@ async function fixturePath(): Promise<string> {
       "if (mode === 'args') {",
       "  process.stdout.write(JSON.stringify(process.argv.slice(3)));",
       "  process.stderr.write('diagnostic');",
+      "} else if (mode === 'env') {",
+      "  process.stdout.write(JSON.stringify({ prompt: process.env.GIT_TERMINAL_PROMPT, askpass: process.env.GIT_ASKPASS }));",
       "} else if (mode === 'overflow') {",
       "  process.stdout.write('abcdefgh');",
       "  process.stderr.write('problem');",
@@ -57,6 +59,20 @@ test("executes directly and preserves argument boundaries", async () => {
   expect(output.exitCode).toBe(0);
   expect(output.truncated).toBe(false);
 });
+test("merges explicit child environment values", async () => {
+  const fixture = await fixturePath();
+  const output = await new BunProcessRunner().run(
+    process.cwd(),
+    process.execPath,
+    [fixture, "env"],
+    new AbortController().signal,
+    undefined,
+    { env: { GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" } },
+  );
+
+  expect(new TextDecoder().decode(output.stdout)).toBe('{"prompt":"0","askpass":""}');
+});
+
 
 test("caps stdout while draining the child and reports truncation", async () => {
   const fixture = await fixturePath();

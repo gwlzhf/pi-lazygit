@@ -1,24 +1,39 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type {
+  AmendOptions,
+  AmendResult,
   ChangeRecord,
   CommitDiffPreview,
+  CommitOptions,
+  CommitResult,
   FilePreview,
   GitBranchSnapshot,
   GitLogSnapshot,
+  HeadMessage,
   ProjectSnapshot,
+  PushOptions,
+  PushPlan,
+  PushResult,
+  RefreshOptions,
   StatusCode,
   SwitchBranchOptions,
 } from "./contracts";
 import type { GitRepository, RepositoryInspection } from "./git/repository";
-import { BaselineStore } from "./model/baseline";
+import { createBaselineCacheStore, type BaselineCacheStore } from "./model/cache-store";
+import { BaselineStore, type SerializedBaseline } from "./model/baseline";
 import {
+  clearProjectBaselineCache,
   clearSessionBaselines,
   createReviewSource,
   prepareSessionBaseline,
   ProjectReviewSource,
+  setSessionBaselineCacheEnabled,
   type ReviewSourceFactories,
 } from "./review-source";
+const temporaryCacheRoots: string[] = [];
 
 function change(path: string, status: StatusCode): ChangeRecord {
   return { path, index: status, worktree: " ", status };
@@ -72,9 +87,27 @@ interface FakeGit {
   ): Promise<CommitDiffPreview>;
   branches(signal: AbortSignal): Promise<GitBranchSnapshot>;
   switchBranch(name: string, options: SwitchBranchOptions): Promise<void>;
+  headMessage(signal: AbortSignal): Promise<HeadMessage | undefined>;
+  commit(options: CommitOptions): Promise<CommitResult>;
+  amend(options: AmendOptions): Promise<AmendResult>;
+  pushPlan(options: RefreshOptions): Promise<PushPlan>;
+  push(options: PushOptions): Promise<PushResult>;
+  cacheFingerprint(signal: AbortSignal): Promise<{ readonly headOid?: string; readonly indexFingerprint: string }>;
 }
 
-function unusedGitOperations(): Pick<FakeGit, "history" | "commitDiff" | "branches" | "switchBranch"> {
+function unusedGitOperations(): Pick<
+  FakeGit,
+  | "history"
+  | "commitDiff"
+  | "branches"
+  | "switchBranch"
+  | "headMessage"
+  | "commit"
+  | "amend"
+  | "pushPlan"
+  | "push"
+  | "cacheFingerprint"
+> {
   return {
     async history() {
       throw new Error("Git history is not used by this test");
@@ -88,12 +121,43 @@ function unusedGitOperations(): Pick<FakeGit, "history" | "commitDiff" | "branch
     async switchBranch() {
       throw new Error("Git branch switching is not used by this test");
     },
+    async headMessage() {
+      throw new Error("The HEAD message is not used by this test");
+    },
+    async commit() {
+      throw new Error("Git commits are not used by this test");
+    },
+    async amend() {
+      throw new Error("Git amends are not used by this test");
+    },
+    async pushPlan() {
+      throw new Error("The Git push plan is not used by this test");
+    },
+    async push() {
+      throw new Error("Git pushes are not used by this test");
+    },
+    async cacheFingerprint(receivedSignal) {
+      receivedSignal.throwIfAborted();
+      return { headOid: "test-head", indexFingerprint: "test-index" };
+    },
   };
 }
 
 type FakeGitBackend = Pick<
   GitRepository,
-  "inspect" | "contentHash" | "preview" | "history" | "commitDiff" | "branches" | "switchBranch"
+  | "inspect"
+  | "contentHash"
+  | "preview"
+  | "history"
+  | "commitDiff"
+  | "branches"
+  | "switchBranch"
+  | "headMessage"
+  | "commit"
+  | "amend"
+  | "pushPlan"
+  | "push"
+  | "cacheFingerprint"
 >;
 
 function gitFactories(git: FakeGit, openCalls: string[]): ReviewSourceFactories {
@@ -129,9 +193,428 @@ function deferred<T>(): Deferred<T> {
     },
   };
 }
+async function temporaryCacheStore(): Promise<BaselineCacheStore> {
+  const root = await mkdtemp(join(tmpdir(), "pi-baseline-cache-"));
+  temporaryCacheRoots.push(root);
+  return createBaselineCacheStore({ resolveAgentDir: async () => root });
+}
+function fakeCacheStore(overrides: Partial<BaselineCacheStore> = {}): BaselineCacheStore {
+  return {
+    load: async () => undefined,
+    save: async () => {},
+    remove: async () => {},
+    clearForRoot: async () => {},
+    ...overrides,
+  };
+}
 
-afterEach(() => {
-  clearSessionBaselines();
+test("rehydrates a cross-session baseline and compares current content against it", async () => {
+  const root = resolve("cross-session-cache");
+  const cacheStore = await temporaryCacheStore();
+  const dirty = change("dirty.ts", "M");
+  const currentInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 1, deletions: 0 }]]),
+  );
+  let content = "session-start";
+  let hashCalls = 0;
+  const git: FakeGit = {
+    ...unusedGitOperations(),
+    async inspect() {
+      return currentInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      hashCalls += 1;
+      return content;
+    },
+    async preview(path) {
+      return preview(path);
+    },
+    async cacheFingerprint(receivedSignal) {
+      receivedSignal.throwIfAborted();
+      return { headOid: "head-1", indexFingerprint: "tree-1" };
+    },
+  };
+  const factories: ReviewSourceFactories = {
+    ...gitFactories(git, []),
+    cacheStore,
+  };
+
+  const first = createReviewSource(root, undefined, factories);
+  const cold = await first.refresh({ signal });
+  expect(cold.sessionChanges.size).toBe(0);
+  expect(hashCalls).toBe(1);
+  await clearSessionBaselines(true);
+
+  content = "changed-between-sessions";
+  const second = createReviewSource(root, undefined, factories);
+  const warm = await second.refresh({ signal });
+
+  expect(warm.baselineEstablishedAt).toBe(cold.baselineEstablishedAt);
+  expect([...warm.sessionChanges]).toEqual([[dirty.path, dirty]]);
+  expect(hashCalls).toBe(2);
+});
+
+test("preserves session baseline across index changes and recaptures after HEAD changes", async () => {
+  const root = resolve("fingerprint-invalidation");
+  const dirty = change("dirty.ts", "M");
+  const currentInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 1, deletions: 0 }]]),
+  );
+  let fingerprint = { headOid: "head-1", indexFingerprint: "tree-1" };
+  let hashCalls = 0;
+  const git: FakeGit = {
+    ...unusedGitOperations(),
+    async inspect() {
+      return currentInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      hashCalls += 1;
+      return `content-${hashCalls}`;
+    },
+    async preview(path) {
+      return preview(path);
+    },
+    async cacheFingerprint(receivedSignal) {
+      receivedSignal.throwIfAborted();
+      return fingerprint;
+    },
+  };
+  const source = createReviewSource(root, undefined, gitFactories(git, []));
+
+  await source.refresh({ signal });
+  fingerprint = { headOid: "head-1", indexFingerprint: "tree-2" };
+  const staged = await source.refresh({ signal });
+  expect([...staged.sessionChanges]).toEqual([[dirty.path, dirty]]);
+  fingerprint = { headOid: "head-2", indexFingerprint: "tree-2" };
+  expect((await source.refresh({ signal })).sessionChanges.size).toBe(0);
+  expect(hashCalls).toBe(3);
+});
+test("fingerprint failures preserve the active baseline and session edits", async () => {
+  const root = resolve("fingerprint-failure");
+  const dirty = change("dirty.ts", "M");
+  const currentInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 1, deletions: 0 }]]),
+  );
+  let fingerprintCalls = 0;
+  let hashCalls = 0;
+  const git: FakeGit = {
+    ...unusedGitOperations(),
+    async inspect() {
+      return currentInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      hashCalls += 1;
+      return `content-${hashCalls}`;
+    },
+    async preview(path) {
+      return preview(path);
+    },
+    async cacheFingerprint(receivedSignal) {
+      receivedSignal.throwIfAborted();
+      fingerprintCalls += 1;
+      if (fingerprintCalls > 1) throw new Error("fingerprint unavailable");
+      return { headOid: "head-1", indexFingerprint: "tree-1" };
+    },
+  };
+  const source = createReviewSource(root, undefined, gitFactories(git, []));
+  const cold = await source.refresh({ signal });
+  const warm = await source.refresh({ signal });
+
+  expect(warm.baselineEstablishedAt).toBe(cold.baselineEstablishedAt);
+  expect([...warm.sessionChanges]).toEqual([[dirty.path, dirty]]);
+  expect(hashCalls).toBe(2);
+});
+
+
+test("disabled caching skips disk access while cache failures fall back to capture", async () => {
+  const root = resolve("cache-disabled-failure");
+  const dirty = change("dirty.ts", "M");
+  const currentInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 1, deletions: 0 }]]),
+  );
+  let hashCalls = 0;
+  let loadCalls = 0;
+  let saveCalls = 0;
+  const cacheStore = fakeCacheStore({
+    async load() {
+      loadCalls += 1;
+      throw new Error("cache read unavailable");
+    },
+    async save() {
+      saveCalls += 1;
+      throw new Error("cache write unavailable");
+    },
+  });
+  const git: FakeGit = {
+    ...unusedGitOperations(),
+    async inspect() {
+      return currentInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      hashCalls += 1;
+      return "content";
+    },
+    async preview(path) {
+      return preview(path);
+    },
+  };
+  const factories: ReviewSourceFactories = {
+    ...gitFactories(git, []),
+    cacheStore,
+  };
+
+  const disabled = createReviewSource(root, undefined, factories, false);
+  await disabled.refresh({ signal });
+  expect([loadCalls, saveCalls, hashCalls]).toEqual([0, 0, 1]);
+
+  await clearSessionBaselines(false);
+  setSessionBaselineCacheEnabled(true);
+  const failing = createReviewSource(root, undefined, factories, true);
+  await expect(failing.refresh({ signal })).resolves.toMatchObject({ kind: "git" });
+  expect([loadCalls, saveCalls, hashCalls]).toEqual([1, 1, 2]);
+});
+test("rejects a malformed cached baseline and falls back to live capture", async () => {
+  const root = resolve("malformed-baseline-cache");
+  const dirty = change("dirty.ts", "M");
+  const currentInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 1, deletions: 0 }]]),
+  );
+  let hashCalls = 0;
+  const cacheStore = fakeCacheStore({
+    async load() {
+      return {
+        root,
+        headIdentity: "branch:main",
+        establishedAt: 1,
+        entries: [{ path: "../outside", status: "M", hash: "bad" }],
+      } as SerializedBaseline;
+    },
+  });
+  const git: FakeGit = {
+    ...unusedGitOperations(),
+    async inspect() {
+      return currentInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      hashCalls += 1;
+      return "live-content";
+    },
+    async preview(path) {
+      return preview(path);
+    },
+  };
+  const source = createReviewSource(root, undefined, {
+    ...gitFactories(git, []),
+    cacheStore,
+  }, true);
+
+  const result = await source.refresh({ signal });
+  expect(result.kind).toBe("git");
+  expect(result.sessionChanges.size).toBe(0);
+  expect(hashCalls).toBe(1);
+});
+
+test("serializes clear-cache after outstanding writes and prevents repopulation", async () => {
+  const root = resolve("clear-cache-race");
+  const dirty = change("dirty.ts", "M");
+  const currentInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 1, deletions: 0 }]]),
+  );
+  const saveStarted = deferred<void>();
+  const finishSave = deferred<void>();
+  let clearCalls = 0;
+  const cacheStore = fakeCacheStore({
+    async save() {
+      saveStarted.resolve(undefined);
+      await finishSave.promise;
+    },
+    async clearForRoot() {
+      clearCalls += 1;
+    },
+  });
+  const git: FakeGit = {
+    ...unusedGitOperations(),
+    async inspect() {
+      return currentInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      return "content";
+    },
+    async preview(path) {
+      return preview(path);
+    },
+  };
+  const source = createReviewSource(root, undefined, {
+    ...gitFactories(git, []),
+    cacheStore,
+  }, true);
+
+  const refresh = source.refresh({ signal });
+  await saveStarted.promise;
+  const clear = clearProjectBaselineCache(root);
+  await Promise.resolve();
+  expect(clearCalls).toBe(0);
+  finishSave.resolve(undefined);
+  await Promise.all([refresh, clear]);
+  expect(clearCalls).toBe(1);
+});
+
+test("awaits pending cache writes before clearing session baselines", async () => {
+  const root = resolve("shutdown-cache-race");
+  const dirty = change("dirty.ts", "M");
+  const currentInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 1, deletions: 0 }]]),
+  );
+  const saveStarted = deferred<void>();
+  const finishSave = deferred<void>();
+  const cacheStore = fakeCacheStore({
+    async save() {
+      saveStarted.resolve(undefined);
+      await finishSave.promise;
+    },
+  });
+  const git: FakeGit = {
+    ...unusedGitOperations(),
+    async inspect() {
+      return currentInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      return "content";
+    },
+    async preview(path) {
+      return preview(path);
+    },
+  };
+  const source = createReviewSource(root, undefined, {
+    ...gitFactories(git, []),
+    cacheStore,
+  }, true);
+
+  const refresh = source.refresh({ signal });
+  await saveStarted.promise;
+  let shutdownDone = false;
+  const shutdown = clearSessionBaselines(true).then(() => {
+    shutdownDone = true;
+  });
+  await Promise.resolve();
+  expect(shutdownDone).toBe(false);
+  finishSave.resolve(undefined);
+  await Promise.all([refresh, shutdown]);
+  expect(shutdownDone).toBe(true);
+});
+
+test("a changed cross-session HEAD identity misses the prior cached baseline", async () => {
+  const root = resolve("cross-session-head-invalidation");
+  const cacheStore = await temporaryCacheStore();
+  const dirty = change("dirty.ts", "M");
+  const currentInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 1, deletions: 0 }]]),
+  );
+  let headOid = "head-old";
+  let hashCalls = 0;
+  const git: FakeGit = {
+    ...unusedGitOperations(),
+    async inspect() {
+      return currentInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      hashCalls += 1;
+      return `content-${hashCalls}`;
+    },
+    async preview(path) {
+      return preview(path);
+    },
+    async cacheFingerprint(receivedSignal) {
+      receivedSignal.throwIfAborted();
+      return { headOid, indexFingerprint: "tree-1" };
+    },
+  };
+  const factories: ReviewSourceFactories = {
+    ...gitFactories(git, []),
+    cacheStore,
+  };
+
+  await createReviewSource(root, undefined, factories).refresh({ signal });
+  await clearSessionBaselines(true);
+  headOid = "head-new";
+  const restarted = createReviewSource(root, undefined, factories);
+  expect((await restarted.refresh({ signal })).sessionChanges.size).toBe(0);
+  expect(hashCalls).toBe(2);
+});
+
+
+test("a changed cross-session index fingerprint misses the prior cached baseline", async () => {
+  const root = resolve("cross-session-index-invalidation");
+  const cacheStore = await temporaryCacheStore();
+  const dirty = change("dirty.ts", "M");
+  const currentInspection = inspection(
+    root,
+    [dirty],
+    new Map([[dirty.path, { insertions: 1, deletions: 0 }]]),
+  );
+  let indexFingerprint = "tree-before-stage";
+  let hashCalls = 0;
+  const git: FakeGit = {
+    ...unusedGitOperations(),
+    async inspect() {
+      return currentInspection;
+    },
+    async contentHash(_path, receivedSignal) {
+      receivedSignal.throwIfAborted();
+      hashCalls += 1;
+      return `content-${hashCalls}`;
+    },
+    async preview(path) {
+      return preview(path);
+    },
+    async cacheFingerprint(receivedSignal) {
+      receivedSignal.throwIfAborted();
+      return { headOid: "head-1", indexFingerprint };
+    },
+  };
+  const factories: ReviewSourceFactories = {
+    ...gitFactories(git, []),
+    cacheStore,
+  };
+
+  await createReviewSource(root, undefined, factories).refresh({ signal });
+  await clearSessionBaselines(true);
+  indexFingerprint = "tree-after-stage";
+  const restarted = createReviewSource(root, undefined, factories);
+  expect((await restarted.refresh({ signal })).sessionChanges.size).toBe(0);
+  expect(hashCalls).toBe(2);
+});
+
+afterEach(async () => {
+  setSessionBaselineCacheEnabled(true);
+  await clearSessionBaselines(true);
+  for (const root of temporaryCacheRoots.splice(0)) {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("Git-only operations delegate to a discovered Git backend and watch its repository root", async () => {
@@ -167,6 +650,7 @@ test("Git-only operations delegate to a discovered Git backend and watch its rep
     current: "main",
   };
   const git: FakeGit = {
+    ...unusedGitOperations(),
     async inspect(receivedSignal) {
       receivedSignal.throwIfAborted();
       return inspection(repositoryRoot, [], new Map());
@@ -780,7 +1264,7 @@ test("clearSessionBaselines aborts and isolates an outstanding capture from the 
   const staleSource = createReviewSource(root, undefined, factories);
   const staleRefresh = staleSource.refresh({ signal });
   const staleCaptureSignal = await staleCaptureStarted.promise;
-  clearSessionBaselines();
+  await clearSessionBaselines();
   expect(staleCaptureSignal.aborted).toBe(true);
 
   const freshSource = createReviewSource(root, undefined, factories);
@@ -831,7 +1315,7 @@ test("clearSessionBaselines clears the canonical source and baseline registries"
   expect(same).toBe(first);
   await first.refresh({ signal });
 
-  clearSessionBaselines();
+  await clearSessionBaselines();
   const replacement = createReviewSource(root, undefined, factories);
   expect(replacement).not.toBe(first);
   await replacement.refresh({ signal });

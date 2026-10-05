@@ -1,6 +1,6 @@
 # Pi Files Review
 
-Pi Files Review is an Oh My Pi extension for reviewing project files and Git changes inside the current OMP terminal session. It opens with a keyboard- and mouse-driven list of changed files and a selected-file diff or content preview; press `v` for the directory tree. Review itself is read-only; switching to a local branch is the one explicit repository-mutating action.
+Pi Files Review is an Oh My Pi extension for reviewing project files and Git changes inside the current OMP terminal session. It opens with a keyboard- and mouse-driven list of changed files and a selected-file diff or content preview; press `v` for the directory tree. Review is read-only until you explicitly invoke a write action: commit selected workspace paths, amend the current `HEAD` subject, push a reviewed upstream plan, or switch to a local branch.
 
 ## Prerequisites
 
@@ -15,14 +15,14 @@ The extension targets the OMP 18.3.1 interactive TUI in Windows PowerShell and W
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.6.7
+omp plugin install github:gwlzhf/pi-lazygit#v0.7.0
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.6.7
+omp plugin install github:gwlzhf/pi-lazygit#v0.7.0
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
@@ -125,9 +125,9 @@ History is limited to the 200 most recent commits, and the footer reports `histo
 
 Press `b` to swap the left pane for the list of local branches; press `b` again, or `Esc`, to return to the file list/tree without changing anything. Move the selection with `n` / `p` or `Up` / `Down`, and press `Enter` to switch to the selected branch. The current branch is marked, and `Enter` on it simply returns to the files view without running Git.
 
-**Switching a branch writes to your repository.** It is the only operation in this plugin that does. Everything else remains read-only.
+**Switching a branch writes to your repository**, as do the explicit commit, amend, and push actions described below. These actions can update local/remote branch refs as part of normal Git behavior; the panel offers no separate branch/tag/ref creation, renaming, or deletion controls, and never force-pushes, fetches, or stashes.
 
-The switch runs the equivalent of `git switch --no-guess <branch>` as an argument vector — no shell command is built, and the name always comes from your own local refs, revalidated immediately before execution. The plugin never fetches, never stashes, never forces, and never creates, renames, or deletes a ref. Only local branches are listed: remote branches, tags, and arbitrary revisions cannot be selected.
+The switch runs the equivalent of `git switch --no-guess <branch>` as an argument vector — no shell command is built, and the name always comes from your own local refs, revalidated immediately before execution. No force operation is available. Only local branches are listed: remote branches, tags, and arbitrary revisions cannot be selected.
 
 A dirty worktree is left to Git's own safety rules. If your changes carry cleanly to the target branch, Git switches and keeps them. If the switch would overwrite them, Git refuses, your files are untouched, and the sanitized error stays visible in the branch list — the plugin does not retry, stash, or resolve anything on your behalf. Clicking a branch row only selects it, so no single click can move your `HEAD`.
 
@@ -135,9 +135,40 @@ After a successful switch the panel returns to the files view, clears selection 
 
 Session baselines are per branch. Each branch, detached checkout, or unborn branch gets its own baseline on first visit, so switching branches is not misread as a session-sized edit, and returning to a branch restores its own comparison point. Branch listing and switching are Git-only and unavailable in filesystem fallback mode.
 
+
+
+## Commit, amend, and push
+
+In the flat change list, `space` toggles a file or whole section, `x` inverts the current file's selection, and `A` toggles all visible changes. Selection defaults to all committable workspace changes, is held only in memory, and is never persisted across sessions. A selection in session scope cannot be committed: session scope attributes changes since the OMP session baseline, while Git path-limited commits cannot isolate only those later edits.
+
+`Enter` in the workspace change list starts commit: message → dry-run → `y` confirm. Git stages selected paths in batches of 200; the final path-limited commit still passes the complete selected path list, so an exceptionally large selection can exceed the platform's command-line limit. Dry-run stages those selected paths before showing its report; cancelling confirmation leaves them staged. `Ctrl+N` toggles `--no-verify` for commit/amend.
+
+In commit history, `u` edits the subject of `HEAD` only; the existing commit body is retained. Amend is unavailable for older history entries and is blocked for an unborn/detached `HEAD` or a dirty index. An amended commit already published upstream cannot be force-pushed.
+
+Press `P` to review a push plan. The first `y` advances to a separate write confirmation; ordinary branches require `w`, while protected branches require typing the exact full branch name and pressing `Enter`. `main` and `master` are always protected; `protectedBranches` in `pi-lazygit.json` adds protected names. A push with remote commits ahead is blocked. Push targets the reviewed upstream and rejects a stale plan; multiple push URLs and unexpected tag/transport behavior fail closed. It never uses force.
+Ahead/behind counts use the last known local remote-tracking refs; this panel does not fetch. Fetch outside the panel to refresh those counts. Git still rejects a non-fast-forward push if the remote changed after the last fetch.
+
+Git writes time out after 120 seconds by default (`commitTimeoutMs`, `pushTimeoutMs` in `pi-lazygit.json`); change these settings in that file to configure the limits. Git will not prompt for credentials in the panel. HTTPS disables terminal prompts and relies on noninteractive Git credential helpers. Default SSH uses OpenSSH batch mode and an existing key/agent; configured custom SSH commands are preserved but must explicitly enable OpenSSH `BatchMode=yes` or plink `-batch`, otherwise push fails closed. On Windows, killing Git's direct child on timeout may not terminate hook-spawned grandchildren.
+
+Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent directory returned by OMP (`getAgentDir()`). Cache identity includes canonical repository root, HEAD identity/OID, and index fingerprint; invalid/mismatched data is ignored, and worktree contents are still hashed against the session baseline on every refresh. Worktree edits do not invalidate that baseline; a changed HEAD captures a new session origin, while an index-only change clears its disk checkpoint but preserves the in-memory baseline so staging does not hide prior edits. Caching defaults on (`cacheEnabled` in `pi-lazygit.json`); use `/files-cache on|off` to toggle it and `/clear-cache` to remove this project's cache entry.
+
 ## Keys
 
-`?` opens a full list of every shortcut, grouped by navigation, review, layout, and mouse. It leaves the selection, preview, and branch state untouched; `?` or `Esc` closes it, and `Esc` closes the help before anything else.
+`?` opens a full list of every shortcut, grouped by navigation, review, layout, and mouse. It leaves selection and preview state untouched; `?` or `Esc` closes it, and `Esc` closes the help before anything else.
+
+### Write-action keys
+
+| Key | Action |
+| --- | --- |
+| `space` | Toggle a file or section selection |
+| `x` | Invert the current file selection |
+| `A` | Toggle all selection |
+| `Enter` | Start commit in workspace change list |
+| `Ctrl+N` | Toggle `--no-verify` for commit/amend |
+| `u` | Amend `HEAD` subject in commit history |
+| `P` | Review push plan |
+| `y` then `w` | Advance through separate push confirmations |
+| Branch name + `Enter` | Confirm a protected-branch push |
 
 ### Project tree
 
@@ -238,12 +269,12 @@ Replaces the project tree keys while the branch list is shown (`b`).
 The Git panel opens in the change list; `v` switches to the directory tree and back. View mode and change scope are independent:
 
 - **Modified mode** (`m`) shows only files changed in the active scope when viewing the tree.
-- **Change list** (default) shows full project paths under two dividers: `Modified files` for the tracked files Git reports as changed, then `No version files` for the files Git does not track. Each file is listed once under its status letter, and an empty group is omitted. The dividers are labels only — the cursor steps over them. Press `v` for the tree. The list is unavailable outside a Git repository.
+- **Change list** (default) shows full project paths under two dividers: `Modified files` for the tracked files Git reports as changed, then `No version files` for the files Git does not track. Each file is listed once under its status letter, and an empty group is omitted. The dividers are navigable rows; `space` toggles selection for all committable files in that section. Press `v` for the tree. The list is unavailable outside a Git repository.
 - **All-files mode** (`a`) switches to the complete Git-visible project tree. Status markers and totals still reflect the active scope.
 - **Workspace scope** shows current working-tree changes relative to `HEAD`, including staged and unstaged changes.
 - **Session scope** (`s`) shows changes that differ from the repository snapshot captured for the current OMP session.
 
-The active repository baseline is captured at `session_start`, before the panel opens. A repository first visited later in the same OMP session receives a baseline on first access. Baselines live only in memory and are cleared on `session_shutdown`, so restarting OMP starts a new comparison period.
+The active repository baseline is captured at `session_start`, before the panel opens. A repository first visited later in the same OMP session receives a baseline on first access. When caching is enabled, a validated persistent copy may preload this baseline; cache identity mismatches are treated as misses. Baseline data survives in memory until `session_shutdown`; if caching is enabled it is also persisted for a later session.
 
 Session scope is temporal attribution, not Agent attribution. Any edit made after the baseline counts, including edits made by external programs, other terminals, or people. A file restored to its baseline state disappears from session scope.
 
@@ -261,12 +292,16 @@ To keep the OMP session responsive:
 - A preview renders at most 5,000 logical lines.
 - Non-Git filesystem traversal stops after 20,000 entries.
 - The commit history lists at most the 200 most recent commits.
+- Commit, amend, and push time out after 120 seconds by default; configure `commitTimeoutMs` and `pushTimeoutMs` in `pi-lazygit.json`.
+- Git add stages selected paths in batches of 200; the final commit command still includes the complete selected path list and can exceed the platform command-line limit for exceptionally large selections.
+- Amend can update only `HEAD`'s subject; older commits are not amendable.
+- Force push is never available.
 
 The panel displays a truncation state when a limit is reached. Git all-files mode includes tracked and untracked/non-ignored paths, excludes ignored paths, and never traverses `.git` internals.
 
 ## Scope and safety
 
-Pi Files Review is read-only except for one explicit action: switching to a local branch with `Enter` in the branch list (see [Switching branches](#switching-branches)). It does not edit files, stage changes, apply or revert hunks, commit, fetch, stash, force, or create, rename, or delete any ref. It also does not claim that an Agent produced every change shown in session scope.
+Reviewing files, diffs, and history does not write to the repository. Explicit writes are limited to switching to a local branch, committing selected workspace paths, amending the current `HEAD` subject, and pushing the reviewed upstream plan. These ordinary Git operations update branch refs as needed; there are no separate branch/tag/ref management controls. The panel does not fetch, stash, or apply/revert hunks; force push is never available. No write is implicit in selecting or previewing a row. Session scope describes changes since the baseline, not which Agent produced them.
 
 ## License / 许可证
 

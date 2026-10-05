@@ -5,7 +5,72 @@ import type {
   RepositoryBaseline,
 } from "../contracts";
 import { normalizeProjectPath } from "../contracts";
+export interface SerializedBaseline {
+  readonly root: string;
+  readonly headIdentity: string;
+  readonly establishedAt: number;
+  readonly entries: readonly {
+    readonly path: string;
+    readonly status: BaselineEntry["status"];
+    readonly hash: string | null;
+  }[];
+}
+const BASELINE_STATUS_CODES: Readonly<Record<BaselineEntry["status"], true>> = {
+  M: true,
+  A: true,
+  D: true,
+  R: true,
+  "?": true,
+  U: true,
+};
 
+/** Validate a serialized baseline before hydration or persistent storage. */
+export function isSerializedBaseline(value: unknown): value is SerializedBaseline {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.root !== "string" ||
+    candidate.root.length === 0 ||
+    typeof candidate.headIdentity !== "string" ||
+    candidate.headIdentity.length === 0 ||
+    typeof candidate.establishedAt !== "number" ||
+    !Number.isFinite(candidate.establishedAt) ||
+    !Array.isArray(candidate.entries)
+  ) return false;
+
+  const paths = new Set<string>();
+  for (const entry of candidate.entries) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const candidateEntry = entry as Record<string, unknown>;
+    if (
+      typeof candidateEntry.path !== "string" ||
+      typeof candidateEntry.status !== "string" ||
+      !Object.hasOwn(BASELINE_STATUS_CODES, candidateEntry.status) ||
+      (typeof candidateEntry.hash !== "string" && candidateEntry.hash !== null)
+    ) return false;
+    try {
+      const path = normalizeBaselinePath(candidateEntry.path);
+      if (path !== candidateEntry.path || paths.has(path)) return false;
+      paths.add(path);
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function freezeBaseline(value: SerializedBaseline): RepositoryBaseline {
+  const entries = new Map<string, BaselineEntry>();
+  for (const entry of value.entries) {
+    entries.set(entry.path, Object.freeze({ status: entry.status, hash: entry.hash }));
+  }
+  return Object.freeze({
+    root: value.root,
+    headIdentity: value.headIdentity,
+    establishedAt: value.establishedAt,
+    entries,
+  });
+}
 export type HashFile = (
   absolutePath: string,
   signal: AbortSignal,
@@ -80,6 +145,28 @@ export class BaselineStore {
     });
     this.#baselines.set(baselineKey(root, headIdentity), baseline);
     return baseline;
+  }
+
+  /** Serialize one in-memory baseline to a JSON-safe immutable value. */
+  serialize(root: string, headIdentity: string): SerializedBaseline | undefined {
+    const baseline = this.get(root, headIdentity);
+    if (baseline === undefined) return undefined;
+    return Object.freeze({
+      root: baseline.root,
+      headIdentity: baseline.headIdentity,
+      establishedAt: baseline.establishedAt,
+      entries: Object.freeze([...baseline.entries].map(([path, entry]) =>
+        Object.freeze({ path, status: entry.status, hash: entry.hash })
+      )),
+    });
+  }
+
+  /** Hydrate one validated serialized baseline into the authoritative memory map. */
+  hydrate(value: unknown): boolean {
+    if (!isSerializedBaseline(value)) return false;
+    const baseline = freezeBaseline(value);
+    this.#baselines.set(baselineKey(baseline.root, baseline.headIdentity), baseline);
+    return true;
   }
 
   get(root: string, headIdentity: string): RepositoryBaseline | undefined {

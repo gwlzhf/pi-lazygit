@@ -5,8 +5,10 @@ import { join, resolve } from "node:path";
 import { DEFAULT_DIFF_CONTEXT, FULL_DIFF_CONTEXT, MAX_PREVIEW_BYTES } from "../contracts";
 import { GitRepository } from "./repository";
 import {
+  BunProcessRunner,
   type CommandOutput,
   type ProcessRunner,
+  type RunOptions,
 } from "./process";
 
 const temporaryDirectories: string[] = [];
@@ -52,7 +54,11 @@ function commandOutput(
 }
 
 class ScriptedRunner implements ProcessRunner {
-  readonly calls: Array<{ readonly executable: string; readonly args: readonly string[] }> = [];
+  readonly calls: Array<{
+    readonly executable: string;
+    readonly args: readonly string[];
+    readonly options?: RunOptions;
+  }> = [];
 
   constructor(
     private readonly response: (args: readonly string[]) => CommandOutput,
@@ -64,10 +70,38 @@ class ScriptedRunner implements ProcessRunner {
     args: readonly string[],
     signal: AbortSignal,
     _maxBytes?: number,
+    options?: RunOptions,
   ): Promise<CommandOutput> {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    this.calls.push({ executable, args: [...args] });
+    this.calls.push({
+      executable,
+      args: [...args],
+      ...(options !== undefined ? { options } : {}),
+    });
     return this.response(args);
+  }
+}
+class CapturingRunner implements ProcessRunner {
+  readonly calls: Array<{
+    readonly args: readonly string[];
+    readonly options?: RunOptions;
+  }> = [];
+
+  private readonly runner = new BunProcessRunner();
+
+  async run(
+    cwd: string,
+    executable: string,
+    args: readonly string[],
+    signal: AbortSignal,
+    maxBytes?: number,
+    options?: RunOptions,
+  ): Promise<CommandOutput> {
+    this.calls.push({
+      args: [...args],
+      ...(options !== undefined ? { options } : {}),
+    });
+    return this.runner.run(cwd, executable, args, signal, maxBytes, options);
   }
 }
 
@@ -107,8 +141,11 @@ async function initializeRepository(withHead = true): Promise<string> {
   return root;
 }
 
-async function openRepository(root: string): Promise<GitRepository> {
-  const repository = await GitRepository.open(root, undefined, new AbortController().signal);
+async function openRepository(
+  root: string,
+  runner?: ProcessRunner,
+): Promise<GitRepository> {
+  const repository = await GitRepository.open(root, runner, new AbortController().signal);
   if (!repository) throw new Error("expected a Git repository");
   return repository;
 }
@@ -835,4 +872,486 @@ test("inspects a repository containing an untracked nested repository", async ()
   const preview = await repository.preview("nested", signal);
   expect(preview.kind).toBe("error");
   expect(preview.error).toMatch(/not a regular file/);
+});
+
+async function withBareRemote(): Promise<{ root: string; remote: string }> {
+  const root = await initializeRepository();
+  const remote = await temporaryDirectory();
+  await git(remote, "init", "--bare", "--quiet");
+  // A bare repository defaults its HEAD to `master`, which leaves a clone of it
+  // without a checkout once the only branch is `main`.
+  await git(remote, "symbolic-ref", "HEAD", "refs/heads/main");
+  await git(root, "remote", "add", "origin", remote);
+  return { root, remote };
+}
+
+test("commits only the selected paths and leaves the rest staged out", async () => {
+  const root = await initializeRepository();
+  await writeFile(join(root, "tracked.ts"), "changed\n");
+  await writeFile(join(root, "src", "space name.ts"), "changed too\n");
+  await writeFile(join(root, "unselected.ts"), "not selected\n");
+  const repository = await openRepository(root);
+
+  const result = await repository.commit({
+    message: "feat: pick two files",
+    paths: ["tracked.ts", "src/space name.ts"],
+    signal: new AbortController().signal,
+  });
+
+  expect(result.dryRun).toBe(false);
+  expect(result.files).toBe(2);
+  expect((await git(root, "rev-list", "--count", "HEAD")).trim()).toBe("2");
+  const committed = await git(root, "show", "--pretty=", "--name-only", "HEAD");
+  expect(committed.split("\n").filter(line => line.length > 0).sort()).toEqual([
+    "src/space name.ts",
+    "tracked.ts",
+  ]);
+  const status = await git(root, "status", "--porcelain=v1");
+  expect(status).toContain("unselected.ts");
+});
+test("treats pathspec metacharacters as literal selected paths", async () => {
+  const root = await initializeRepository();
+  await writeFile(join(root, "[ab].ts"), "selected\n");
+  await writeFile(join(root, "a.ts"), "unselected\n");
+  await writeFile(join(root, "a..b.ts"), "also selected\n");
+  const repository = await openRepository(root);
+
+  await repository.commit({
+    message: "feat: literal path",
+    paths: ["[ab].ts", "a..b.ts"],
+    signal: new AbortController().signal,
+  });
+
+  expect(await git(root, "show", "--pretty=", "--name-only", "HEAD")).toContain("[ab].ts");
+  expect(await git(root, "show", "--pretty=", "--name-only", "HEAD")).not.toContain("a.ts");
+  expect(await git(root, "status", "--porcelain=v1")).toContain("a.ts");
+});
+
+
+test("refuses a commit with no selected paths", async () => {
+  const root = await initializeRepository();
+  await writeFile(join(root, "tracked.ts"), "changed\n");
+  const repository = await openRepository(root);
+
+  await expect(
+    repository.commit({ message: "feat: nothing", paths: [], signal: new AbortController().signal }),
+  ).rejects.toThrow(/at least one file/);
+});
+
+test("refuses a commit whose selection left no recordable change", async () => {
+  const root = await initializeRepository();
+  const repository = await openRepository(root);
+
+  await expect(
+    repository.commit({
+      message: "feat: clean tree",
+      paths: ["tracked.ts"],
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow(/None of the selected files/);
+});
+
+test("refuses a selection that tries to escape the repository", async () => {
+  const root = await initializeRepository();
+  await writeFile(join(root, "tracked.ts"), "changed\n");
+  const repository = await openRepository(root);
+
+  await expect(
+    repository.commit({
+      message: "feat: escape",
+      paths: ["../outside.ts"],
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow(/unsafe path/);
+  await expect(
+    repository.commit({
+      message: "  ",
+      paths: ["tracked.ts"],
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow(TypeError);
+});
+
+test("a dry run stages the selection and reports without committing", async () => {
+  const root = await initializeRepository();
+  await writeFile(join(root, "tracked.ts"), "changed\n");
+  const repository = await openRepository(root);
+
+  const result = await repository.commit({
+    message: "feat: dry run",
+    paths: ["tracked.ts"],
+    dryRun: true,
+    signal: new AbortController().signal,
+  });
+
+  expect(result.dryRun).toBe(true);
+  expect(result.output).toContain("tracked.ts");
+  expect((await git(root, "rev-list", "--count", "HEAD")).trim()).toBe("1");
+  // Staging happened, so the confirmation reports what would really be committed.
+  expect(await git(root, "diff", "--cached", "--name-only")).toContain("tracked.ts");
+});
+
+test("records a rename instead of a delete plus an add", async () => {
+  const root = await initializeRepository();
+  await git(root, "mv", "src/space name.ts", "src/renamed.ts");
+  const repository = await openRepository(root);
+
+  await repository.commit({
+    message: "refactor: rename",
+    paths: ["src/renamed.ts"],
+    signal: new AbortController().signal,
+  });
+
+  const names = await git(root, "show", "--pretty=", "--name-status", "HEAD");
+  expect(names).toMatch(/^R\d*\s+src\/space name\.ts\s+src\/renamed\.ts$/mu);
+});
+
+test("stages a tracked deletion the panel selected", async () => {
+  const root = await initializeRepository();
+  await rm(join(root, "deleted.ts"));
+  const repository = await openRepository(root);
+
+  await repository.commit({
+    message: "chore: drop",
+    paths: ["deleted.ts"],
+    signal: new AbortController().signal,
+  });
+
+  expect(await git(root, "show", "--pretty=", "--name-status", "HEAD")).toMatch(/^D\s+deleted\.ts$/m);
+});
+
+test("reports whether the index still matches HEAD", async () => {
+  const root = await initializeRepository();
+  const repository = await openRepository(root);
+  const signal = new AbortController().signal;
+
+  expect(await repository.indexMatchesHead(signal)).toBe(true);
+  await writeFile(join(root, "tracked.ts"), "changed\n");
+  await git(root, "add", "tracked.ts");
+  expect(await repository.indexMatchesHead(signal)).toBe(false);
+  await git(root, "commit", "--quiet", "-m", "staged");
+  expect(await repository.indexMatchesHead(signal)).toBe(true);
+});
+
+test("returns HEAD and index fingerprints for session baseline cache validation", async () => {
+  const root = await initializeRepository();
+  const repository = await openRepository(root);
+  const signal = new AbortController().signal;
+
+  const fingerprint = await repository.cacheFingerprint(signal);
+
+  expect(fingerprint.headOid).toBe((await git(root, "rev-parse", "HEAD")).trim());
+  expect(fingerprint.indexFingerprint).toBe((await git(root, "write-tree")).trim());
+});
+
+test("reads the HEAD subject and body so an amend can replay the body", async () => {
+  const root = await initializeRepository();
+  const repository = await openRepository(root);
+
+  await git(root, "commit", "--quiet", "--allow-empty", "-m", "feat: subject line", "-m", "body line one\nbody line two");
+  const message = await repository.headMessage(new AbortController().signal);
+
+  expect(message?.subject).toBe("feat: subject line");
+  expect(message?.body).toBe("body line one\nbody line two");
+  expect(message?.pushed).toBe(false);
+});
+
+test("has no HEAD message on an unborn branch or a detached HEAD", async () => {
+  const unborn = await openRepository(await initializeRepository(false));
+  expect(await unborn.headMessage(new AbortController().signal)).toBeUndefined();
+
+  const root = await initializeRepository();
+  const oid = (await git(root, "rev-parse", "HEAD")).trim();
+  await git(root, "checkout", "--quiet", oid);
+  const detached = await openRepository(root);
+  expect(await detached.headMessage(new AbortController().signal)).toBeUndefined();
+});
+
+test("amend replaces only the subject and preserves the raw body", async () => {
+  const root = await initializeRepository();
+  await git(
+    root,
+    "commit",
+    "--quiet",
+    "--allow-empty",
+    "-m",
+    "feat: old title",
+    "-m",
+    "first paragraph with trailing spaces  \n\n# body comment\nlast paragraph",
+  );
+  const repository = await openRepository(root);
+  const signal = new AbortController().signal;
+  const before = (await git(root, "log", "-1", "--format=%B")).replace(/\n$/u, "");
+
+  const result = await repository.amend({
+    subject: "feat: new title",
+    signal,
+  });
+
+  expect(result.subject).toBe("feat: new title");
+  expect((await git(root, "log", "-1", "--format=%B")).replace(/\n$/u, "")).toBe(
+    before.replace(/^feat: old title/u, "feat: new title"),
+  );
+  expect((await git(root, "log", "-1", "--format=%s")).trim()).toBe("feat: new title");
+  expect((await git(root, "log", "-1", "--format=%H")).trim()).toBe(result.oid);
+});
+
+test("amend refuses while staged changes would be folded in, and changes nothing", async () => {
+  const root = await initializeRepository();
+  await git(root, "commit", "--quiet", "--allow-empty", "-m", "feat: title");
+  await writeFile(join(root, "tracked.ts"), "staged work\n");
+  await git(root, "add", "tracked.ts");
+  const repository = await openRepository(root);
+  const headBefore = await git(root, "rev-parse", "HEAD");
+
+  await expect(
+    repository.amend({ subject: "feat: renamed", signal: new AbortController().signal }),
+  ).rejects.toThrow(/Staged changes/);
+
+  expect((await git(root, "rev-parse", "HEAD")).trim()).toBe(headBefore.trim());
+  expect(await git(root, "log", "-1", "--format=%s")).toBe("feat: title\n");
+});
+
+test("amend refuses an unborn branch and a detached HEAD", async () => {
+  const unborn = await openRepository(await initializeRepository(false));
+  await expect(
+    unborn.amend({ subject: "feat: nothing to amend", signal: new AbortController().signal }),
+  ).rejects.toThrow(/unborn HEAD/);
+
+  const root = await initializeRepository();
+  const oid = (await git(root, "rev-parse", "HEAD")).trim();
+  await git(root, "checkout", "--quiet", oid);
+  const detached = await openRepository(root);
+  await expect(
+    detached.amend({ subject: "feat: orphan", signal: new AbortController().signal }),
+  ).rejects.toThrow(/detached HEAD/);
+});
+
+test("reports no upstream until the branch tracks one", async () => {
+  const root = await initializeRepository();
+  const repository = await openRepository(root);
+  const signal = new AbortController().signal;
+
+  expect(await repository.upstream(signal)).toBeUndefined();
+  await expect(repository.pushPlan({ signal })).rejects.toThrow(/tracks no upstream/);
+});
+
+test("plans a push with the commits the remote does not have", async () => {
+  const { root } = await withBareRemote();
+  await git(root, "push", "--quiet", "-u", "origin", "main");
+  await writeFile(join(root, "tracked.ts"), "second\n");
+  await git(root, "commit", "--quiet", "-a", "-m", "feat: local only");
+  const repository = await openRepository(root);
+
+  const plan = await repository.pushPlan({ signal: new AbortController().signal });
+
+  expect(plan.branch).toBe("main");
+  expect(plan.upstream).toBe("origin/main");
+  expect(plan.ahead).toBe(1);
+  expect(plan.behind).toBe(0);
+  expect(plan.truncated).toBe(false);
+  expect(plan.commits).toHaveLength(1);
+  expect(plan.commits[0]?.subject).toBe("feat: local only");
+});
+
+test("counts a remote that moved ahead as behind", async () => {
+  const { root, remote } = await withBareRemote();
+  await git(root, "push", "--quiet", "-u", "origin", "main");
+
+  const other = await temporaryDirectory();
+  await git(other, "clone", "--quiet", remote, "clone");
+  await git(join(other, "clone"), "config", "user.name", "Other");
+  await git(join(other, "clone"), "config", "user.email", "other@example.invalid");
+  await git(join(other, "clone"), "commit", "--quiet", "--allow-empty", "-m", "feat: remote work");
+  await git(join(other, "clone"), "push", "--quiet", "origin", "main");
+  await git(root, "fetch", "--quiet", "origin");
+  const repository = await openRepository(root);
+  const plan = await repository.pushPlan({ signal: new AbortController().signal });
+
+  expect(plan.behind).toBe(1);
+  expect(plan.ahead).toBe(0);
+});
+
+test("pushes the branch to its remote and then reports nothing pending", async () => {
+  const { root } = await withBareRemote();
+  await git(root, "push", "--quiet", "-u", "origin", "main");
+  await git(root, "commit", "--quiet", "--allow-empty", "-m", "feat: to push");
+  const runner = new CapturingRunner();
+  const repository = await openRepository(root, runner);
+  const signal = new AbortController().signal;
+
+  const result = await repository.push({ branch: "main", upstream: "origin/main", signal });
+
+  expect(result.branch).toBe("main");
+  expect(result.upstream).toBe("origin/main");
+  expect(await repository.pushPlan({ signal }).then(plan => plan.ahead)).toBe(0);
+  const pushCall = runner.calls.find(call => call.args[0] === "push");
+  expect(pushCall?.options?.env).toEqual({
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "",
+    SSH_ASKPASS: "",
+  });
+});
+test("pushes to the exact configured upstream branch name", async () => {
+  const { root, remote } = await withBareRemote();
+  await git(root, "push", "--quiet", "-u", "origin", "main:release");
+  await git(root, "checkout", "--quiet", "-b", "aaa");
+  await git(root, "push", "--quiet", "-u", "origin", "aaa:other");
+  await git(root, "checkout", "--quiet", "main");
+  await git(root, "commit", "--quiet", "--allow-empty", "-m", "feat: to release");
+  const repository = await openRepository(root);
+  const signal = new AbortController().signal;
+
+  const plan = await repository.pushPlan({ signal });
+  expect(plan.upstream).toBe("origin/release");
+  const upstream = plan.upstream;
+  if (upstream === undefined) throw new Error("Expected a configured upstream push plan");
+  await repository.push({ branch: "main", upstream, signal });
+
+  expect((await git(remote, "rev-parse", "refs/heads/release")).trim()).toBe(
+    (await git(root, "rev-parse", "HEAD")).trim(),
+  );
+  await expect(git(remote, "rev-parse", "refs/heads/main")).rejects.toThrow();
+  await git(root, "config", "branch.main.merge", "refs/heads/other");
+  await expect(
+    repository.push({ branch: "main", upstream, signal }),
+  ).rejects.toThrow(/upstream changed/);
+});
+test("refuses an interactive custom SSH transport without overriding it", async () => {
+  const root = await initializeRepository();
+  await git(root, "remote", "add", "origin", "ssh://git@example.invalid/repo.git");
+  await git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+  await git(root, "branch", "--set-upstream-to=origin/main", "main");
+  await git(root, "config", "core.sshCommand", "ssh -oBatchMode=no");
+  const repository = await openRepository(root);
+
+  await expect(
+    repository.push({
+      branch: "main",
+      upstream: "origin/main",
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow(/custom SSH transports are not overridden/);
+});
+test("refuses a remote with multiple push URLs", async () => {
+  const root = await initializeRepository();
+  const first = await temporaryDirectory();
+  const second = await temporaryDirectory();
+  await git(first, "init", "--bare", "--quiet");
+  await git(second, "init", "--bare", "--quiet");
+  await git(root, "remote", "add", "origin", first);
+  await git(root, "config", "--add", "remote.origin.pushurl", first);
+  await git(root, "config", "--add", "remote.origin.pushurl", second);
+  await git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+  await git(root, "branch", "--set-upstream-to=origin/main", "main");
+  const repository = await openRepository(root);
+
+  await expect(
+    repository.push({
+      branch: "main",
+      upstream: "origin/main",
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow(/multiple push URLs/);
+
+  await expect(git(first, "rev-parse", "refs/heads/main")).rejects.toThrow();
+  await expect(git(second, "rev-parse", "refs/heads/main")).rejects.toThrow();
+});
+
+
+test("a non-fast-forward push is rejected and never forced", async () => {
+  const { root, remote } = await withBareRemote();
+  await git(root, "commit", "--quiet", "--allow-empty", "-m", "feat: second");
+  await git(root, "push", "--quiet", "-u", "origin", "main");
+  await git(root, "reset", "--quiet", "--hard", "HEAD~1");
+  await git(root, "commit", "--quiet", "--allow-empty", "-m", "feat: rewritten history");
+  const repository = await openRepository(root);
+  const headBefore = (await git(root, "rev-parse", "HEAD")).trim();
+  const remoteBefore = (await git(remote, "rev-parse", "main")).trim();
+
+  await expect(
+    repository.push({ branch: "main", upstream: "origin/main", signal: new AbortController().signal }),
+  ).rejects.toThrow(/failed with exit code/);
+
+  expect((await git(root, "rev-parse", "HEAD")).trim()).toBe(headBefore);
+  expect((await git(remote, "rev-parse", "main")).trim()).toBe(remoteBefore);
+});
+
+test("push refuses a detached HEAD and a branch that is not checked out", async () => {
+  const root = await initializeRepository();
+  const oid = (await git(root, "rev-parse", "HEAD")).trim();
+  await git(root, "checkout", "--quiet", oid);
+  const detached = await openRepository(root);
+
+  await expect(
+    detached.push({ branch: "main", upstream: "origin/main", signal: new AbortController().signal }),
+  ).rejects.toThrow(/detached HEAD/);
+
+  await git(root, "checkout", "--quiet", "-b", "other");
+  const onOther = await openRepository(root);
+  await expect(
+    onOther.push({ branch: "main", upstream: "origin/main", signal: new AbortController().signal }),
+  ).rejects.toThrow(/not "main"/);
+});
+
+test("cancelling a write operation aborts instead of reporting success", async () => {
+  const root = await initializeRepository();
+  await writeFile(join(root, "tracked.ts"), "changed\n");
+  const repository = await openRepository(root);
+  const controller = new AbortController();
+  controller.abort();
+
+  await expect(
+    repository.commit({
+      message: "feat: cancelled",
+      paths: ["tracked.ts"],
+      signal: controller.signal,
+    }),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect((await git(root, "rev-list", "--count", "HEAD")).trim()).toBe("1");
+});
+test("redacts credential URLs from push failures", async () => {
+  const root = resolve("credential-redaction-repository");
+  const oid = "0123456789abcdef0123456789abcdef01234567";
+  const runner = new ScriptedRunner(args => {
+    const command = args.join("\0");
+    if (command === "rev-parse\0--show-toplevel") return commandOutput(`${root}\n`);
+    if (command === "rev-parse\0--verify\0HEAD") return commandOutput(`${oid}\n`);
+    if (command === "symbolic-ref\0-q\0HEAD") return commandOutput("refs/heads/main\n");
+    if (command === "rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}") {
+      return commandOutput("origin/main\n");
+    }
+    if (command === "for-each-ref\0--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)\0refs/heads/main") {
+      return commandOutput("refs/heads/main\0origin\0refs/heads/main\n");
+    }
+    if (command === "check-ref-format\0refs/heads/main") return commandOutput();
+    if (command === "remote\0get-url\0--push\0--all\0origin") {
+      return commandOutput("https://alice:secret@example.invalid/repo.git\n");
+    }
+    if (command === "config\0--get\0core.sshCommand") return commandOutput("", "", 1);
+    if (args[0] === "push") {
+      return commandOutput(
+        "",
+        "fatal: Authentication failed for 'https://alice:secret@example.invalid/repo.git'",
+        1,
+      );
+    }
+    throw new Error(`unexpected Git command: ${command}`);
+  });
+  const repository = await GitRepository.open(root, runner, new AbortController().signal);
+  if (!repository) throw new Error("expected a scripted repository");
+
+  const failure = await repository.push({
+    branch: "main",
+    upstream: "origin/main",
+    signal: new AbortController().signal,
+  }).then(
+    () => undefined,
+    error => error,
+  );
+
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as Error).message).not.toContain("alice");
+  expect((failure as Error).message).not.toContain("secret");
+  expect((failure as Error).message).toContain("[redacted]");
 });
