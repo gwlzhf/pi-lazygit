@@ -15,14 +15,14 @@ The extension targets the OMP 18.3.1 interactive TUI in Windows PowerShell and W
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.7.0
+omp plugin install github:gwlzhf/pi-lazygit#v0.7.1
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.7.0
+omp plugin install github:gwlzhf/pi-lazygit#v0.7.1
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
@@ -139,7 +139,7 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 
 ## Commit, amend, and push
 
-In the flat change list, `space` toggles a file or whole section, `x` inverts the current file's selection, and `A` toggles all visible changes. Selection defaults to all committable workspace changes, is held only in memory, and is never persisted across sessions. A selection in session scope cannot be committed: session scope attributes changes since the OMP session baseline, while Git path-limited commits cannot isolate only those later edits.
+In the flat change list, `space` toggles a file or whole section, `x` inverts the current file's selection, and `A` toggles all visible changes. Committable tracked changes (`Modified files`) default to selected; untracked changes (`No version files`) default to unselected and can be selected manually. Refresh preserves manual choices; scope changes and post-commit resets apply these defaults again. Selection is held only in memory and is never persisted across sessions. A selection in session scope cannot be committed: session scope attributes changes since the OMP session baseline, while Git path-limited commits cannot isolate only those later edits.
 
 `Enter` in the workspace change list starts commit: message → dry-run → `y` confirm. Git stages selected paths in batches of 200; the final path-limited commit still passes the complete selected path list, so an exceptionally large selection can exceed the platform's command-line limit. Dry-run stages those selected paths before showing its report; cancelling confirmation leaves them staged. `Ctrl+N` toggles `--no-verify` for commit/amend.
 

@@ -6,23 +6,19 @@ export class CommitSelection {
   readonly #selected = new Set<string>();
   readonly #known = new Set<string>();
   readonly #uncommittable = new Set<string>();
-  #initialized = false;
 
-  /** Initialize available paths, selecting all on the first active change set. */
+  /** Initialize paths; only committable tracked changes default to selected. */
   initialize(records: Iterable<ChangeRecord>): void {
     const next = new Map<string, boolean>();
-    for (const record of records) next.set(record.path, isCommittable(record));
-    if (!this.#initialized) {
-      this.#selected.clear();
-      for (const [path, committable] of next) {
-        if (committable) this.#selected.add(path);
+    for (const record of records) {
+      const committable = isCommittable(record);
+      next.set(record.path, committable);
+      if (committable && record.status !== "?" && !this.#known.has(record.path)) {
+        this.#selected.add(record.path);
       }
-      this.#initialized = true;
-    } else {
-      for (const [path, committable] of next) {
-        if (committable && !this.#known.has(path)) this.#selected.add(path);
-        if (!committable) this.#selected.delete(path);
-      }
+    }
+    for (const [path, committable] of next) {
+      if (!committable) this.#selected.delete(path);
     }
     this.#known.clear();
     this.#uncommittable.clear();
@@ -74,12 +70,11 @@ export class CommitSelection {
     }
   }
 
-  /** Reset selection after a commit, selecting all remaining committable paths. */
+  /** Reset selection after a commit, selecting remaining committable tracked paths. */
   reset(records: Iterable<ChangeRecord>): void {
     this.#selected.clear();
     this.#known.clear();
     this.#uncommittable.clear();
-    this.#initialized = false;
     this.initialize(records);
   }
 

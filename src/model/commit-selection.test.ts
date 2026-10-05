@@ -6,13 +6,19 @@ function change(path: string, status: StatusCode = "M"): ChangeRecord {
   return { path, index: " ", worktree: status, status };
 }
 
-test("initial selection defaults to every committable active path", () => {
+test("initial selection defaults to tracked changes and permits opting in untracked files", () => {
   const selection = new CommitSelection();
-  selection.initialize([change("a"), change("conflict", "U")]);
+  selection.initialize([change("a"), change("temporary", "?"), change("conflict", "U")]);
 
   expect(selection.selectedPaths()).toEqual(new Set(["a"]));
   expect(selection.toggle("conflict")).toBe(false);
   expect(selection.has("conflict")).toBe(false);
+  expect(selection.has("temporary")).toBe(false);
+  expect(selection.toggle("temporary")).toBe(true);
+  selection.initialize([change("a"), change("temporary", "?"), change("new-temp", "?")]);
+  expect(selection.selectedPaths()).toEqual(new Set(["a", "temporary"]));
+  selection.reset([change("a"), change("temporary", "?")]);
+  expect(selection.selectedPaths()).toEqual(new Set(["a"]));
 });
 
 test("toggle and invert update one path without changing other selection", () => {

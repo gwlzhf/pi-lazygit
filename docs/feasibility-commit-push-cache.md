@@ -24,7 +24,7 @@
 | # | 决策 | 影响 |
 | --- | --- | --- |
 | D1 | **push 要做，并且必须有二次确认** | 阶段 3 由「可选项」升为必做项；2.2 的超时、凭证环境、upstream 校验全部变成硬需求；2.3 重写为二级确认设计 |
-| D2 | **勾选默认全勾** | 1.3 的初始化策略定稿；但因此「enter 即提交」一步到位，确认框与 dry-run 是**必须项而非可选项** |
+| D2 | **已跟踪改动默认勾选，未跟踪文件默认不勾选（0.7.1 修订）** | Modified files 默认勾选；No version files 可手动选择；确认框与 dry-run 仍为必须项。 |
 | D3 | **amend 只改 HEAD 提交标题**，不改历史任意提交 | 新增 1.6 节。避免了 `rebase`/`filter-repo` 级别的历史重写，风险从「不可逆」降到「重写最后一个 commit」 |
 | D4 | **amend 不动勾选框** | 勾选集合只服务 `commit`。amend 走独立的消息输入框，两者互不干扰 |
 | D5 | **永不 force**（含 `force-with-lease`） | 由此产生 D1 的直接后果：amend 一个**已推送**的 commit 后无法 push，见 1.6.4 |
@@ -75,8 +75,8 @@
 
 生命周期必须明确，否则勾选状态会「粘」在已经提交掉的文件上：
 
-- 初始化：首次拿到 `ProjectSnapshot` 时，若 `#commitSelectionInitialized === false`，把**当前活动改动集**（`#activeChanges()`，即 `s` 键切出来的那个 scope —— `workspaceChanges` 或 `sessionChanges`，见 `src/ui/files-panel.ts:1270-1274`）的全部 key 填进去（**默认全勾**，符合「不改默认行为」的直觉），置位 `initialized`。注意不能写死 `workspaceChanges`，否则 session scope 下集合会一直是空的。
-- 清理：`ProjectReviewSource.refresh()` 返回后做一次交集剪枝，剔除已不在改动集里的 path。真正的重置发生在 commit 成功回调里：把剩余未提交文件重新全勾。
+- 初始化：当前活动改动集中的可提交已跟踪文件默认勾选；未跟踪文件默认不勾选，可手动选择。刷新保留已有手动选择，新出现的文件遵循同一默认规则。
+- 清理：刷新后交集剪枝，剔除已不在改动集里的 path。切换 scope 和 commit 成功后重置：剩余已跟踪可提交文件勾选，未跟踪文件不勾选。
 - 不持久化：勾选态属于「这一次提交」的意图，跨会话保留会造成幽灵勾选。若要持久化，必须连 `headIdentity` 一起存 key（可复用 `src/model/baseline.ts:45` `baselineKey` 的 `root\0headIdentity` 形态），否则 commit 后 key 失配会全量失效。
 
 **渲染插入点** —— `src/ui/files-panel.ts:1759`：
@@ -478,7 +478,7 @@ git log --format=%h%x00%s <upstream>..HEAD              # 将要推送的提交�
 | 决策 | 最终实现 | 与设计稿的偏差 |
 | --- | --- | --- |
 | D1：push 二次确认 | `P` 展示 push plan；`y` 进入第二阶段。普通分支按 `w`，受保护分支必须键入完整分支名并按 `Enter`。落后于 upstream 时阻断；执行前拒绝已过期计划并绑定计划中的准确 upstream/branch。 | 阶段二键位是 `w`（不是设计稿的两阶段都按 `y`）；额外对 stale plan、多 push URL 及 tag/传输惊讶失败关闭。 |
-| D2：默认全勾 | workspace change list 初始化为所有可提交变更；`space`/`x`/`A` 操作选择。 | 选择不持久化；session scope 禁止提交，因为无法按路径隔离会话后变更。 |
+| D2：已跟踪默认勾选 | workspace change list 的 Modified files 可提交文件默认勾选，No version files 默认不勾选；`space`/`x`/`A` 可手动选择。 | 刷新保留手动选择；切换 scope 与提交后重新应用默认值；选择不持久化，session scope 禁止提交。 |
 | D3：仅改 HEAD 标题 | History 中 `u` 编辑 HEAD subject；原 body 原样保留。dirty index、unborn/detached HEAD 阻断。 | amend 的 `--no-verify` 可用 `Ctrl+N` 切换；不支持修改更早提交。 |
 | D4：amend 与勾选独立 | amend 不读取或更改 commit selection。 | 无。 |
 | D5：永不 force | push 参数不含 force；已推送的 amend 不自动改写远端历史。 | 无。 |
