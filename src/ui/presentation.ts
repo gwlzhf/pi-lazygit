@@ -62,6 +62,7 @@ function actionsFor(input: PanelPresentationInput): readonly PanelAction[] {
     return [
       { key: "n", label: "next" },
       { key: "p", label: "previous" },
+      ...(input.sourceKind === "git" ? [{ key: "P", label: "push current branch" }] : []),
       { key: "enter", label: "switch" },
       { key: "b", label: "files" },
       { key: "?", label: "all" },
@@ -74,7 +75,7 @@ function actionsFor(input: PanelPresentationInput): readonly PanelAction[] {
       { key: "p", label: "previous" },
       { key: "enter", label: "open" },
       { key: "u", label: "amend HEAD message" },
-      ...(input.sourceKind === "git" ? [{ key: "P", label: "push" }] : []),
+      ...(input.sourceKind === "git" ? [{ key: "P", label: "push current branch" }] : []),
       { key: "g", label: "files" },
       { key: "b", label: "branches" },
       { key: "?", label: "all" },
@@ -99,7 +100,7 @@ function actionsFor(input: PanelPresentationInput): readonly PanelAction[] {
     );
   }
   if (input.sourceKind === "git") {
-    actions.push({ key: "P", label: "push" }, { key: "b", label: "branches" }, { key: "g", label: "history" });
+    actions.push({ key: "P", label: "push current branch" }, { key: "b", label: "branches" }, { key: "g", label: "history" });
   }
   actions.push({ key: "?", label: "all" });
   return actions;
@@ -144,7 +145,7 @@ export const PANEL_HELP_GROUPS: readonly {
       { key: "A", label: "toggle all selection" },
       { key: "Enter", label: "commit: message → dry-run → y confirm" },
       { key: "Ctrl+N", label: "toggle --no-verify for commit/amend" },
-      { key: "P", label: "review push plan" },
+      { key: "P", label: "review current branch push plan" },
       { key: "y", label: "continue to distinct push write confirmation" },
       { key: "w", label: "confirm unprotected remote write" },
       { key: "branch name + Enter", label: "confirm protected remote write" },

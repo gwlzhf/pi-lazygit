@@ -795,6 +795,10 @@ export class FilesPanel implements Component {
       return true;
     }
     if (event.leftClick) {
+      if (this.#isPushFooterClick(event)) {
+        this.#beginPushPlan();
+        return true;
+      }
       this.#dividerDrag = wide && event.col === treeWidth + 1;
       this.#clearSelection();
       if (this.#dividerDrag) return true;
@@ -829,6 +833,22 @@ export class FilesPanel implements Component {
     return true;
   }
 
+  /** The visible current-branch push footer hint is also a mouse target. */
+  #isPushFooterClick(event: SgrMouseEvent): boolean {
+    if (
+      event.row !== this.#panelRows - 1
+      || this.#snapshot?.kind !== "git"
+      || this.#commitDialog !== undefined
+      || this.#amendDialog !== undefined
+      || this.#pushStage !== undefined
+      || this.#helpOpen
+    ) return false;
+    const action = "P push current branch";
+    const start = this.#footer().indexOf(action);
+    if (start < 0) return false;
+    const column = event.col - 3;
+    return column >= start && column < start + action.length && event.col < this.#lastWidth - 1;
+  }
   /**
    * Translate a mouse report into preview-pane coordinates, or `undefined` when
    * the pointer is outside the preview content area.
@@ -2524,9 +2544,6 @@ export class FilesPanel implements Component {
   }
 
   #footer(): string {
-    if (this.#commitError !== undefined) return `commit error: ${this.#commitError}`;
-    if (this.#amendError !== undefined) return `amend: ${this.#amendError}`;
-    if (this.#pushError !== undefined) return `push error: ${this.#pushError}`;
     const project = this.#snapshot;
     const pieces: string[] = [];
     if (this.#leftMode === "log" && this.#commitDiff?.truncated) pieces.push("commit preview truncated");
@@ -2571,14 +2588,18 @@ export class FilesPanel implements Component {
       else if (this.#branchLoading) pieces.push("loading branches");
       else if (this.#branchError !== undefined) pieces.push(`error: ${this.#branchError}`);
     }
-    if (this.#commitError !== undefined) pieces.push(`commit error: ${this.#commitError}`);
-    if (this.#amendError !== undefined) pieces.push(`amend: ${this.#amendError}`);
-    if (this.#pushError !== undefined) pieces.push(`push error: ${this.#pushError}`);
+    const notices: string[] = [];
+    if (this.#commitError !== undefined) notices.push(`commit error: ${this.#commitError}`);
+    if (this.#amendError !== undefined) notices.push(`amend: ${this.#amendError}`);
+    if (this.#pushError !== undefined) notices.push(`push error: ${this.#pushError}`);
     if (this.#usesChangeList()) pieces.push(`${this.#commitSelection.size} selected`);
     if (this.#usesChangeList() && this.#scope !== "workspace") pieces.push("commit disabled: switch to workspace scope");
 
-    if (this.#copyNotice !== undefined) pieces.push(this.#copyNotice);
+    if (this.#copyNotice !== undefined) notices.push(this.#copyNotice);
 
+    // Keep the current-branch push action at the start so it remains visible at
+    // ordinary terminal widths, regardless of view or accumulated status text.
+    const pushAction = project?.kind === "git" ? "P push current branch" : undefined;
     // `[` / `]` only move a divider that the side-by-side layout draws, so the
     // hint is omitted when the panel is showing a single pane.
     const width = this.#isWideLayout(this.#lastWidth) ? "[ ] width" : undefined;
@@ -2592,7 +2613,8 @@ export class FilesPanel implements Component {
           ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "\\ tree", "←/h/tab/esc tree", "drag copy", width]
           : project?.kind === "filesystem"
             ? ["F5/r refresh", "n/p move", "→/l preview", "↵ open", "tab", "\\ tree", width, "esc"]
-            : ["F5/r refresh", "n/p move", "→/l preview", this.#usesChangeList() && this.#scope === "workspace" ? "↵ commit" : "↵ open", ...(this.#usesChangeList() ? ["space toggle", "x invert", "A select all"] : []), "P push", "tab", "\\ tree", "g log", "b branches", width, "v list", "m/a", "s", "esc"];
+            : ["F5/r refresh", "n/p move", "→/l preview", this.#usesChangeList() && this.#scope === "workspace" ? "↵ commit" : "↵ open", ...(this.#usesChangeList() ? ["space toggle", "x invert", "A select all"] : []), "tab", "\\ tree", "g log", "b branches", width, "v list", "m/a", "s", "esc"];
+    pieces.unshift(...(pushAction === undefined ? [] : [pushAction]), ...notices);
     pieces.push("i /btw history", hints.filter(hint => hint !== undefined).join(" · "));
     return pieces.join(" · ");
   }

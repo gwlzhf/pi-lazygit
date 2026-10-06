@@ -61,6 +61,9 @@ const HISTORY_LIMIT = 200;
 
 const SMALL_GIT_OUTPUT = 64 * 1024;
 const HASH_BUFFER_BYTES = 64 * 1024;
+// Read commands must not refresh index stat data and feed the watcher. Explicit
+// Git writes still acquire their required locks when optional locks are disabled.
+const REVIEW_GIT_OPTIONS: RunOptions = { env: { GIT_OPTIONAL_LOCKS: "0" } };
 
 export interface RepositoryInspection {
   readonly root: string;
@@ -437,9 +440,12 @@ export class GitRepository {
     args: readonly string[],
     signal: AbortSignal,
     maxBytes?: number,
-    options?: RunOptions,
+    options: RunOptions = REVIEW_GIT_OPTIONS,
   ): Promise<CommandOutput> {
-    return this.runner.run(this.root(), "git", args, signal, maxBytes, options);
+    // diff.autoRefreshIndex writes stat-only updates even with optional locks
+    // disabled; query results are unchanged when that side effect is disabled.
+    const argv = args[0] === "diff" ? ["-c", "diff.autoRefreshIndex=false", ...args] : args;
+    return this.runner.run(this.root(), "git", argv, signal, maxBytes, options);
   }
 
   private async readStatus(signal: AbortSignal): Promise<Map<string, ChangeRecord>> {
@@ -876,13 +882,13 @@ export class GitRepository {
   ): Promise<{ readonly headOid?: string; readonly indexFingerprint: string }> {
     throwIfAborted(signal);
     const head = await this.detectHeadIdentity(signal);
-    const args = ["write-tree"] as const;
-    const output = await this.run(args, signal, SMALL_GIT_OUTPUT);
+    // `write-tree` rewrites the index even with optional locks disabled, which
+    // feeds the repository watcher back into refresh. Hash only staged entries:
+    // mode, object ID, merge stage, and NUL-delimited path, not volatile stat data.
+    const args = ["ls-files", "--stage", "-z"] as const;
+    const output = await this.run(args, signal);
     ensureComplete(args, output);
-    const indexFingerprint = stripGitLineTerminator(
-      decodeGitOutput(output.stdout, "git write-tree output"),
-    );
-    validateCommitOid(indexFingerprint);
+    const indexFingerprint = createHash("sha256").update(output.stdout).digest("hex");
     if (!head.hasHead) return { indexFingerprint };
     const headArgs = ["rev-parse", "--verify", "HEAD"] as const;
     const headOutput = await this.run(headArgs, signal, SMALL_GIT_OUTPUT);

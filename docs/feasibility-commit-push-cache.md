@@ -156,7 +156,6 @@ try { /* ... */ } finally { clearTimeout(timer); }
 1. **index 不干净会把暂存改动卷进 amend**。`git commit --amend` 会用当前 index 重建 commit，所以任何已暂存但未提交的文件都会被悄悄合进新 commit。提交前必须检查：
    ```
    git diff --cached --quiet HEAD     # exit 0 = index 与 HEAD 一树，安全
-   git rev-parse HEAD^{tree}          # 与 git write-tree 出的 tree 比对，等价
    ```
    不安全时**阻断**并提示「有已暂存改动，先处理或改用 commit」，绝不提供「一起卷进去」的选项。
 
@@ -283,7 +282,7 @@ git log --format=%h%x00%s <upstream>..HEAD              # 将要推送的提交�
 
 1. **版本号**。目录名带 `v1`。结构变更时整目录失效，不做字段级迁移。
 2. **仓库身份**。缓存内容必须记 `headIdentity`（`RepositoryInspection.headIdentity`，`src/git/repository.ts:41`；形态是 `branch:<name>` 或 `detached:<oid>`，见 `:388`、`:404`、`:407`）与 `canonicalRoot`（`src/review-source.ts:71-74`，Windows 下会 `toLowerCase()`）。两者任一不匹配 → 整份丢弃。**注意 `branch:<name>` 在同一分支上不会因为 commit 而变化**，所以它单独不够用，见第 3 点。
-3. **内容指纹**。session baseline 缓存额外记 `headOid`（`git rev-parse HEAD`）与 `indexFingerprint`（`git write-tree` 的输出，或 `git diff --cached` 的 hash）。commit 之后 `headOid` 变、stage 之后 `indexFingerprint` 变 → 自动失效。这比用 mtime 可靠（mtime 在 `git checkout` 后可能不变）。
+3. **内容指纹**。session baseline 缓存额外记 `headOid`（`git rev-parse HEAD`）与 `indexFingerprint`（`git ls-files --stage -z` 输出的 SHA-256，覆盖 mode、object ID、merge stage 和 NUL 分隔路径）。commit 后 `headOid` 变化会重建会话基线；stage 后索引指纹变化只失效磁盘 checkpoint，保留内存基线。不能在刷新中用 `git write-tree`：它即使禁用 optional locks 仍会重写 index，导致 watch → refresh → index 写入循环。查询禁用 `GIT_OPTIONAL_LOCKS`，`git diff` 还需用命令级 `-c diff.autoRefreshIndex=false` 禁用 stat-only 索引写入，不改仓库配置。
 4. **mtime + size**（仅用于候选 B 预览缓存）。读取时 `stat` 比对，不一致就重取并回写。**不要**用 mtime 作为 session baseline 的依据 —— `BaselineStore` 的语义就是「会话开始时的内容哈希」，绕过内容哈希去信 mtime 会让漏检变更变成静默的假阴性。
 
 ### 3.5 原子写入与并发

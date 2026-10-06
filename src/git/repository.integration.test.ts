@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULT_DIFF_CONTEXT, FULL_DIFF_CONTEXT, MAX_PREVIEW_BYTES } from "../contracts";
@@ -78,7 +78,9 @@ class ScriptedRunner implements ProcessRunner {
       args: [...args],
       ...(options !== undefined ? { options } : {}),
     });
-    return this.response(args);
+    // Script command output independently of Git's global query configuration.
+    const commandArgs = args[0] === "-c" && args[1] === "diff.autoRefreshIndex=false" ? args.slice(2) : args;
+    return this.response(commandArgs);
   }
 }
 class CapturingRunner implements ProcessRunner {
@@ -1033,15 +1035,52 @@ test("reports whether the index still matches HEAD", async () => {
   expect(await repository.indexMatchesHead(signal)).toBe(true);
 });
 
-test("returns HEAD and index fingerprints for session baseline cache validation", async () => {
+test("cache fingerprints track staged content but ignore unstaged edits and index stat refreshes", async () => {
   const root = await initializeRepository();
   const repository = await openRepository(root);
   const signal = new AbortController().signal;
+  const original = await repository.cacheFingerprint(signal);
+  expect(original.headOid).toBe((await git(root, "rev-parse", "HEAD")).trim());
 
-  const fingerprint = await repository.cacheFingerprint(signal);
+  await writeFile(join(root, "tracked.ts"), "edited\n");
+  await repository.inspect(signal);
+  expect(await repository.cacheFingerprint(signal)).toEqual(original);
 
-  expect(fingerprint.headOid).toBe((await git(root, "rev-parse", "HEAD")).trim());
-  expect(fingerprint.indexFingerprint).toBe((await git(root, "write-tree")).trim());
+  await git(root, "add", "tracked.ts");
+  const staged = await repository.cacheFingerprint(signal);
+  expect(staged.headOid).toBe(original.headOid);
+  expect(staged.indexFingerprint).not.toBe(original.indexFingerprint);
+
+  await git(root, "update-index", "--refresh");
+  expect(await repository.cacheFingerprint(signal)).toEqual(staged);
+});
+
+test("repeated review after commit and amend does not rewrite the watched index", async () => {
+  const root = await initializeRepository();
+  const repository = await openRepository(root);
+  const signal = new AbortController().signal;
+  const indexPath = join(root, ".git", "index");
+
+  for (const amend of [false, true]) {
+    if (amend) {
+      await git(root, "commit", "--quiet", "--amend", "-m", "amended");
+    } else {
+      await writeFile(join(root, "tracked.ts"), "committed\n");
+      await git(root, "add", "tracked.ts");
+      await git(root, "commit", "--quiet", "-m", "committed");
+    }
+    const before = await readFile(indexPath);
+    const modifiedAt = (await stat(indexPath)).mtimeMs;
+    // Same content with new file stat data: status must not refresh the index.
+    const changedTime = new Date(amend ? "2002-01-01T00:00:00Z" : "2001-01-01T00:00:00Z");
+    await utimes(join(root, "tracked.ts"), changedTime, changedTime);
+    for (let iteration = 0; iteration < 3; iteration += 1) {
+      expect((await repository.inspect(signal)).changes.size).toBe(0);
+      await repository.cacheFingerprint(signal);
+      expect(await readFile(indexPath)).toEqual(before);
+      expect((await stat(indexPath)).mtimeMs).toBe(modifiedAt);
+    }
+  }
 });
 
 test("reads the HEAD subject and body so an amend can replay the body", async () => {

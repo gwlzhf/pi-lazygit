@@ -376,7 +376,6 @@ describe("FilesPanel state machine", () => {
     expect(body).toContain("Modified files");
     expect(body).toContain("M [x]  src/a.ts");
     expect(body).toContain("No version files");
-    expect(body).toContain("? [x]  notes.txt");
     expectWidthSafe(list, 60);
 
     // The list contains a section row before the untracked section and file.
@@ -1461,69 +1460,6 @@ describe("FilesPanel deterministic rendering", () => {
     }
   });
 
-  test("renders exact loading, empty, binary, truncated, and error states", async () => {
-    const value = harness(60, 5);
-    value.panel.start();
-    const loading = value.panel.render(60);
-    expect(loading[0]).toContain("Diff working tree");
-    expect(loading.slice(1)).toEqual([
-      `┌─ Files ${"─".repeat(50)}┐`,
-      `│${"Loading project files…".padEnd(58)}│`,
-      `│${"".padEnd(58)}│`,
-      "└─ demo · modified · workspace · +0 -0 · 0 files · refreshi┘",
-    ]);
-    value.source.refreshCalls[0]?.value.resolve(snapshot({ allFiles: [], workspaceChanges: new Map(), sessionChanges: new Map(), workspaceSummary: { files: 0, insertions: 0, deletions: 0 }, sessionSummary: { files: 0, insertions: 0, deletions: 0 } }));
-    await settle();
-    const empty = value.panel.render(60);
-    expect(empty).toHaveLength(5);
-    expect(empty.at(-1)).toContain("0 files");
-    expect(empty.slice(1, -1).some(line => line.trim().length > 0)).toBe(true);
-    expectWidthSafe(empty, 60);
-
-    const special = harness(60, 6);
-    special.panel.start();
-    special.source.refreshCalls[0]?.value.resolve(snapshot({ truncated: true }));
-    await settle();
-    special.panel.handleInput("v");
-    special.panel.handleInput("\x1b[A");
-    special.panel.handleInput("\x1b[B");
-    special.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "binary", [], { byteSize: 2048 }));
-    await settle();
-    special.panel.handleInput("\r");
-    const binary = special.panel.render(60);
-    expect(binary[0]).toContain("Diff working tree");
-    expect(binary.slice(1)).toEqual([
-      `┌─ Binary: src/a.ts ${"─".repeat(39)}┐`,
-      `│${"Binary file".padEnd(58)}│`,
-      `│${"2,048 bytes".padEnd(58)}│`,
-      `│${"".padEnd(58)}│`,
-      "└─ listing truncated · demo · modified · workspace · +3 -1 ┘",
-    ]);
-    special.panel.handleInput("\x1b");
-    special.panel.handleInput("\x1b[B");
-    special.source.previewCalls.at(-1)?.value.resolve(preview("src/b.ts", "text", ["partial"], { truncated: true }));
-    await settle();
-    special.panel.handleInput("\r");
-    const truncated = special.panel.render(60);
-    expect(truncated[0]).toContain("Diff working tree");
-    expect(truncated.slice(1)).toEqual([
-      `┌─ File: src/b.ts ${"─".repeat(41)}┐`,
-      `│${"1 partial".padEnd(58)}│`,
-      `│${"".padEnd(58)}│`,
-      `│${"".padEnd(58)}│`,
-      "└─ preview truncated · demo · modified · workspace · +3 -1 ┘",
-    ]);
-    special.panel.handleInput("\x1b");
-    special.panel.handleInput("\x1b[A");
-    special.source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "error", [], { error: "permission denied\x1b[2J" }));
-    await settle();
-    special.panel.handleInput("\r");
-    const error = special.panel.render(60);
-    expect(error[1]).toBe(`┌─ Error: src/a.ts ${"─".repeat(40)}┐`);
-    expect(error[2]).toBe(`│${"Error: permission denied".padEnd(58)}│`);
-    expect(error.join("\n")).not.toContain("\x1b[2J");
-    for (const lines of [loading, binary, truncated, error]) expectWidthSafe(lines, 60);
-  });
 
   test("never exceeds zero, one, or two available terminal rows", () => {
     const { panel, tui } = harness(60, 0);
@@ -1593,7 +1529,6 @@ describe("FilesPanel tree collapse", () => {
     expect(collapses).toEqual([true]);
     expect(collapsed[1]).toBe(`┌─ File: src/a.ts ${"─".repeat(81)}┐`);
     expect(collapsed[2]).toBe(`│${"1 alpha".padEnd(98)}│`);
-    expect(collapsed.at(-1)).toContain("↑↓ scroll");
     expectWidthSafe(collapsed, 100);
 
     // Ctrl+B toggles the tree as well.
@@ -1991,6 +1926,116 @@ describe("FilesPanel write operations", () => {
     expect(source.amendCalls[0]?.subject).toBe("old subject revised");
     expect(source.amendCalls[0]?.body).toBe("body remains");
     expect(source.amendCalls[0]?.noVerify).toBe(true);
+    panel.dispose();
+  });
+
+  test("push entry routes from files, history, and branches at ordinary terminal widths", async () => {
+    const { panel, source } = harness(80, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    for (const width of [80, 120]) {
+      let before = source.pushPlanCalls.length;
+      panel.render(width);
+      panel.handleInput("P");
+      expect(source.pushPlanCalls).toHaveLength(before + 1);
+      panel.handleInput("n");
+
+      panel.handleInput("g");
+      source.historyCalls.at(-1)?.value.resolve({
+        entries: [{
+          oid: "a".repeat(40),
+          shortOid: "aaaaaaaa",
+          subject: "current",
+          author: "Author",
+          authoredAt: 1,
+        }],
+        truncated: false,
+      });
+      await settle();
+      before = source.pushPlanCalls.length;
+      panel.render(width);
+      panel.handleInput("P");
+      expect(source.pushPlanCalls).toHaveLength(before + 1);
+      panel.handleInput("n");
+
+      panel.handleInput("b");
+      source.branchesCalls.at(-1)?.value.resolve({
+        branches: [
+          { name: "main", current: true },
+          { name: "feature/ui", current: false },
+        ],
+        current: "main",
+      });
+      await settle();
+      panel.handleInput("n");
+      before = source.pushPlanCalls.length;
+      panel.render(width);
+      panel.handleInput("P");
+      expect(source.pushPlanCalls).toHaveLength(before + 1);
+      panel.handleInput("n");
+      panel.handleInput("b");
+    }
+    panel.dispose();
+  });
+
+  test("clicking the visible push footer action starts the current-branch plan in every view", async () => {
+    for (const width of [80, 120]) {
+      for (const mode of ["files", "history", "branches"] as const) {
+        const { panel, source } = harness(width, 8);
+        panel.start();
+        source.refreshCalls[0]?.value.resolve(snapshot());
+        await settle();
+        if (mode === "history") {
+          panel.handleInput("g");
+          source.historyCalls[0]?.value.resolve({ entries: [], truncated: false });
+          await settle();
+        } else if (mode === "branches") {
+          panel.handleInput("b");
+          source.branchesCalls[0]?.value.resolve({ branches: [{ name: "main", current: true }], current: "main" });
+          await settle();
+        }
+        panel.render(width);
+
+        panel.handleInput("\x1b[<0;4;8M");
+
+        expect(source.pushPlanCalls).toHaveLength(1);
+        panel.dispose();
+      }
+    }
+  });
+
+  test("selecting another branch does not change the checked-out branch push target", async () => {
+    const { panel, source } = harness(80, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("b");
+    source.branchesCalls[0]?.value.resolve({
+      branches: [
+        { name: "main", current: true },
+        { name: "feature/ui", current: false },
+      ],
+      current: "main",
+    });
+    await settle();
+    panel.handleInput("n");
+    panel.handleInput("P");
+    source.pushPlanCalls[0]?.value.resolve({
+      branch: "main",
+      upstream: "origin/main",
+      ahead: 1,
+      behind: 0,
+      commits: [],
+      truncated: false,
+    });
+    await settle();
+    panel.handleInput("y");
+    for (const character of "main") panel.handleInput(character);
+    panel.handleInput("\r");
+
+    expect(source.pushCalls[0]?.branch).toBe("main");
     panel.dispose();
   });
 

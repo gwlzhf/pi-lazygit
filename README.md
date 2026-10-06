@@ -64,7 +64,7 @@ The width, collapsed state, syntax theme, diff view, and diff mask opacity setti
 
 The mouse wheel moves the selection in the left pane and scrolls the preview pane, following the pointer in the side-by-side layout and the focused pane in the single-pane layout.
 
-Left-clicking a visible row in the left pane focuses that pane and selects the row. In the project tree a file click starts its preview immediately, and a directory click selects it without expanding or collapsing it — expansion stays on the keyboard. History and branch rows behave the same way: a click selects only. Clicks on the overview header, the pane-title row, the footer, the padding below the last row, and the divider select nothing; divider dragging and preview text selection keep their existing meaning.
+Left-clicking a visible row in the left pane focuses that pane and selects the row. In the project tree a file click starts its preview immediately, and a directory click selects it without expanding or collapsing it — expansion stays on the keyboard. History and branch rows behave the same way: a click selects only. The footer's `P push current branch` action is also clickable; other footer positions and clicks on the overview header, pane-title row, padding below the last row, and divider select nothing. Divider dragging and preview text selection keep their existing meaning.
 
 Selected rows are painted across the full pane width using the active OMP theme's selection background. Runtimes older than the `Theme.fgOnBg` helper fall back to a plain foreground over the same background token instead of failing to render. Diff previews mask whole rows as well: added lines use Claude Code's green background, removed lines its red background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. These darker masks change neither the visible width nor the text that a selection copies; changed-line foregrounds use the deeper red/green palette described below.
 
@@ -111,6 +111,8 @@ In Git mode the panel watches the worktree and its Git metadata, so the file lis
 
 Watching uses recursive filesystem watches on the worktree, the Git directory, and — in a linked worktree, where `.git` is a file naming its real Git directory — the shared common directory. Object writes, reflog writes, and `*.lock` files are ignored, so fetching, packing, and Git's own intermediate states do not trigger refreshes. Bursts are coalesced with a 150 ms debounce, and a refresh already in flight queues at most one successor rather than stacking.
 
+Review queries do not refresh the index on disk: Git optional locks and `diff.autoRefreshIndex` are disabled for queries. The baseline index fingerprint is a SHA-256 hash of `git ls-files --stage -z`, covering staged modes, object IDs, merge stages, and paths without calling the index-writing `git write-tree`. Commit/amend still write normally and refresh the panel afterward; idle review no longer creates its own index events.
+
 The watch stops when the panel closes. If it cannot start, or fails later, the footer reports `watch error: …` and the panel remains usable with `F5` or `r`. Filesystem fallback mode has no watch, because there is no Git state to follow.
 
 ## Commit history
@@ -145,7 +147,8 @@ In the flat change list, `space` toggles a file or whole section, `x` inverts th
 
 In commit history, `u` edits the subject of `HEAD` only; the existing commit body is retained. Amend is unavailable for older history entries and is blocked for an unborn/detached `HEAD` or a dirty index. An amended commit already published upstream cannot be force-pushed.
 
-Press `P` to review a push plan. The first `y` advances to a separate write confirmation; ordinary branches require `w`, while protected branches require typing the exact full branch name and pressing `Enter`. `main` and `master` are always protected; `protectedBranches` in `pi-lazygit.json` adds protected names. A push with remote commits ahead is blocked. Push targets the reviewed upstream and rejects a stale plan; multiple push URLs and unexpected tag/transport behavior fail closed. It never uses force.
+Press `P` in the files, history, or branches view—or click `P push current branch` at the start of the footer—to review a push plan for the checked-out branch. In the branches view, the selected row does not change the push target. The first `y` advances to a separate write confirmation; ordinary branches require `w`, while protected branches require typing the exact full branch name and pressing `Enter`. `main` and `master` are always protected; `protectedBranches` in `pi-lazygit.json` adds protected names. A push with remote commits ahead is blocked. A branch without an upstream is rejected; configure one first with `git push -u <remote> <branch>`. Push targets the reviewed upstream and rejects a stale plan; multiple push URLs and unexpected tag/transport behavior fail closed. It never uses force.
+
 Ahead/behind counts use the last known local remote-tracking refs; this panel does not fetch. Fetch outside the panel to refresh those counts. Git still rejects a non-fast-forward push if the remote changed after the last fetch.
 
 Git writes time out after 120 seconds by default (`commitTimeoutMs`, `pushTimeoutMs` in `pi-lazygit.json`); change these settings in that file to configure the limits. Git will not prompt for credentials in the panel. HTTPS disables terminal prompts and relies on noninteractive Git credential helpers. Default SSH uses OpenSSH batch mode and an existing key/agent; configured custom SSH commands are preserved but must explicitly enable OpenSSH `BatchMode=yes` or plink `-batch`, otherwise push fails closed. On Windows, killing Git's direct child on timeout may not terminate hook-spawned grandchildren.
@@ -166,7 +169,7 @@ Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent 
 | `Enter` | Start commit in workspace change list |
 | `Ctrl+N` | Toggle `--no-verify` for commit/amend |
 | `u` | Amend `HEAD` subject in commit history |
-| `P` | Review push plan |
+| `P` | Review the checked-out branch's push plan (files, history, or branches view) |
 | `y` then `w` | Advance through separate push confirmations |
 | Branch name + `Enter` | Confirm a protected-branch push |
 
@@ -247,6 +250,7 @@ Replaces the project tree keys while the history is shown (`g`).
 | `g` | Return to the project tree |
 | `b` | Switch the left pane to the local branch list |
 | `?` | Show every shortcut |
+| `P` | Review the checked-out branch's push plan |
 | `F5` / `r` | Reload the commit history |
 | Left click | Select the clicked commit |
 | `Esc` | Close the panel |
@@ -261,6 +265,7 @@ Replaces the project tree keys while the branch list is shown (`b`).
 | `Up` / `Down` | Move the branch selection |
 | `Enter` | Switch to the selected branch; a no-op on the current branch |
 | `b` / `Esc` | Return to the project tree without switching |
+| `P` | Review the checked-out branch's push plan, regardless of the selected row |
 | `?` | Show every shortcut |
 | Left click | Select the clicked branch; it never switches |
 
