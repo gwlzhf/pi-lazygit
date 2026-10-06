@@ -170,7 +170,15 @@ export const PANEL_HELP_GROUPS: readonly {
       { key: "drag", label: "copy" },
       { key: "j/k", label: "scroll" },
       { key: "?", label: "all" },
-      { key: "esc", label: "close" },
+      { key: "esc", label: "back" },
+    ],
+  },
+  {
+    // Leaving is its own group: Escape walks back one level, these leave.
+    title: "Leaving",
+    actions: [
+      { key: "q", label: "quit from anywhere, including a write dialog" },
+      { key: "ctrl+c", label: "the same, on the interrupt key" },
     ],
   },
 ];

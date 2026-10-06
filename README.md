@@ -15,14 +15,14 @@ The extension targets the OMP 18.3.1 interactive TUI in Windows PowerShell and W
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.7.1
+omp plugin install github:gwlzhf/pi-lazygit#v0.8.0
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.7.1
+omp plugin install github:gwlzhf/pi-lazygit#v0.8.0
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
@@ -198,7 +198,7 @@ Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent 
 | `F5` / `r` | Refresh Git status, change list, summary, and selected diff or code |
 | Left click | Focus the tree and select the clicked row |
 | `Esc` | Close the panel from the tree |
-| configured OMP `app.interrupt` key | Close the panel from the tree |
+| `q` / configured OMP `app.interrupt` key (`Ctrl+C`) | Quit the panel from anywhere, including an open commit, amend, or push dialog |
 
 `j` and `k` no longer move the tree selection; they scroll the preview. Use `n` / `p` or `Up` / `Down` here.
 
@@ -223,7 +223,7 @@ Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent 
 | `Left` or `h` | Return focus to the project tree |
 | Left-button drag | Select preview text; release copies it |
 | `Esc` | Return focus to the project tree |
-| configured OMP `app.interrupt` key | Return to the tree; invoke it again from the tree to close |
+| `q` / configured OMP `app.interrupt` key | Quit the panel immediately |
 
 Selecting a file begins loading its preview immediately. `Enter` transfers focus to the preview.
 
@@ -254,6 +254,7 @@ Replaces the project tree keys while the history is shown (`g`).
 | `F5` / `r` | Reload the commit history |
 | Left click | Select the clicked commit |
 | `Esc` | Close the panel |
+| `q` / configured OMP `app.interrupt` key | Quit the panel from anywhere |
 
 ### Branches
 

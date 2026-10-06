@@ -2313,3 +2313,122 @@ describe("FilesPanel write operations", () => {
     }
   });
 });
+
+describe("FilesPanel quit keys", () => {
+  test("q and ctrl+c close the panel from the tree, the preview, branches, and help", async () => {
+    for (const key of ["q", "\x03"]) {
+      for (const opener of ["", "tab", "b", "?"]) {
+        const { panel, source, doneResults } = harness(100, 8);
+        panel.start();
+        source.refreshCalls[0]?.value.resolve(snapshot());
+        await settle();
+        for (const character of opener) panel.handleInput(character);
+        panel.handleInput(key);
+        expect(doneResults).toEqual([undefined]);
+      }
+    }
+  });
+
+  test("escape keeps stepping back instead of quitting", async () => {
+    const { panel, source, doneResults } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    panel.handleInput("?");
+    panel.handleInput("\x1b");
+    expect(doneResults).toEqual([]);
+    panel.handleInput("b");
+    panel.handleInput("\x1b");
+    expect(doneResults).toEqual([]);
+    panel.handleInput("tab");
+    panel.handleInput("\x1b");
+    expect(doneResults).toEqual([]);
+    panel.handleInput("\x1b");
+    expect(doneResults).toEqual([undefined]);
+  });
+
+  test("ctrl+c quits through an open commit dialog and aborts the dry run", async () => {
+    for (const key of ["q", "\x03"]) {
+      const { panel, source, doneResults } = harness(100, 8);
+      panel.start();
+      source.refreshCalls[0]?.value.resolve(snapshot());
+      await settle();
+
+      panel.handleInput("\r");
+      expect(panel.render(100).join("\n")).toContain("Commit message");
+      panel.handleInput(key);
+      expect(doneResults).toEqual([undefined]);
+
+      // The write is gone with the panel: a late resolution changes nothing.
+      panel.handleInput("y");
+      await settle();
+      expect(doneResults).toEqual([undefined]);
+      expect(source.commitCalls).toHaveLength(0);
+    }
+  });
+
+  test("ctrl+c quits through an in-flight dry run and drops the pending write", async () => {
+    const { panel, source, doneResults } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    panel.handleInput("\r");
+    for (const character of "abandoned") panel.handleInput(character);
+    panel.handleInput("\r");
+    expect(source.commitCalls).toHaveLength(1);
+    const pending = source.commitCalls[0]!;
+    expect(pending.signal.aborted).toBe(false);
+
+    panel.handleInput("\x03");
+    expect(pending.signal.aborted).toBe(true);
+    expect(doneResults).toEqual([undefined]);
+
+    pending.value.resolve({ dryRun: true, output: "would commit src/a.ts", files: 1 });
+    await settle();
+    expect(panel.render(100).join("\n")).not.toContain("Confirm commit");
+  });
+
+  test("ctrl+c quits through an in-flight push and aborts it", async () => {
+    const { panel, source, doneResults } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot({ currentBranch: "feature" }));
+    await settle();
+
+    panel.handleInput("P");
+    source.pushPlanCalls[0]?.value.resolve({
+      branch: "feature", upstream: "origin/feature", ahead: 1, behind: 0, commits: [], truncated: false,
+    });
+    await settle();
+    expect(panel.render(100).join("\n")).toContain("Review push");
+    panel.handleInput("y");
+    panel.handleInput("w");
+    await settle();
+    expect(source.pushCalls).toHaveLength(1);
+    const pending = source.pushCalls[0]!;
+    expect(pending.signal.aborted).toBe(false);
+
+    panel.handleInput("\x03");
+    expect(pending.signal.aborted).toBe(true);
+    expect(doneResults).toEqual([undefined]);
+  });
+
+  test("c still cycles diff context, so quitting on q does not shadow it", async () => {
+    const { panel, source, doneResults } = harness(140, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("v");
+    panel.handleInput("\x1b[A");
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "diff", ["--- a", "+++ b", "@@ -1 +1 @@", "-old", "+new"]));
+    await settle();
+
+    expect(panel.render(140).at(-1)).toContain("ctx 3");
+    panel.handleInput("c");
+    await settle();
+    expect(panel.render(140).at(-1)).toContain("ctx 10");
+    expect(doneResults).toEqual([]);
+  });
+});

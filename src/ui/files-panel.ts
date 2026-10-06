@@ -158,6 +158,15 @@ function isAbort(error: unknown, signal: AbortSignal): boolean {
   return signal.aborted || (error instanceof Error && error.name === "AbortError");
 }
 
+/**
+ * The keys that leave the panel outright, whatever it currently has open.
+ * Ctrl+C goes through the host's `app.interrupt` binding so a user who remapped
+ * it is not fighting a hardcoded control character.
+ */
+export function isQuitKey(data: string, keybindings: Pick<KeybindingsManager, "matches">): boolean {
+  return matchesKey(data, "q") || keybindings.matches(data, "app.interrupt");
+}
+
 function editText(value: string, cursor: number, input: string): { value: string; cursor: number } {
   const characters = [...value];
   if (matchesKey(input, "left")) return { value, cursor: Math.max(0, cursor - 1) };
@@ -364,9 +373,16 @@ export class FilesPanel implements Component {
       routeSgrMouseInput(data, event => this.#routeMouse(event));
       return;
     }
-    const interrupted = this.#keybindings.matches(data, "app.interrupt");
+    // Quitting leaves the plugin; Escape only steps back one level. The two are
+    // answered separately so a quit still works with a dialog on top.
+    if (isQuitKey(data, this.#keybindings)) {
+      this.#quit();
+      return;
+    }
     if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.#pushStage !== undefined) {
-      if (matchesKey(data, "escape") || interrupted) {
+      // The interrupt key already answered above, so Escape is the only way
+      // back out of a dialog.
+      if (matchesKey(data, "escape")) {
         if (this.#pushStage === "write" && this.#pushController !== undefined) this.#finish();
         else if (this.#pushStage === "plan" && this.#pushController !== undefined) {
           clearTimeout(this.#pushTimer);
@@ -394,7 +410,7 @@ export class FilesPanel implements Component {
       else this.#handlePushConfirmation(data);
       return;
     }
-    if (interrupted || matchesKey(data, "escape")) {
+    if (matchesKey(data, "escape")) {
       if (this.#helpOpen) {
         this.#helpOpen = false;
         this.#requestRender();
@@ -2202,6 +2218,38 @@ export class FilesPanel implements Component {
     this.#doneCalled = true;
     this.dispose();
     this.#done(undefined);
+  }
+
+  /**
+   * Quitting does not ask the dialogs first: it drops whatever git write is in
+   * flight and closes, because a half-written commit or push is not something
+   * the user asked to keep by pressing the quit key.
+   */
+  #quit(): void {
+    if (this.#doneCalled) return;
+    if (this.#commitTimer !== undefined) {
+      clearTimeout(this.#commitTimer);
+      this.#commitTimer = undefined;
+    }
+    if (this.#amendTimer !== undefined) {
+      clearTimeout(this.#amendTimer);
+      this.#amendTimer = undefined;
+    }
+    if (this.#pushTimer !== undefined) {
+      clearTimeout(this.#pushTimer);
+      this.#pushTimer = undefined;
+    }
+    this.#commitController?.abort();
+    this.#amendController?.abort();
+    this.#pushController?.abort();
+    this.#commitController = undefined;
+    this.#amendController = undefined;
+    this.#pushController = undefined;
+    this.#commitDialog = undefined;
+    this.#amendDialog = undefined;
+    this.#pushStage = undefined;
+    this.#pushPlan = undefined;
+    this.#finish();
   }
 
   #renderWide(width: number, height: number): readonly string[] {
