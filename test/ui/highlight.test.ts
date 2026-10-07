@@ -6,7 +6,7 @@ import {
   HIGHLIGHT_THEMES,
   isHighlightThemeName,
   loadHighlighter,
-} from "./highlight";
+} from "../../src/ui/highlight";
 
 const THEMES = {
   "dark-catppuccin": { name: "catppuccin" } as unknown as Theme,

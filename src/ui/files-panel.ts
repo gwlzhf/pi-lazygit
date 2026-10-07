@@ -525,6 +525,10 @@ export class FilesPanel implements Component {
       this.#requestRender();
       return;
     }
+    if (this.#leftMode === "files" && matchesKey(data, "m")) {
+      this.#setFileMode(this.#directoryMode() ? "modified" : "all");
+      return;
+    }
     if (matchesKey(data, "g")) {
       this.#toggleLeftMode();
       return;
@@ -681,15 +685,6 @@ export class FilesPanel implements Component {
       }
       return;
     }
-    if (data === "a") {
-      if (this.#snapshot?.kind === "git" && (this.#viewMode !== "all" || this.#listLayout !== "tree")) {
-        this.#viewMode = "all";
-        this.#listLayout = "tree";
-        this.#rebuildRows();
-        this.#requestRender();
-      }
-      return;
-    }
     if (this.#usesChangeList() && data === " ") {
       this.#toggleCommitSelection();
       return;
@@ -702,18 +697,8 @@ export class FilesPanel implements Component {
       this.#toggleAllCommitSelection();
       return;
     }
-    if (matchesKey(data, "m")) {
-      if (this.#snapshot?.kind === "git" && this.#viewMode !== "modified") {
-        this.#viewMode = "modified";
-        this.#rebuildRows();
-        this.#requestRender();
-      }
-      return;
-    }
     if (matchesKey(data, "v")) {
-      // The change list has nothing to show outside a repository, so the key is
-      // inert on the filesystem fallback, like m and a.
-      if (this.#snapshot?.kind === "git") {
+      if (this.#snapshot?.kind === "git" && !this.#directoryMode()) {
         this.#listLayout = this.#listLayout === "changes" ? "tree" : "changes";
         this.#rebuildRows();
         this.#requestRender();
@@ -721,7 +706,7 @@ export class FilesPanel implements Component {
       return;
     }
     if (matchesKey(data, "s")) {
-      if (this.#snapshot?.kind === "git") {
+      if (this.#snapshot?.kind === "git" && !this.#directoryMode()) {
         this.#scope = this.#scope === "workspace" ? "session" : "workspace";
         this.#commitSelection.reset(this.#activeChanges().values());
         this.#rebuildRows();
@@ -1967,6 +1952,22 @@ export class FilesPanel implements Component {
     if (project === undefined || project.kind === "filesystem") return EMPTY_CHANGES;
     return this.#scope === "workspace" ? project.workspaceChanges : project.sessionChanges;
   }
+  #directoryMode(): boolean {
+    return this.#snapshot?.kind === "filesystem" || this.#viewMode === "all";
+  }
+
+  #setFileMode(mode: ViewMode): void {
+    if (this.#snapshot?.kind !== "git" || this.#viewMode === mode) return;
+    this.#viewMode = mode;
+    this.#cancelPreview();
+    this.#rebuildRows(true);
+    this.#requestRender();
+  }
+
+  #treeChanges(): ReadonlyMap<string, ChangeRecord> {
+    return this.#directoryMode() ? EMPTY_CHANGES : this.#activeChanges();
+  }
+
 
   #rebuildRows(forcePreview = false): void {
     const project = this.#snapshot;
@@ -1995,9 +1996,7 @@ export class FilesPanel implements Component {
       } else this.#cancelPreview();
       return;
     }
-    const mode: ViewMode = project.kind === "filesystem" ? "all" : this.#viewMode;
-    const paths = visiblePaths(project.allFiles, changes, mode);
-    const root = buildTree(paths, changes);
+    const root = buildTree(this.#visiblePaths(), this.#treeChanges());
     if (!this.#expansionInitialized) {
       collectDirectoryPaths(root, this.#expanded);
       this.#expansionInitialized = true;
@@ -2014,7 +2013,7 @@ export class FilesPanel implements Component {
   }
 
   #usesChangeList(): boolean {
-    return this.#listLayout === "changes" && this.#snapshot?.kind === "git";
+    return this.#listLayout === "changes" && this.#snapshot?.kind === "git" && !this.#directoryMode();
   }
 
   #skipSections(index: number, step: 1 | -1): number {
@@ -2058,7 +2057,7 @@ export class FilesPanel implements Component {
     if (selected === undefined) return;
     if (selected.node.kind === "directory" && selected.expanded) {
       this.#expanded.delete(selected.node.path);
-      this.#rows = flattenTree(buildTree(this.#visiblePaths(), this.#activeChanges()), this.#expanded);
+      this.#rows = flattenTree(buildTree(this.#visiblePaths(), this.#treeChanges()), this.#expanded);
       this.#selectedIndex = recoverSelection(this.#rows, selected.node.path, this.#selectedIndex);
       this.#selectionChanged();
       return;
@@ -2079,7 +2078,7 @@ export class FilesPanel implements Component {
     if (selected?.node.kind !== "directory") return;
     if (!selected.expanded) {
       this.#expanded.add(selected.node.path);
-      this.#rows = flattenTree(buildTree(this.#visiblePaths(), this.#activeChanges()), this.#expanded);
+      this.#rows = flattenTree(buildTree(this.#visiblePaths(), this.#treeChanges()), this.#expanded);
       this.#selectedIndex = recoverSelection(this.#rows, selected.node.path, this.#selectedIndex);
       this.#selectionChanged();
       return;
@@ -2094,8 +2093,10 @@ export class FilesPanel implements Component {
   #visiblePaths(): readonly string[] {
     const project = this.#snapshot;
     if (project === undefined) return [];
-    const mode: ViewMode = project.kind === "filesystem" ? "all" : this.#viewMode;
-    return visiblePaths(project.allFiles, this.#activeChanges(), mode);
+    if (this.#directoryMode()) {
+      return project.allFiles.filter(path => project.workspaceChanges.get(path)?.status !== "D");
+    }
+    return visiblePaths(project.allFiles, this.#activeChanges(), "modified");
   }
 
   #openSelection(): void {
@@ -2136,7 +2137,11 @@ export class FilesPanel implements Component {
       this.#previewScroll = 0;
     }
     this.#previewLoading = true;
-    void this.#source.preview(path, { signal: controller.signal, diffContext: this.#diffContext }).then(
+    void this.#source.preview(path, {
+      signal: controller.signal,
+      diffContext: this.#diffContext,
+      mode: this.#directoryMode() ? "content" : "diff",
+    }).then(
       result => {
         if (!this.#isCurrentPreview(generation, controller, path)) return;
         this.#previewController = undefined;
@@ -2322,13 +2327,13 @@ export class FilesPanel implements Component {
       : this.#leftMode === "files"
         ? (this.#previewPath ?? (selectedRow?.node.kind === "file" ? selectedRow.node.path : undefined))
         : undefined;
-    const selectedSummary = this.#leftMode === "files" && selectedPath !== undefined && snapshot?.kind === "git"
+    const selectedSummary = this.#leftMode === "files" && !this.#directoryMode() && selectedPath !== undefined && snapshot?.kind === "git"
       ? snapshot.workspaceSummaryByPath.get(selectedPath)
       : undefined;
     const fileCount = snapshot === undefined
       ? 0
-      : snapshot.kind === "filesystem"
-        ? snapshot.allFiles.length
+      : this.#directoryMode()
+        ? this.#visiblePaths().length
         : this.#scope === "workspace"
           ? snapshot.workspaceSummary.files
           : snapshot.sessionSummary.files;
@@ -2338,7 +2343,7 @@ export class FilesPanel implements Component {
       sourceKind: snapshot?.kind,
       leftMode: this.#leftMode,
       focus: this.#focus,
-      viewMode: this.#viewMode,
+      viewMode: this.#directoryMode() ? "all" : "modified",
       scope: this.#scope,
       ...(currentBranch !== undefined ? { currentBranch } : {}),
       ...(detachedAt !== undefined ? { detachedAt } : {}),
@@ -2415,13 +2420,9 @@ export class FilesPanel implements Component {
       return [this.#theme.fg(this.#refreshError === undefined ? "accent" : "error", message)];
     }
     if (this.#rows.length === 0) {
-      const message = this.#snapshot.kind === "filesystem"
+      const message = this.#directoryMode()
         ? "No project files found"
-        : this.#usesChangeList()
-          ? `No ${this.#scope} changes — press v for the file tree`
-          : this.#viewMode === "modified"
-            ? `No ${this.#scope} changes — press a for all files`
-            : "No project files found";
+        : `No ${this.#scope} changes — press m for project files`;
       return [this.#theme.fg("muted", message)];
     }
     if (this.#selectedIndex < this.#treeOffset) this.#treeOffset = this.#selectedIndex;
@@ -2628,8 +2629,8 @@ export class FilesPanel implements Component {
     else if (this.#preview?.truncated) pieces.push("preview truncated");
     else if (project?.truncated) pieces.push("listing truncated");
     if (this.#sessionName !== undefined && this.#sessionName.length > 0) pieces.push(sanitizeTerminalText(this.#sessionName).replaceAll("\n", " "));
-    if (project?.kind === "filesystem") {
-      pieces.push("filesystem", pluralFiles(project.allFiles.length));
+    if (this.#directoryMode()) {
+      pieces.push("directory", pluralFiles(this.#visiblePaths().length));
     } else {
       const summary = project === undefined
         ? { files: 0, insertions: 0, deletions: 0 }
@@ -2690,9 +2691,9 @@ export class FilesPanel implements Component {
           ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "\\ tree", "←/h/tab/esc tree", "drag copy", width]
           : project?.kind === "filesystem"
             ? ["F5/r refresh", "n/p move", "→/l preview", "↵ open", "tab", "\\ tree", width, "esc"]
-            : ["F5/r refresh", "n/p move", "→/l preview", this.#usesChangeList() && this.#scope === "workspace" ? "↵ commit" : "↵ open", ...(this.#usesChangeList() ? ["space toggle", "x invert", "A select all"] : []), "tab", "\\ tree", "g log", "b branches", width, "v list", "m/a", "s", "esc"];
+            : ["F5/r refresh", "n/p move", "→/l preview", this.#usesChangeList() && this.#scope === "workspace" ? "↵ commit" : "↵ open", ...(this.#usesChangeList() ? ["space toggle", "x invert", "A select all"] : []), "tab", "\\ tree", "g log", "b branches", width, ...(this.#directoryMode() ? [] : ["v list/tree", "s"]), "esc"];
     pieces.unshift(...(pushAction === undefined ? [] : [pushAction]), ...notices);
-    pieces.push("i /btw history", hints.filter(hint => hint !== undefined).join(" · "));
+    pieces.push(...(project?.kind === "git" && this.#leftMode === "files" ? ["m mode"] : []), "i /btw history", hints.filter(hint => hint !== undefined).join(" · "));
     return pieces.join(" · ");
   }
 }

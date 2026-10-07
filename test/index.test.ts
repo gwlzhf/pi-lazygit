@@ -4,11 +4,11 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@oh-my-pi/pi-coding-agent";
-import type { DiffLayout, ReviewSource } from "./contracts";
-import { createExtension, FILES_SHORTCUT, type ExtensionDependencies } from "./index";
-import { DEFAULT_PANEL_SETTINGS, type PanelSettings, type PanelSettingsStore } from "./settings";
-import type { FilesPanel, FilesPanelOptions } from "./ui/files-panel";
-import type { HighlightThemeName } from "./ui/highlight";
+import type { DiffLayout, ReviewSource } from "../src/contracts";
+import { createExtension, FILES_SHORTCUT, type ExtensionDependencies } from "../src/index";
+import { DEFAULT_PANEL_SETTINGS, type PanelSettings, type PanelSettingsStore } from "../src/settings";
+import type { FilesPanel, FilesPanelOptions } from "../src/ui/files-panel";
+import type { HighlightThemeName } from "../src/ui/highlight";
 
 type CommandRegistration = Parameters<ExtensionAPI["registerCommand"]>[1];
 type ShortcutRegistration = Parameters<ExtensionAPI["registerShortcut"]>[1];

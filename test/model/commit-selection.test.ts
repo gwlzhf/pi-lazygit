@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { ChangeRecord, StatusCode } from "../contracts";
-import { CommitSelection, canCommit } from "./commit-selection";
+import type { ChangeRecord, StatusCode } from "../../src/contracts";
+import { CommitSelection, canCommit } from "../../src/model/commit-selection";
 
 function change(path: string, status: StatusCode = "M"): ChangeRecord {
   return { path, index: " ", worktree: status, status };

@@ -1,5 +1,6 @@
+import { BunProcessRunner } from "../src/git/process";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type {
@@ -20,10 +21,10 @@ import type {
   RefreshOptions,
   StatusCode,
   SwitchBranchOptions,
-} from "./contracts";
-import type { GitRepository, RepositoryInspection } from "./git/repository";
-import { createBaselineCacheStore, type BaselineCacheStore } from "./model/cache-store";
-import { BaselineStore, type SerializedBaseline } from "./model/baseline";
+} from "../src/contracts";
+import type { GitRepository, RepositoryInspection } from "../src/git/repository";
+import { createBaselineCacheStore, type BaselineCacheStore } from "../src/model/cache-store";
+import { BaselineStore, type SerializedBaseline } from "../src/model/baseline";
 import {
   clearProjectBaselineCache,
   clearSessionBaselines,
@@ -32,7 +33,7 @@ import {
   ProjectReviewSource,
   setSessionBaselineCacheEnabled,
   type ReviewSourceFactories,
-} from "./review-source";
+} from "../src/review-source";
 const temporaryCacheRoots: string[] = [];
 
 function change(path: string, status: StatusCode): ChangeRecord {
@@ -810,6 +811,38 @@ test("prepareSessionBaseline is reused by refresh and preview delegates to the a
   expect(typeof snapshot.baselineEstablishedAt).toBe("number");
   expect(filePreview).toEqual(preview(added.path));
   expect(previewCalls).toEqual([added.path]);
+});
+
+test("Git content previews read bounded working-tree content while default previews remain diffs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-review-content-"));
+  temporaryCacheRoots.push(root);
+  const runner = new BunProcessRunner();
+  const controller = new AbortController();
+  const runGit = async (...args: string[]) => {
+    const result = await runner.run(root, "git", args, controller.signal);
+    expect(result.exitCode).toBe(0);
+    return result;
+  };
+  await runGit("init");
+  await runGit("config", "user.name", "Test");
+  await runGit("config", "user.email", "test@example.com");
+  const filePath = join(root, "sample.txt");
+  await writeFile(filePath, "original line\n");
+  await runGit("add", "sample.txt");
+  await runGit("commit", "-m", "initial");
+  await writeFile(filePath, "updated line\nsecond line\n");
+
+  const source = createReviewSource(root);
+  const defaultPreview = await source.preview("sample.txt", { signal: controller.signal });
+  const contentPreview = await source.preview("sample.txt", {
+    signal: controller.signal,
+    mode: "content",
+  });
+  expect(defaultPreview.kind).toBe("diff");
+  expect(contentPreview.kind).toBe("text");
+  expect(contentPreview.lines).toEqual(["updated line", "second line"]);
+  expect(contentPreview.lines).not.toEqual(defaultPreview.lines);
+  expect(contentPreview.truncated).toBe(false);
 });
 
 test("first refresh in a repository establishes one baseline before returning session changes", async () => {

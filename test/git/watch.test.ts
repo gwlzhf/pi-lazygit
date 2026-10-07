@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { watchGitRepository } from "./watch";
+import { watchGitRepository } from "../../src/git/watch";
 
 /** `fs.watch` arms asynchronously, so mutations are repeated until one lands. */
 const POLL_INTERVAL_MS = 100;

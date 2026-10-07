@@ -33,7 +33,7 @@ export interface PanelPresentation {
 function overviewTitle(input: PanelPresentationInput): string {
   if (input.leftMode === "branches") return "Switch branch";
   if (input.leftMode === "log") return "History";
-  if (input.sourceKind === "filesystem") return "Project files";
+  if (input.sourceKind === "filesystem" || input.viewMode === "all") return "Project files";
   return input.scope === "session" ? "Diff session" : "Diff working tree";
 }
 
@@ -101,6 +101,7 @@ function actionsFor(input: PanelPresentationInput): readonly PanelAction[] {
   }
   if (input.sourceKind === "git") {
     actions.push({ key: "P", label: "push current branch" }, { key: "b", label: "branches" }, { key: "g", label: "history" });
+    actions.push({ key: "m", label: input.viewMode === "all" ? "Git mode" : "directory mode" });
   }
   actions.push({ key: "?", label: "all" });
   return actions;
@@ -138,8 +139,9 @@ export const PANEL_HELP_GROUPS: readonly {
     actions: [
       { key: "b", label: "branches" },
       { key: "g", label: "history" },
-      { key: "m/a", label: "modified/all" },
-      { key: "s", label: "scope" },
+      { key: "m", label: "Git / directory mode" },
+      { key: "v", label: "Git changes: list / tree" },
+      { key: "s", label: "Git scope" },
       { key: "space", label: "select file / section" },
       { key: "x", label: "invert file selection" },
       { key: "A", label: "toggle all selection" },

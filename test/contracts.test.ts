@@ -10,7 +10,7 @@ import {
   normalizeDiffContext,
   type GitBranchSnapshot,
   type ProjectSnapshot,
-} from "./contracts";
+} from "../src/contracts";
 
 test("changeMap normalizes separators and keys by current path", () => {
   const map = changeMap([

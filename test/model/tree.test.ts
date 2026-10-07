@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { ChangeRecord, StatusCode } from "../contracts";
+import type { ChangeRecord, StatusCode } from "../../src/contracts";
 import {
   buildChangeList,
   buildTree,
@@ -8,7 +8,7 @@ import {
   recoverSelection,
   UNVERSIONED_SECTION_PATH,
   visiblePaths,
-} from "./tree";
+} from "../../src/model/tree";
 
 function change(
   path: string,

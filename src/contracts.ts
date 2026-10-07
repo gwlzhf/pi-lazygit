@@ -234,6 +234,8 @@ export interface WatchOptions {
 
 export interface PreviewOptions {
   readonly signal: AbortSignal;
+  /** Select a bounded working-tree file preview instead of a Git diff. */
+  readonly mode?: "diff" | "content";
   /** Unchanged lines Git keeps around each hunk; ignored by non-diff previews. */
   readonly diffContext?: number;
 }

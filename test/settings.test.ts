@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import * as nodePath from "node:path";
 import {
   normalizeDiffMaskOpacity,
-} from "./contracts";
-import { clampTreeRatio, createPanelSettingsStore, DEFAULT_PANEL_SETTINGS } from "./settings";
+} from "../src/contracts";
+import { clampTreeRatio, createPanelSettingsStore, DEFAULT_PANEL_SETTINGS } from "../src/settings";
 
 const temporaryRoots: string[] = [];
 

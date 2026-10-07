@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MAX_PREVIEW_BYTES } from "./contracts";
-import { FilesystemProject } from "./filesystem";
+import { MAX_PREVIEW_BYTES } from "../src/contracts";
+import { FilesystemProject } from "../src/filesystem";
 
 const temporaryDirectories: string[] = [];
 

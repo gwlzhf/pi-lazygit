@@ -520,9 +520,13 @@ export class ProjectReviewSource implements ReviewSource {
 
   async preview(path: string, options: PreviewOptions): Promise<FilePreview> {
     const backend = this.#backend ?? (await this.#discoverBackend(options.signal)).backend;
-    return backend.kind === "git"
-      ? backend.project.preview(path, options.signal, options.diffContext)
-      : backend.project.preview(path, options.signal);
+    if (backend.kind === "filesystem") {
+      return backend.project.preview(path, options.signal);
+    }
+    if (options.mode === "content") {
+      return this.factories.createFilesystem(backend.root).preview(path, options.signal);
+    }
+    return backend.project.preview(path, options.signal, options.diffContext);
   }
 
   async history(options: RefreshOptions): Promise<GitLogSnapshot> {

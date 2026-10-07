@@ -6,7 +6,7 @@ import {
   parseAheadBehind,
   parseUpstreamFields,
   pushArgv,
-} from "./push";
+} from "../../src/git/push";
 
 describe("parseUpstreamFields", () => {
   test("reads the remote name and the tracking ref git resolved", () => {

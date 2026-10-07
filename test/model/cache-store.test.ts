@@ -3,8 +3,8 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, test } from "bun:test";
-import type { SerializedBaseline } from "./baseline";
-import { createBaselineCacheStore, type BaselineCacheIdentity } from "./cache-store";
+import type { SerializedBaseline } from "../../src/model/baseline";
+import { createBaselineCacheStore, type BaselineCacheIdentity } from "../../src/model/cache-store";
 
 const temporaryRoots: string[] = [];
 

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
-import { renderCommitDialog } from "./commit-dialog";
+import { renderCommitDialog } from "../../src/ui/commit-dialog";
 
 function theme(): Theme {
   return {

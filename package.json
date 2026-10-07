@@ -1,6 +1,6 @@
 {
   "name": "pi-lazygit",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Review project files and Git diffs inside Oh My Pi",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
@@ -34,9 +34,9 @@
     "bun": ">=1.3.14"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun test ./test",
     "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck && bun test"
+    "check": "bun run typecheck && bun run test"
   },
   "omp": {
     "extensions": ["./src/index.ts"]

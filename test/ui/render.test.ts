@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
-import { parseUnifiedDiff, type DiffRow } from "./diff-view";
+import { parseUnifiedDiff, type DiffRow } from "../../src/ui/diff-view";
 import {
   fitCell,
   renderDiffLine,
@@ -16,7 +16,7 @@ import {
   renderSplitBorder,
   renderSplitRow,
   sanitizeTerminalText,
-} from "./render";
+} from "../../src/ui/render";
 
 /** An older OMP runtime: `fg` and `bg` exist, `fgOnBg` does not. */
 function legacyTheme(calls: string[] = []): Theme {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { GitOutputError, parsePorcelainV1Z } from "./status";
+import { GitOutputError, parsePorcelainV1Z } from "../../src/git/status";
 
 const encode = (value: string): Uint8Array => new TextEncoder().encode(value);
 

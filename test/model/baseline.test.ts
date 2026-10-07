@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
-import type { ChangeRecord, StatusCode } from "../contracts";
-import { BaselineStore, type HashFile } from "./baseline";
+import type { ChangeRecord, StatusCode } from "../../src/contracts";
+import { BaselineStore, type HashFile } from "../../src/model/baseline";
 
 function change(path: string, status: StatusCode): ChangeRecord {
   return { path, index: status, worktree: " ", status };

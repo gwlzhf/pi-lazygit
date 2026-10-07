@@ -2,14 +2,14 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DEFAULT_DIFF_CONTEXT, FULL_DIFF_CONTEXT, MAX_PREVIEW_BYTES } from "../contracts";
-import { GitRepository } from "./repository";
+import { DEFAULT_DIFF_CONTEXT, FULL_DIFF_CONTEXT, MAX_PREVIEW_BYTES } from "../../src/contracts";
+import { GitRepository } from "../../src/git/repository";
 import {
   BunProcessRunner,
   type CommandOutput,
   type ProcessRunner,
   type RunOptions,
-} from "./process";
+} from "../../src/git/process";
 
 const temporaryDirectories: string[] = [];
 

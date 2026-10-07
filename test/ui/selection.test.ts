@@ -6,7 +6,7 @@ import {
   orderSelection,
   selectionText,
   type PreviewSelection,
-} from "./selection";
+} from "../../src/ui/selection";
 
 function selection(
   anchorRow: number,

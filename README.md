@@ -8,21 +8,21 @@ Pi Files Review is an Oh My Pi extension for reviewing project files and Git cha
 - Bun 1.3.14 or newer
 - Git installed and available on `PATH` for Git mode
 
-The extension targets the OMP 18.3.1 interactive TUI in Windows PowerShell and Windows Terminal. Git repositories without an initial commit are supported. A non-Git directory uses the read-only filesystem fallback.
+The extension targets the OMP 18.3.1 interactive TUI in Windows PowerShell and Windows Terminal. Git repositories without an initial commit are supported. Both Git and non-Git projects support read-only directory browsing.
 
 ## Install
 
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.8.1
+omp plugin install github:gwlzhf/pi-lazygit#v0.9.0
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.8.1
+omp plugin install github:gwlzhf/pi-lazygit#v0.9.0
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
@@ -189,9 +189,9 @@ Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent 
 | `d` | Switch the diff preview between unified and split columns |
 | `-` / `=` | Lower/raise diff mask opacity by 10% |
 | `i` | Open native `/btw` history above review |
-| `m` | Show modified files in the tree |
-| `a` | Show all visible files in the directory tree (also switches to the tree from the list) |
-| `s` | Toggle workspace/session scope |
+| `m` | Toggle Git review / ordinary directory browsing (also from file preview); preserve Git layout and scope |
+| `v` | Toggle the flat change list / modified directory tree in Git mode |
+| `s` | Toggle workspace/session scope in Git mode |
 | `g` | Switch the left pane between the project tree and the commit history |
 | `b` | Switch the left pane to the local branch list |
 | `?` | Show every shortcut |
@@ -272,13 +272,13 @@ Replaces the project tree keys while the branch list is shown (`b`).
 
 ## Review modes and scopes
 
-The Git panel opens in the change list; `v` switches to the directory tree and back. View mode and change scope are independent:
+The Git panel opens in **Git mode**, showing the change list. Press `m` to switch between Git review and ordinary directory browsing, including while the file preview has focus. Returning restores the previous Git list/tree layout and review scope. `v` only changes the layout within Git mode; there are no separate enter-directory or enter-Git shortcuts.
 
-- **Modified mode** (`m`) shows only files changed in the active scope when viewing the tree.
-- **Change list** (default) shows full project paths under two dividers: `Modified files` for the tracked files Git reports as changed, then `No version files` for the files Git does not track. Each file is listed once under its status letter, and an empty group is omitted. The dividers are navigable rows; `space` toggles selection for all committable files in that section. Press `v` for the tree. The list is unavailable outside a Git repository.
-- **All-files mode** (`a`) switches to the complete Git-visible project tree. Status markers and totals still reflect the active scope.
+- **Git mode** shows only changes in the active scope. `v` switches between the flat change list and the directory tree of changed paths.
+- **Change list** (default) shows full project paths under two dividers: `Modified files` for tracked changes, then `No version files` for untracked files. Each file is listed once; empty groups are omitted. The dividers are navigable rows; `space` toggles all committable files in a section.
+- **Directory mode** shows the complete Git-visible file tree, including unchanged code. Deleted paths are excluded. Preview reads current file contents rather than a Git diff; there are no commit checkboxes or diff totals. `Enter` opens the file, never commits it. `v` and `s` are inactive here. Repository-level history, branches, and confirmed push remain available.
 - **Workspace scope** shows current working-tree changes relative to `HEAD`, including staged and unstaged changes.
-- **Session scope** (`s`) shows changes that differ from the repository snapshot captured for the current OMP session.
+- **Session scope** (`s`, Git mode only) shows changes since the repository snapshot captured for the current OMP session.
 
 The active repository baseline is captured at `session_start`, before the panel opens. A repository first visited later in the same OMP session receives a baseline on first access. When caching is enabled, a validated persistent copy may preload this baseline; cache identity mismatches are treated as misses. Baseline data survives in memory until `session_shutdown`; if caching is enabled it is also persisted for a later session.
 
@@ -288,7 +288,7 @@ Tracked files display a fresh `HEAD`-to-working-tree diff that combines staged a
 
 ## Non-Git directories
 
-Outside a Git repository, the panel becomes a read-only filesystem browser rooted at OMP's current working directory. It includes ordinary entries except `.git`. Git status, modified mode, and workspace/session scope are unavailable because there is no Git baseline. Git ignore rules do not apply in filesystem fallback mode.
+Outside a Git repository, the panel opens directly in the same read-only directory browser rooted at OMP's current working directory. It includes ordinary entries except `.git`; files preview their current contents. Git mode, workspace/session scope, history, branches, and Git writes are unavailable. Git ignore rules do not apply outside Git repositories.
 
 ## Limits
 
@@ -303,11 +303,20 @@ To keep the OMP session responsive:
 - Amend can update only `HEAD`'s subject; older commits are not amendable.
 - Force push is never available.
 
-The panel displays a truncation state when a limit is reached. Git all-files mode includes tracked and untracked/non-ignored paths, excludes ignored paths, and never traverses `.git` internals.
+The panel displays a truncation state when a limit is reached. Directory browsing in a Git project includes tracked and untracked/non-ignored paths, excludes ignored and deleted paths, and never traverses `.git` internals.
 
 ## Scope and safety
 
 Reviewing files, diffs, and history does not write to the repository. Explicit writes are limited to switching to a local branch, committing selected workspace paths, amending the current `HEAD` subject, and pushing the reviewed upstream plan. These ordinary Git operations update branch refs as needed; there are no separate branch/tag/ref management controls. The panel does not fetch, stash, or apply/revert hunks; force push is never available. No write is implicit in selecting or previewing a row. Session scope describes changes since the baseline, not which Agent produced them.
+
+## Development checks
+
+All automated test files live under `test/`, mirroring the `src/` subdirectories. Production source stays under `src/`.
+
+```powershell
+bun run check
+bun test ./test/ui/files-panel.test.ts ./test/review-source.test.ts
+```
 
 ## License / 许可证
 

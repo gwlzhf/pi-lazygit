@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { ChangeRecord, StatusCode } from "../contracts";
+import type { ChangeRecord, StatusCode } from "../../src/contracts";
 import {
   assertCommitMessage,
   commitArgv,
   PATH_BATCH_SIZE,
   planCommit,
   stageInvocations,
-} from "./commit";
+} from "../../src/git/commit";
 
 function change(path: string, status: StatusCode, overrides: Partial<ChangeRecord> = {}): ChangeRecord {
   return {

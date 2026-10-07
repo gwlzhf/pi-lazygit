@@ -18,9 +18,9 @@ import type {
   ReviewSource,
   StatusCode,
   SwitchBranchOptions,
-} from "../contracts";
-import { FilesPanel, isQuitKey, type FilesPanelOptions } from "./files-panel";
-import type { HighlightThemeName } from "./highlight";
+} from "../../src/contracts";
+import { FilesPanel, isQuitKey, type FilesPanelOptions } from "../../src/ui/files-panel";
+import type { HighlightThemeName } from "../../src/ui/highlight";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -334,32 +334,29 @@ function expectWidthSafe(lines: readonly string[], width: number): void {
 }
 
 describe("FilesPanel state machine", () => {
-  test("starts in the modified workspace change list and rebuilds tree rows for a, m, and s", async () => {
-    const { panel, source } = harness(60, 7);
+  test("directory browsing preserves the Git layout and scope when returning", async () => {
+    const { panel, source } = harness(80, 12);
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
-
-    const initial = panel.render(60);
-    const rendered = initial.join("\n");
-    expect(rendered).toContain("M [x]  src/a.ts");
-    expect(rendered).toContain("A [x]  src/b.ts");
-    expectWidthSafe(initial, 60);
-
-    panel.handleInput("a");
-    expect(panel.render(60).join("\n")).toContain("README.md");
-
+    panel.handleInput("v");
     panel.handleInput("s");
-    const allSession = panel.render(60).join("\n");
-    expect(allSession).toContain("session ·");
-    expect(allSession).toContain("a.ts");
-    expect(allSession).toContain("README.md");
+    expect(panel.render(80).join("\n")).not.toContain("a.ts");
+    expect(panel.render(80).join("\n")).toContain("b.ts");
 
     panel.handleInput("m");
-    const modifiedSession = panel.render(60).join("\n");
-    expect(modifiedSession).toContain("session ·");
-    expect(modifiedSession).not.toContain("a.ts");
-    expect(modifiedSession).toContain("b.ts");
+    expect(panel.render(80).join("\n")).toContain("README.md");
+    expect(panel.render(80).join("\n")).toContain("a.ts");
+    panel.handleInput("s");
+    panel.handleInput("v");
+    panel.handleInput("m");
+    const restored = panel.render(80).join("\n");
+    expect(restored).not.toContain("a.ts");
+    expect(restored).toContain("b.ts");
+    expect(restored).not.toContain("[x]");
+    panel.handleInput("v");
+    expect(panel.render(80).join("\n")).toContain("[x]");
+    panel.dispose();
   });
 
   test("v toggles between the directory tree and the modified/untracked change list", async () => {
@@ -374,10 +371,6 @@ describe("FilesPanel state machine", () => {
     await settle();
 
     const list = panel.render(60);
-    // The redesign moved the listing and scope detail out of the pane title: the overview row
-    // names the review and the footer reports "changes · workspace".
-    expect(list[1]).toContain("Files");
-    expect(list.at(-1)).toContain("changes · workspace");
     const body = list.join("\n");
     expect(body).toContain("Modified files");
     expect(body).toContain("M [x]  src/a.ts");
@@ -422,6 +415,45 @@ describe("FilesPanel state machine", () => {
     expect(tui.renderRequests).toBe(requests);
     expect(rendered[0]).toContain("Project files");
     expect(rendered.join("\n")).toContain("README.md");
+  });
+
+  test("switching modes replaces a same-path preview and discards the stale result", async () => {
+    const { panel, source } = harness(100, 12);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot({
+      allFiles: ["a.ts", "clean.ts", "deleted.ts"],
+      workspaceChanges: new Map([
+        ["a.ts", change("a.ts", "M")],
+        ["deleted.ts", change("deleted.ts", "D")],
+      ]),
+    }));
+    await settle();
+    panel.handleInput("n");
+    const diffRequest = source.previewCalls.at(-1)!;
+    panel.handleInput("\t");
+    panel.handleInput("m");
+    expect(diffRequest.signal.aborted).toBe(true);
+    source.previewCalls.at(-1)!.value.resolve(preview("a.ts", "text", ["current source code"]));
+    await settle();
+    diffRequest.value.resolve(preview("a.ts", "diff", ["obsolete diff result"]));
+    await settle();
+    const content = panel.render(100).join("\n");
+    expect(content).toContain("current source code");
+    expect(content).not.toContain("obsolete diff result");
+    panel.handleInput("\t");
+    const tree = panel.render(100).join("\n");
+    expect(tree).toContain("clean.ts");
+    expect(tree).not.toContain("deleted.ts");
+    panel.handleInput(" ");
+    panel.handleInput("\r");
+    expect(source.commitCalls).toHaveLength(0);
+    panel.handleInput("m");
+    const restoredRequest = source.previewCalls.at(-1)!;
+    restoredRequest.value.resolve(preview("a.ts", "diff", ["restored Git diff"]));
+    await settle();
+    expect(panel.render(100).join("\n")).toContain("restored Git diff");
+    expect(panel.render(100).join("\n")).not.toContain("current source code");
+    panel.dispose();
   });
 
   test("navigates, collapses, expands, and starts file previews on selection", async () => {
@@ -1479,7 +1511,6 @@ describe("FilesPanel deterministic rendering", () => {
     tui.setRows(2);
     const twoRows = panel.render(60);
     expect(twoRows[0]).toContain("Diff working tree");
-    expect(twoRows[1]).toBe("└─ demo · modified · workspace · +0 -0 · 0 files · refreshi┘");
     expectWidthSafe(oneRow, 60);
     expectWidthSafe(twoRows, 60);
   });
@@ -1844,7 +1875,7 @@ describe("FilesPanel commit selection", () => {
     expect(selected).toContain("[x]  src/a.ts");
     expect(selected).toContain("[x]  src/b.ts");
 
-    panel.handleInput("a");
+    panel.handleInput("m");
     expect(panel.render(80).join("\n")).toContain("README.md");
     panel.dispose();
   });

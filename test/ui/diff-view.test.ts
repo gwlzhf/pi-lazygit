@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { diffGutterWidth, parseUnifiedDiff, type DiffRow } from "./diff-view";
+import { diffGutterWidth, parseUnifiedDiff, type DiffRow } from "../../src/ui/diff-view";
 
 function pairs(rows: readonly DiffRow[]): string[] {
   return rows.map(row =>
