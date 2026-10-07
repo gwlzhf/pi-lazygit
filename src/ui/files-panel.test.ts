@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "bun:test";
 import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
-import { visibleWidth, type KeybindingsManager, type TUI } from "@oh-my-pi/pi-tui";
+import { matchesKey, visibleWidth, type KeybindingsManager, type TUI } from "@oh-my-pi/pi-tui";
 import type {
   AmendOptions,
   AmendResult,
@@ -19,7 +19,7 @@ import type {
   StatusCode,
   SwitchBranchOptions,
 } from "../contracts";
-import { FilesPanel, type FilesPanelOptions } from "./files-panel";
+import { FilesPanel, isQuitKey, type FilesPanelOptions } from "./files-panel";
 import type { HighlightThemeName } from "./highlight";
 
 interface Deferred<T> {
@@ -285,10 +285,17 @@ function fakeTui(columns = 100, rows = 7): FakeTui {
   return value as unknown as FakeTui;
 }
 
+/**
+ * OMP's real defaults: `app.interrupt` is Escape and `app.clear` is Ctrl+C.
+ * Stubbing interrupt as Ctrl+C instead would let a quit key swallow Escape and
+ * hide the regression it caused.
+ */
 function keybindings(): KeybindingsManager {
   return {
     matches(data: string, binding: string): boolean {
-      return binding === "app.interrupt" && data === "\x03";
+      if (binding === "app.interrupt") return matchesKey(data, "escape");
+      if (binding === "app.clear") return matchesKey(data, "ctrl+c");
+      return false;
     },
   } as unknown as KeybindingsManager;
 }
@@ -309,7 +316,6 @@ function harness(columns = 100, rows = 7, overrides: Partial<FilesPanelOptions> 
     source,
     tui,
     theme: plainTheme(),
-    keybindings: keybindings(),
     sessionName: "demo",
     onTreeRatioChange: ratio => ratios.push(ratio),
     done: result => doneResults.push(result),
@@ -2430,5 +2436,169 @@ describe("FilesPanel quit keys", () => {
     await settle();
     expect(panel.render(140).at(-1)).toContain("ctx 10");
     expect(doneResults).toEqual([]);
+  });
+
+  test("bare Escape is never a quit key, even though OMP binds app.interrupt to it", () => {
+    // The host does consider Escape the interrupt key; the panel must not.
+    expect(keybindings().matches("\x1b", "app.interrupt")).toBe(true);
+    expect(isQuitKey("q")).toBe(true);
+    expect(isQuitKey("\x03")).toBe(true);
+    expect(isQuitKey("\x1b")).toBe(false);
+  });
+
+  test("Escape steps back one level from every state without closing early", async () => {
+    for (const opener of ["", "\t", "b", "?"]) {
+      const { panel, source, doneResults } = harness(100, 8);
+      panel.start();
+      source.refreshCalls[0]?.value.resolve(snapshot());
+      await settle();
+      for (const step of opener) panel.handleInput(step);
+
+      // The first Escape unwinds exactly one level: help, branches, or focus.
+      panel.handleInput("\x1b");
+      expect(doneResults).toEqual([]);
+      // The second one closes from wherever the first one landed.
+      panel.handleInput("\x1b");
+      expect(doneResults).toEqual([undefined]);
+    }
+  });
+
+  test("Escape leaves an open commit dialog by cancelling it, not by closing the panel", async () => {
+    const { panel, source, doneResults } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    panel.handleInput("\r");
+    expect(panel.render(100).join("\n")).toContain("Commit message");
+    panel.handleInput("\x1b");
+    expect(panel.render(100).join("\n")).not.toContain("Commit message");
+    expect(doneResults).toEqual([]);
+  });
+});
+
+describe("FilesPanel text fields with an IME", () => {
+  /**
+   * The dialog draws `<label>: <text>_<cursor>` and pads the row to the panel
+   * width, so the field is read back with its padding removed and the cursor
+   * marker kept: the marker is what proves where the caret actually sits.
+   */
+  function fieldRow(panel: FilesPanel, label = "Message"): string {
+    const prefix = `${label}: `;
+    const row = panel.render(100).find(line => line.includes(prefix));
+    if (row === undefined) throw new Error(`the ${label} field is not on screen`);
+    return row.slice(row.indexOf(prefix) + prefix.length).trimEnd();
+  }
+
+  async function openCommit(): Promise<ReturnType<typeof harness>> {
+    const value = harness(100, 8);
+    value.panel.start();
+    value.source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    value.panel.handleInput("\r");
+    expect(value.panel.render(100).join("\n")).toContain("Commit message");
+    return value;
+  }
+
+  test("an IME composition replaces its own prefix instead of accumulating it", async () => {
+    const { panel } = await openCommit();
+    // A pinyin IME reports the whole composition buffer on every keystroke, so
+    // each arrival already contains what the field holds before the cursor.
+    for (const chunk of ["n", "ni", "nih", "niha", "nihao"]) panel.handleInput(chunk);
+    expect(fieldRow(panel)).toBe("nihao_");
+  });
+
+  test("committed CJK text inserts once, with the cursor after it", async () => {
+    const { panel } = await openCommit();
+    // A terminal hands over what the IME committed, which is the whole word.
+    panel.handleInput("修复");
+    expect(fieldRow(panel)).toBe("修复_");
+
+    panel.handleInput("登录");
+    expect(fieldRow(panel)).toBe("修复登录_");
+
+    // A word that merely starts like the previous one still inserts.
+    panel.handleInput("修");
+    expect(fieldRow(panel)).toBe("修复登录修_");
+  });
+
+  test("a read split mid-character drops the fragment instead of inserting mojibake", async () => {
+    const { panel } = await openCommit();
+    panel.handleInput("fix ");
+    // A truncated multi-byte read decodes to a replacement character, and the
+    // host has already lost the bytes, so the fragment must not be counted.
+    panel.handleInput("\uFFFD");
+    panel.handleInput("\uFFFD");
+    expect(fieldRow(panel)).toBe("fix _");
+
+    // The complete character that follows inserts normally.
+    panel.handleInput("提交");
+    expect(fieldRow(panel)).toBe("fix 提交_");
+  });
+
+  test("plain typing, repeats, and editing are unchanged", async () => {
+    const { panel } = await openCommit();
+    for (const character of "abc") panel.handleInput(character);
+    expect(fieldRow(panel)).toBe("abc_");
+
+    // A letter repeating the one before it must insert, not replace.
+    panel.handleInput("b");
+    expect(fieldRow(panel)).toBe("abcb_");
+
+    panel.handleInput("\x7f");
+    expect(fieldRow(panel)).toBe("abc_");
+
+    // Two steps left from the end land right after the first character.
+    panel.handleInput("\x1b[D");
+    panel.handleInput("\x1b[D");
+    panel.handleInput("X");
+    expect(fieldRow(panel)).toBe("aX_bc");
+
+    panel.handleInput("\x1b[H");
+    panel.handleInput("\x1b[F");
+    panel.handleInput("!");
+    expect(fieldRow(panel)).toBe("aXbc!_");
+
+    panel.handleInput("\x1b[D");
+    panel.handleInput("\x1b[D");
+    panel.handleInput("\x1b[3~");
+    expect(fieldRow(panel)).toBe("aXb_!");
+  });
+
+  test("a paste is inserted literally even when it starts like the text before the cursor", async () => {
+    const { panel } = await openCommit();
+    panel.handleInput("ab");
+    // "bcd" repeats the character before the cursor, which is exactly the shape
+    // the composition rule rewrites. A paste is never a composition.
+    panel.handleInput("\x1b[200~bcd\x1b[201~");
+    expect(fieldRow(panel)).toBe("abbcd_");
+
+    panel.handleInput("\x1b[200~提交信息\x1b[201~");
+    expect(fieldRow(panel)).toBe("abbcd提交信息_");
+  });
+
+  test("the amend subject applies the same editing rules", async () => {
+    const { panel, source } = harness(100, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("g");
+    source.historyCalls[0]?.value.resolve({
+      entries: [{ oid: "a".repeat(40), shortOid: "aaaaaaaa", subject: "old", author: "A", authoredAt: 0 }],
+      truncated: false,
+    });
+    await settle();
+    panel.handleInput("u");
+    source.headMessageCalls[0]?.value.resolve({ subject: "", body: "", pushed: false });
+    await settle();
+
+    panel.handleInput("改进");
+    expect(fieldRow(panel)).toBe("改进_");
+
+    // A read split mid-character leaves the field alone instead of mojibake.
+    panel.handleInput("\uFFFD");
+    expect(fieldRow(panel)).toBe("改进_");
+    panel.handleInput("登录");
+    expect(fieldRow(panel)).toBe("改进登录_");
   });
 });

@@ -86,7 +86,6 @@ export function createExtension(
               source,
               tui,
               theme,
-              keybindings,
               ...(sessionName === undefined ? {} : { sessionName }),
               treeRatio: settings.treeRatio,
               treeCollapsed: settings.treeCollapsed,

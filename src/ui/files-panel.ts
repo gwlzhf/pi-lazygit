@@ -4,7 +4,6 @@ import {
   routeSgrMouseInput,
   visibleWidth,
   type Component,
-  type KeybindingsManager,
   type SgrMouseEvent,
   type TUI,
 } from "@oh-my-pi/pi-tui";
@@ -89,7 +88,6 @@ export interface FilesPanelOptions {
   readonly source: ReviewSource;
   readonly tui: TUI;
   readonly theme: Theme;
-  readonly keybindings: KeybindingsManager;
   readonly sessionName?: string;
   /** Tree width restored from the persisted settings. */
   readonly treeRatio?: number;
@@ -160,11 +158,13 @@ function isAbort(error: unknown, signal: AbortSignal): boolean {
 
 /**
  * The keys that leave the panel outright, whatever it currently has open.
- * Ctrl+C goes through the host's `app.interrupt` binding so a user who remapped
- * it is not fighting a hardcoded control character.
+ *
+ * Ctrl+C is matched as a fixed control character on purpose. OMP binds
+ * `app.interrupt` to Escape by default, so asking the host which key means
+ * "interrupt" would turn Escape into a quit and break the layered back-out.
  */
-export function isQuitKey(data: string, keybindings: Pick<KeybindingsManager, "matches">): boolean {
-  return matchesKey(data, "q") || keybindings.matches(data, "app.interrupt");
+export function isQuitKey(data: string): boolean {
+  return matchesKey(data, "q") || matchesKey(data, "ctrl+c");
 }
 
 function editText(value: string, cursor: number, input: string): { value: string; cursor: number } {
@@ -183,15 +183,46 @@ function editText(value: string, cursor: number, input: string): { value: string
     characters.splice(cursor, 1);
     return { value: characters.join(""), cursor };
   }
-  const inserted = input
+  const pasted = input.includes("\x1b[200~") || input.includes("\x1b[201~");
+  const sanitized = input
     .replaceAll("\x1b[200~", "")
     .replaceAll("\x1b[201~", "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/[\u0000-\u001f\u007f]/g, "");
+  // A read can stop in the middle of a character and the decoder leaves a
+  // replacement character behind. Inserting it would corrupt the field and
+  // throw the cursor count off, so the fragment is dropped instead.
+  const inserted = sanitized.replace(/\uFFFD+$/u, "");
   if (inserted.length === 0) return { value, cursor };
   const text = [...inserted];
+  // An IME reports its composition as the whole buffer on every keystroke, so
+  // what already sits before the cursor is a prefix of what just arrived: the
+  // arrival replaces that prefix instead of appending a second copy of it. A
+  // letter that merely repeats the one before it is not an extension, and a
+  // paste is always literal, so neither is rewritten here.
+  const extendable = pasted ? 0 : longestPrefixLength(characters, cursor, text);
+  if (extendable > 0) {
+    characters.splice(cursor - extendable, extendable, ...text);
+    return { value: characters.join(""), cursor: cursor - extendable + text.length };
+  }
   characters.splice(cursor, 0, ...text);
   return { value: characters.join(""), cursor: cursor + text.length };
+}
+
+/** The longest run ending at `cursor` that `text` starts with and strictly extends. */
+function longestPrefixLength(characters: readonly string[], cursor: number, text: readonly string[]): number {
+  const limit = Math.min(cursor, text.length - 1);
+  for (let length = limit; length > 0; length -= 1) {
+    let matches = true;
+    for (let offset = 0; offset < length; offset += 1) {
+      if (characters[cursor - length + offset] !== text[offset]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return length;
+  }
+  return 0;
 }
 
 function collectDirectoryPaths(node: TreeNode, result: Set<string>): void {
@@ -212,7 +243,6 @@ export class FilesPanel implements Component {
   readonly #source: ReviewSource;
   readonly #tui: TUI;
   readonly #theme: Theme;
-  readonly #keybindings: KeybindingsManager;
   readonly #sessionName: string | undefined;
   readonly #onTreeRatioChange: ((ratio: number) => void) | undefined;
   readonly #onTreeCollapsedChange: ((collapsed: boolean) => void) | undefined;
@@ -338,7 +368,6 @@ export class FilesPanel implements Component {
     this.#source = options.source;
     this.#tui = options.tui;
     this.#theme = options.theme;
-    this.#keybindings = options.keybindings;
     this.#sessionName = options.sessionName;
     this.#onTreeRatioChange = options.onTreeRatioChange;
     this.#onTreeCollapsedChange = options.onTreeCollapsedChange;
@@ -375,7 +404,7 @@ export class FilesPanel implements Component {
     }
     // Quitting leaves the plugin; Escape only steps back one level. The two are
     // answered separately so a quit still works with a dialog on top.
-    if (isQuitKey(data, this.#keybindings)) {
+    if (isQuitKey(data)) {
       this.#quit();
       return;
     }
