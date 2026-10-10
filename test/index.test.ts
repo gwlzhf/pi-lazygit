@@ -640,7 +640,6 @@ test("prepares the session baseline before opening and clears it at shutdown", a
   const api = createApiHarness();
   const context = createContextHarness({ cwd: "C:\\repo" });
   const calls: string[] = [];
-  let sessionStartCompleted = false;
 
   createExtension(dependencies({
     createReviewSource: cwd => {
@@ -658,21 +657,17 @@ test("prepares the session baseline before opening and clears it at shutdown", a
     createPanel,
   }))(api.api);
 
-  const sessionStart = Promise.resolve(
-    api.lifecycle.get("session_start")?.(
-      { type: "session_start" },
-      context.ctx,
-    ),
-  ).then(() => {
-    sessionStartCompleted = true;
-  });
-
+  // session_start must return immediately: OMP awaits it before the UI is interactive.
+  await api.lifecycle.get("session_start")?.(
+    { type: "session_start" },
+    context.ctx,
+  );
+  await Promise.resolve();
   await Promise.resolve();
   expect(calls).toEqual(["prepare:C:\\repo"]);
-  expect(sessionStartCompleted).toBe(false);
 
   baselinePrepared.resolve(undefined);
-  await sessionStart;
+  await new Promise(resolve => setTimeout(resolve, 0));
   await invokeCommand(api.commands.get("files"), context.ctx);
   await api.lifecycle.get("session_shutdown")?.(
     { type: "session_shutdown" },
@@ -700,12 +695,11 @@ test("reports baseline failures as warnings without rejecting session startup", 
     createPanel,
   }))(api.api);
 
-  await expect(
-    api.lifecycle.get("session_start")?.(
-      { type: "session_start" },
-      context.ctx,
-    ),
-  ).resolves.toBeUndefined();
+  await api.lifecycle.get("session_start")?.(
+    { type: "session_start" },
+    context.ctx,
+  );
+  await new Promise(resolve => setTimeout(resolve, 0));
   expect(context.notifications).toEqual([
     [expect.stringContaining("Git is unavailable"), "warning"],
   ]);

@@ -11,7 +11,7 @@ import {
   prepareSessionBaseline,
   setSessionBaselineCacheEnabled,
 } from "./review-source";
-import { createPanelSettingsStore, type PanelSettingsStore } from "./settings";
+import { createPanelSettingsStore, useHostAgentDir, type PanelSettingsStore } from "./settings";
 import { FilesPanel, type FilesPanelOptions } from "./ui/files-panel";
 import { loadHighlighter, type Highlighter } from "./ui/highlight";
 
@@ -194,17 +194,21 @@ export function createExtension(
       handler: openFileReview,
     });
 
-    pi.on("session_start", async (_event, ctx) => {
-      try {
-        const settings = await dependencies.settings.load();
-        dependencies.setCacheEnabled(settings.cacheEnabled);
-        await dependencies.prepareSession(ctx.cwd, settings.cacheEnabled);
-      } catch (error) {
-        ctx.ui.notify(
-          `Unable to prepare the files review session baseline: ${errorMessage(error)}`,
-          "warning",
-        );
-      }
+    // OMP awaits session_start before the UI becomes interactive, so the baseline
+    // is captured in the background. Opening the panel joins the in-flight capture.
+    pi.on("session_start", (_event, ctx) => {
+      void (async () => {
+        try {
+          const settings = await dependencies.settings.load();
+          dependencies.setCacheEnabled(settings.cacheEnabled);
+          await dependencies.prepareSession(ctx.cwd, settings.cacheEnabled);
+        } catch (error) {
+          ctx.ui.notify(
+            `Unable to prepare the files review session baseline: ${errorMessage(error)}`,
+            "warning",
+          );
+        }
+      })();
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
@@ -216,5 +220,6 @@ export function createExtension(
 }
 
 export default function extension(pi: ExtensionAPI): void {
+  useHostAgentDir(pi.pi?.getAgentDir);
   createExtension()(pi);
 }
