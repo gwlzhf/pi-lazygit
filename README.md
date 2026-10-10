@@ -141,7 +141,7 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 
 ## Commit, amend, and push
 
-In the flat change list, `space` toggles a file or whole section, `x` inverts the current file's selection, and `A` toggles all visible changes. Committable tracked changes (`Modified files`) default to selected; untracked changes (`No version files`) default to unselected and can be selected manually. Refresh preserves manual choices; scope changes and post-commit resets apply these defaults again. Selection is held only in memory and is never persisted across sessions. A selection in session scope cannot be committed: session scope attributes changes since the OMP session baseline, while Git path-limited commits cannot isolate only those later edits.
+In the flat change list, `space` toggles the current file, `x` inverts the current file's selection, and `A` toggles all visible changes. Committable tracked changes (`Modified files`) default to selected; untracked changes (`No version files`) default to unselected and can be selected manually. Refresh preserves manual choices; scope changes and post-commit resets apply these defaults again. Selection is held only in memory and is never persisted across sessions. A selection in session scope cannot be committed: session scope attributes changes since the OMP session baseline, while Git path-limited commits cannot isolate only those later edits.
 
 `Enter` in the workspace change list starts commit: message → dry-run → `y` confirm. Git stages selected paths in batches of 200; the final path-limited commit still passes the complete selected path list, so an exceptionally large selection can exceed the platform's command-line limit. Dry-run stages those selected paths before showing its report; cancelling confirmation leaves them staged. `Ctrl+N` toggles `--no-verify` for commit/amend.
 
@@ -163,7 +163,7 @@ Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent 
 
 | Key | Action |
 | --- | --- |
-| `space` | Toggle a file or section selection |
+| `space` | Toggle the current file selection |
 | `x` | Invert the current file selection |
 | `A` | Toggle all selection |
 | `Enter` | Start commit in workspace change list |
@@ -275,7 +275,7 @@ Replaces the project tree keys while the branch list is shown (`b`).
 The Git panel opens in **Git mode**, showing the change list. Press `m` to switch between Git review and ordinary directory browsing, including while the file preview has focus. Returning restores the previous Git list/tree layout and review scope. `v` only changes the layout within Git mode; there are no separate enter-directory or enter-Git shortcuts.
 
 - **Git mode** shows only changes in the active scope. `v` switches between the flat change list and the directory tree of changed paths.
-- **Change list** (default) shows full project paths under two dividers: `Modified files` for tracked changes, then `No version files` for untracked files. Each file is listed once; empty groups are omitted. The dividers are navigable rows; `space` toggles all committable files in a section.
+- **Change list** (default) shows full project paths under two dividers: `Modified files` for tracked changes, then `No version files` for untracked files. Each file is listed once; empty groups are omitted. The dividers are display-only: keyboard navigation skips them, and clicking them does not change the selected file.
 - **Directory mode** shows the complete Git-visible file tree, including unchanged code. Deleted paths are excluded. Preview reads current file contents rather than a Git diff; there are no commit checkboxes or diff totals. `Enter` opens the file, never commits it. `v` and `s` are inactive here. Repository-level history, branches, and confirmed push remain available.
 - **Workspace scope** shows current working-tree changes relative to `HEAD`, including staged and unstaged changes.
 - **Session scope** (`s`, Git mode only) shows changes since the repository snapshot captured for the current OMP session.

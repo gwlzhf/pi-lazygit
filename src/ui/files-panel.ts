@@ -972,6 +972,7 @@ export class FilesPanel implements Component {
       return;
     }
     if (rowIndex < 0 || rowIndex >= this.#rows.length) return;
+    if (this.#rows[rowIndex]?.node.kind === "section") return;
     this.#focus = "tree";
     if (rowIndex === this.#selectedIndex) {
       this.#requestRender();
@@ -1485,12 +1486,7 @@ export class FilesPanel implements Component {
 
   #toggleCommitSelection(): void {
     const selected = this.#selectedRow();
-    if (selected?.node.kind === "section") {
-      const paths = this.#sectionPaths(this.#selectedIndex);
-      if (paths.every(path => this.#commitSelection.has(path))) {
-        for (const path of paths) this.#commitSelection.invert(path);
-      } else this.#commitSelection.selectAll(paths);
-    } else if (selected?.node.kind === "file") this.#commitSelection.toggle(selected.node.path);
+    if (selected?.node.kind === "file") this.#commitSelection.toggle(selected.node.path);
     this.#requestRender();
   }
 
@@ -1505,15 +1501,6 @@ export class FilesPanel implements Component {
     if (paths.every(path => this.#commitSelection.has(path))) this.#commitSelection.clear();
     else this.#commitSelection.selectAll(paths);
     this.#requestRender();
-  }
-
-  #sectionPaths(index: number): string[] {
-    const paths: string[] = [];
-    for (let row = index + 1; row < this.#rows.length && this.#rows[row]?.node.kind !== "section"; row += 1) {
-      const node = this.#rows[row]?.node;
-      if (node?.kind === "file") paths.push(node.path);
-    }
-    return paths;
   }
 
   #beginCommitMessage(): void {
@@ -1985,10 +1972,6 @@ export class FilesPanel implements Component {
         recoverSelection(this.#rows, previousPath, previousIndex),
         1,
       );
-      if (this.#focus === "preview" && this.#selectedRow()?.node.kind === "section") {
-        const firstFileIndex = this.#rows.findIndex(row => row.node.kind === "file");
-        if (firstFileIndex >= 0) this.#selectedIndex = firstFileIndex;
-      }
       this.#treeOffset = Math.min(this.#treeOffset, Math.max(0, this.#rows.length - 1));
       const selectedChange = this.#selectedRow();
       if (selectedChange?.node.kind === "file") {
@@ -2018,7 +2001,6 @@ export class FilesPanel implements Component {
 
   #skipSections(index: number, step: 1 | -1): number {
     if (index < 0 || this.#rows.length === 0) return this.#rows.length === 0 ? -1 : index;
-    if (this.#usesChangeList()) return Math.max(0, Math.min(this.#rows.length - 1, index));
     for (const direction of [step, -step] as const) {
       for (let cursor = index; cursor >= 0 && cursor < this.#rows.length; cursor += direction) {
         if (this.#rows[cursor]?.node.kind !== "section") return cursor;
@@ -2475,10 +2457,8 @@ export class FilesPanel implements Component {
 
   #renderTreeRow(row: TreeRow, index: number, width: number): string {
     if (row.node.kind === "section") {
-      const selected = index === this.#selectedIndex;
       const label = `── ${sanitizeTerminalText(row.node.name).replaceAll("\n", " ")} `;
-      const raw = `${selected ? ">" : " "}${label}${"─".repeat(Math.max(0, width - label.length - 1))}`;
-      if (selected && this.#focus === "tree") return renderSelectedRow(raw, width, this.#theme);
+      const raw = ` ${label}${"─".repeat(Math.max(0, width - label.length - 1))}`;
       return this.#theme.fg("muted", fitCell(raw, width));
     }
     const selected = index === this.#selectedIndex;

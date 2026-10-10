@@ -142,7 +142,7 @@ export const PANEL_HELP_GROUPS: readonly {
       { key: "m", label: "Git / directory mode" },
       { key: "v", label: "Git changes: list / tree" },
       { key: "s", label: "Git scope" },
-      { key: "space", label: "select file / section" },
+      { key: "space", label: "select file" },
       { key: "x", label: "invert file selection" },
       { key: "A", label: "toggle all selection" },
       { key: "Enter", label: "commit: message → dry-run → y confirm" },

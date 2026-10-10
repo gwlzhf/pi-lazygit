@@ -377,20 +377,58 @@ describe("FilesPanel state machine", () => {
     expect(body).toContain("No version files");
     expectWidthSafe(list, 60);
 
-    // The list contains a section row before the untracked section and file.
-    panel.handleInput("n");
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
-    panel.handleInput("n");
+    panel.handleInput("\x1b[A");
+    expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
     panel.handleInput("n");
     expect(source.previewCalls.at(-1)?.path).toBe("notes.txt");
-    panel.handleInput("p");
+    panel.handleInput("\x1b[B");
+    expect(source.previewCalls.at(-1)?.path).toBe("notes.txt");
     panel.handleInput("p");
     expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
+    panel.handleInput("\x1b[B");
+    expect(source.previewCalls.at(-1)?.path).toBe("notes.txt");
+    panel.handleInput("\x1b[A");
+    expect(source.previewCalls.at(-1)?.path).toBe("src/a.ts");
+
+    const frame = panel.render(60);
+    for (const label of ["Modified files", "No version files"]) {
+      const screenRow = frame.findIndex(line => line.includes(label));
+      panel.handleInput(`\x1b[<0;4;${screenRow + 1}M`);
+      expect(panel.render(60).join("\n")).toContain("> M [x]  src/a.ts");
+    }
+    panel.handleInput(" ");
+    const toggled = panel.render(60).join("\n");
+    expect(toggled).toContain("[ ]  src/a.ts");
+    expect(toggled).toContain("[ ]  notes.txt");
 
     panel.handleInput("v");
     const tree = panel.render(60).join("\n");
     expect(tree).not.toContain("Modified files");
     expect(tree).toContain("a.ts");
+  });
+
+  test("an untracked-only list selects its file and stays unselected after all changes disappear", async () => {
+    const { panel, source } = harness(80, 8);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot({
+      allFiles: ["notes.txt"],
+      workspaceChanges: new Map([["notes.txt", change("notes.txt", "?")]]),
+    }));
+    await settle();
+    expect(panel.render(80).join("\n")).toContain("> ? [ ]  notes.txt");
+    for (const input of ["\x1b[A", "\x1b[B", "p", "n"]) {
+      panel.handleInput(input);
+      expect(panel.render(80).join("\n")).toContain("> ? [ ]  notes.txt");
+    }
+    panel.handleInput("r");
+    source.refreshCalls[1]?.value.resolve(snapshot({ workspaceChanges: new Map() }));
+    await settle();
+    const previewCount = source.previewCalls.length;
+    for (const input of ["\x1b[A", "\x1b[B", " "]) panel.handleInput(input);
+    expect(source.previewCalls.length).toBe(previewCount);
+    expect(panel.render(80).join("\n")).not.toContain("notes.txt");
+    panel.dispose();
   });
 
   test("ignores mode and scope keys for filesystem snapshots", async () => {
@@ -547,7 +585,6 @@ describe("FilesPanel state machine", () => {
     await settle();
     // Use the file tree so Enter opens the preview rather than starting commit.
     panel.handleInput("v");
-    panel.handleInput("\x1b[B");
     source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["before refresh"]));
     await settle();
     panel.handleInput("\r");
@@ -1854,38 +1891,11 @@ describe("FilesPanel overview geometry", () => {
   });
 });
 describe("FilesPanel commit selection", () => {
-  test("keyboard section rows bulk-toggle selection without changing file navigation keys", async () => {
-    const { panel, source } = harness(80, 8);
-    panel.start();
-    source.refreshCalls[0]?.value.resolve(snapshot());
-    await settle();
-
-    const initial = panel.render(80).join("\n");
-    expect(initial).toContain("Modified files");
-    expect(initial).toContain("[x]  src/a.ts");
-    expect(initial).toContain("[x]  src/b.ts");
-
-    panel.handleInput(" ");
-    const cleared = panel.render(80).join("\n");
-    expect(cleared).toContain("[ ]  src/a.ts");
-    expect(cleared).toContain("[ ]  src/b.ts");
-
-    panel.handleInput(" ");
-    const selected = panel.render(80).join("\n");
-    expect(selected).toContain("[x]  src/a.ts");
-    expect(selected).toContain("[x]  src/b.ts");
-
-    panel.handleInput("m");
-    expect(panel.render(80).join("\n")).toContain("README.md");
-    panel.dispose();
-  });
-
   test("space toggles only the current file and A toggles all files", async () => {
     const { panel, source } = harness(80, 8);
     panel.start();
     source.refreshCalls[0]?.value.resolve(snapshot());
     await settle();
-    panel.handleInput("\x1b[B");
     panel.handleInput(" ");
     const oneChanged = panel.render(80).join("\n");
     expect(oneChanged).toContain("[ ]  src/a.ts");
