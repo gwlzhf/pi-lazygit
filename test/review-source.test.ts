@@ -18,6 +18,8 @@ import type {
   PushOptions,
   PushPlan,
   PushResult,
+  RevertOptions,
+  RevertResult,
   RefreshOptions,
   StatusCode,
   SwitchBranchOptions,
@@ -93,6 +95,7 @@ interface FakeGit {
   amend(options: AmendOptions): Promise<AmendResult>;
   pushPlan(options: RefreshOptions): Promise<PushPlan>;
   push(options: PushOptions): Promise<PushResult>;
+  revert(options: RevertOptions): Promise<RevertResult>;
   cacheFingerprint(signal: AbortSignal): Promise<{ readonly headOid?: string; readonly indexFingerprint: string }>;
 }
 
@@ -107,6 +110,7 @@ function unusedGitOperations(): Pick<
   | "amend"
   | "pushPlan"
   | "push"
+  | "revert"
   | "cacheFingerprint"
 > {
   return {
@@ -137,6 +141,9 @@ function unusedGitOperations(): Pick<
     async push() {
       throw new Error("Git pushes are not used by this test");
     },
+    async revert() {
+      throw new Error("Git reverts are not used by this test");
+    },
     async cacheFingerprint(receivedSignal) {
       receivedSignal.throwIfAborted();
       return { headOid: "test-head", indexFingerprint: "test-index" };
@@ -158,6 +165,7 @@ type FakeGitBackend = Pick<
   | "amend"
   | "pushPlan"
   | "push"
+  | "revert"
   | "cacheFingerprint"
 >;
 

@@ -106,6 +106,14 @@ export function isCommittable(record: ChangeRecord): boolean {
   return record.status !== "U";
 }
 
+/**
+ * Whether a path can be discarded. An unmerged path has no single committed
+ * state to go back to, so Git refuses to restore one of its sides.
+ */
+export function isRevertible(record: ChangeRecord): boolean {
+  return record.status !== "U";
+}
+
 /** The HEAD commit message, split so an amend can replace only the subject. */
 export interface HeadMessage {
   readonly subject: string;
@@ -174,6 +182,33 @@ export interface PushResult {
   readonly branch: string;
   readonly upstream: string;
   readonly output: string;
+}
+
+export interface RevertOptions {
+  /** Project paths to discard; the list is the fence, exactly as for a commit. */
+  readonly paths: readonly string[];
+  readonly signal: AbortSignal;
+}
+
+/**
+ * The three kinds of change a revert handles differently: a tracked path goes
+ * back to what HEAD holds, an addition leaves the index, and an untracked file
+ * only ever gets deleted.
+ */
+export interface RevertPlan {
+  /** Tracked paths Git has a committed version of. */
+  readonly restore: readonly string[];
+  /** Index entries for paths no commit holds, dropped so they become untracked. */
+  readonly unindex: readonly string[];
+  /** Working-tree files to delete once nothing tracks them. */
+  readonly remove: readonly string[];
+  /** Every path the plan touches, however it is handled. */
+  readonly paths: readonly string[];
+}
+
+export interface RevertResult {
+  /** Every path Git actually discarded, after resolving the selection afresh. */
+  readonly paths: readonly string[];
 }
 
 export interface ProjectSnapshot {
@@ -255,6 +290,7 @@ export interface ReviewSource {
   /** Rejects when the branch tracks nothing, so a blind push cannot happen. */
   pushPlan(options: RefreshOptions): Promise<PushPlan>;
   push(options: PushOptions): Promise<PushResult>;
+  revert(options: RevertOptions): Promise<RevertResult>;
 }
 
 export interface BaselineEntry {

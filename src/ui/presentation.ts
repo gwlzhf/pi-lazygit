@@ -98,6 +98,9 @@ function actionsFor(input: PanelPresentationInput): readonly PanelAction[] {
       { key: "x", label: "invert selected file" },
       { key: "A", label: "toggle all selection" },
     );
+    if (input.scope === "workspace") {
+      actions.push({ key: "R", label: "revert the ticked files, or the file under the cursor" });
+    }
   }
   if (input.sourceKind === "git") {
     actions.push({ key: "P", label: "push current branch" }, { key: "b", label: "branches" }, { key: "g", label: "history" });
@@ -146,6 +149,8 @@ export const PANEL_HELP_GROUPS: readonly {
       { key: "x", label: "invert file selection" },
       { key: "A", label: "toggle all selection" },
       { key: "Enter", label: "commit: message → dry-run → y confirm" },
+      { key: "R", label: "revert the ticked files, or the file under the cursor" },
+      { key: "y", label: "confirm a revert after reviewing what it discards" },
       { key: "Ctrl+N", label: "toggle --no-verify for commit/amend" },
       { key: "P", label: "review current branch push plan" },
       { key: "y", label: "continue to distinct push write confirmation" },

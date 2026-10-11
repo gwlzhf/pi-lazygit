@@ -1,4 +1,4 @@
-import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
+﻿import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 import {
   matchesKey,
   routeSgrMouseInput,
@@ -32,10 +32,12 @@ import {
   type GitLogSnapshot,
   type ProjectSnapshot,
   type PushPlan,
+  type RevertPlan,
   type ReviewSource,
   type ViewMode,
 } from "../contracts";
 import { CommitSelection, canCommit } from "../model/commit-selection";
+import { revertPlan, summarizeRevert } from "../model/revert-plan";
 import {
   buildChangeList,
   buildTree,
@@ -345,15 +347,19 @@ export class FilesPanel implements Component {
   #selectionInitialized = false;
   #commitController: AbortController | undefined;
   #amendController: AbortController | undefined;
+  #revertController: AbortController | undefined;
   #pushController: AbortController | undefined;
   #commitError: string | undefined;
   #amendError: string | undefined;
+  #revertError: string | undefined;
+  #revertNotice: string | undefined;
   #pushError: string | undefined;
   #commitTimeoutMs: number;
   #pushTimeoutMs: number;
   #protectedBranches: ReadonlySet<string>;
   #commitDialog: { readonly kind: "message" | "confirm"; message: string; cursor: number; noVerify: boolean; output?: string } | undefined;
   #amendDialog: { subject: string; cursor: number; body?: string; noVerify: boolean; pushed: boolean } | undefined;
+  #revertDialog: RevertPlan | undefined;
   #pushPlan: PushPlan | undefined;
   #pushStage: "plan" | "write" | undefined;
   #pushConfirmation = "";
@@ -361,6 +367,7 @@ export class FilesPanel implements Component {
   #resetSelectionAfterRefresh = false;
   #commitTimer: NodeJS.Timeout | undefined;
   #amendTimer: NodeJS.Timeout | undefined;
+  #revertTimer: NodeJS.Timeout | undefined;
   #pushTimer: NodeJS.Timeout | undefined;
 
   constructor(options: FilesPanelOptions) {
@@ -408,7 +415,7 @@ export class FilesPanel implements Component {
       this.#quit();
       return;
     }
-    if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.#pushStage !== undefined) {
+if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.#revertDialog !== undefined || this.#pushStage !== undefined) {
       // The interrupt key already answered above, so Escape is the only way
       // back out of a dialog.
       if (matchesKey(data, "escape")) {
@@ -433,9 +440,15 @@ export class FilesPanel implements Component {
           this.#amendController = undefined;
           this.#amendDialog = undefined;
           this.#requestRender();
+        } else if (this.#revertController !== undefined) {
+          clearTimeout(this.#revertTimer);
+          this.#revertTimer = undefined;
+          this.#revertController.abort();
+          this.#revertController = undefined;
         } else this.#cancelWriteDialog();
       } else if (this.#commitDialog !== undefined) this.#handleCommitDialogInput(data);
       else if (this.#amendDialog !== undefined) this.#handleAmendDialogInput(data);
+      else if (this.#revertDialog !== undefined) this.#handleRevertDialogInput(data);
       else this.#handlePushConfirmation(data);
       return;
     }
@@ -580,7 +593,7 @@ export class FilesPanel implements Component {
         this.#renderOverviewRow(safeWidth),
         renderSingleBorder(this.#footer(), safeWidth, "bottom", this.#theme),
       ]);
-    } else if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.#pushStage !== undefined) {
+    } else if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.#revertDialog !== undefined || this.#pushStage !== undefined) {
       lines = this.#renderWriteDialog(safeWidth, this.#panelRows);
     } else if (this.#helpOpen) {
       lines = this.#renderHelp(safeWidth, this.#panelRows);
@@ -633,12 +646,15 @@ export class FilesPanel implements Component {
     this.#branchController?.abort();
     this.#commitController?.abort();
     this.#amendController?.abort();
+    this.#revertController?.abort();
     this.#pushController?.abort();
     clearTimeout(this.#commitTimer);
     clearTimeout(this.#amendTimer);
+    clearTimeout(this.#revertTimer);
     clearTimeout(this.#pushTimer);
     this.#commitTimer = undefined;
     this.#amendTimer = undefined;
+    this.#revertTimer = undefined;
     this.#pushTimer = undefined;
     this.#previewController = undefined;
     this.#historyController = undefined;
@@ -646,6 +662,7 @@ export class FilesPanel implements Component {
     this.#watchController = undefined;
     this.#branchController = undefined;
     this.#switchController = undefined;
+    this.#revertController = undefined;
     this.#highlighted = undefined;
     this.#diffRows = undefined;
     this.#cache = undefined;
@@ -695,6 +712,12 @@ export class FilesPanel implements Component {
     }
     if (this.#usesChangeList() && data === "A") {
       this.#toggleAllCommitSelection();
+      return;
+    }
+    if (this.#usesChangeList() && data === "R") {
+      this.#revertNotice = undefined;
+      this.#revertError = undefined;
+      this.#beginRevert();
       return;
     }
     if (matchesKey(data, "v")) {
@@ -1101,7 +1124,7 @@ export class FilesPanel implements Component {
       project => {
         if (!this.#isCurrentRefresh(generation, controller)) return;
         this.#refreshController = undefined;
-        if (this.#commitController !== undefined || this.#amendController !== undefined || this.#pushController !== undefined) {
+        if (this.#commitController !== undefined || this.#amendController !== undefined || this.#revertController !== undefined || this.#pushController !== undefined) {
           this.#refreshLoading = false;
           this.#refreshQueued = true;
           return;
@@ -1503,6 +1526,80 @@ export class FilesPanel implements Component {
     this.#requestRender();
   }
 
+  /**
+   * Offer to discard what the user has already named. A single key only
+   * describes the change and asks: a second, distinct `y` is what reaches the
+   * repository, because a revert cannot be undone from the panel.
+   */
+  #beginRevert(): void {
+    // Revert acts on the surface commit does: the workspace change list, where
+    // every affected path is named rather than implied by a directory.
+    if (this.#scope !== "workspace") return;
+    if (this.#commitController !== undefined || this.#amendController !== undefined || this.#revertController !== undefined || this.#pushController !== undefined) return;
+    const changes = this.#activeChanges();
+    const plan = revertPlan(new Map(this.#revertTargets().flatMap(path => {
+      const record = changes.get(path);
+      return record === undefined ? [] : [[path, record] as const];
+    })));
+    if (plan.paths.length === 0) return;
+    this.#revertDialog = plan;
+    this.#revertError = undefined;
+    this.#requestRender();
+  }
+
+  /**
+   * What the revert key would cover. A ticked selection comes first, because
+   * those are the paths the user has already chosen and they may be many; with
+   * nothing ticked the cursor's own row stands for itself.
+   */
+  #revertTargets(): readonly string[] {
+    const ticked = [...this.#commitSelection.selectedPaths()];
+    if (ticked.length > 0) return ticked;
+    const selected = this.#selectedRow();
+    return selected?.node.kind === "file" ? [selected.node.path] : [];
+  }
+
+  #handleRevertDialogInput(data: string): void {
+    const dialog = this.#revertDialog;
+    if (dialog === undefined || this.#revertController !== undefined) return;
+    if (data === "y") this.#executeRevert(dialog);
+    else if (data === "n") this.#cancelWriteDialog();
+  }
+
+  /**
+   * Carry out a confirmed revert. Git re-resolves the paths, so what the panel
+   * confirmed is a selection and the repository is the authority on it.
+   */
+  #executeRevert(dialog: RevertPlan): void {
+    const paths = [...dialog.paths];
+    if (paths.length === 0 || this.#revertController !== undefined) return;
+    this.#pauseWatchAndRefresh();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`revert timed out after ${this.#commitTimeoutMs}ms`)), this.#commitTimeoutMs);
+    timer.unref?.();
+    this.#revertTimer = timer;
+    this.#revertController = controller;
+    this.#requestRender();
+    void this.#source.revert({ paths, signal: controller.signal }).then(
+      result => {
+        if (this.#disposed || this.#revertController !== controller) return;
+        clearTimeout(timer);
+        this.#revertTimer = undefined;
+        this.#revertController = undefined;
+        this.#revertDialog = undefined;
+        this.#revertError = undefined;
+        this.#revertNotice = `Reverted ${result.paths.length} ${result.paths.length === 1 ? "path" : "paths"}`;
+        // The reverted paths are gone from the change set, so what is left is a
+        // fresh choice rather than the selection the confirmation described.
+        this.#resetSelectionAfterRefresh = true;
+        this.#installWatch();
+        this.#queueRefresh();
+        this.#requestRender();
+      },
+      error => this.#writeFailed("revert", error, controller, timer),
+    );
+  }
+
   #beginCommitMessage(): void {
     if (this.#commitController !== undefined || this.#amendController !== undefined || this.#pushController !== undefined) return;
     if (!canCommit(this.#scope, this.#commitSelection.size)) return;
@@ -1789,12 +1886,14 @@ export class FilesPanel implements Component {
       error => this.#writeFailed("push", error, controller, timer),
     );
   }
-  #writeFailed(kind: "commit" | "amend" | "push", error: unknown, controller: AbortController, timer?: NodeJS.Timeout): void {
+  #writeFailed(kind: "commit" | "amend" | "revert" | "push", error: unknown, controller: AbortController, timer?: NodeJS.Timeout): void {
     const active = kind === "commit"
       ? this.#commitController
       : kind === "amend"
         ? this.#amendController
-        : this.#pushController;
+        : kind === "revert"
+          ? this.#revertController
+          : this.#pushController;
     if (this.#disposed || active !== controller) return;
     clearTimeout(timer);
     const message = controller.signal.aborted
@@ -1810,6 +1909,10 @@ export class FilesPanel implements Component {
       this.#amendTimer = undefined;
       this.#amendController = undefined;
       this.#amendError = message;
+    } else if (kind === "revert") {
+      this.#revertTimer = undefined;
+      this.#revertController = undefined;
+      this.#revertError = message;
     } else {
       this.#pushTimer = undefined;
       this.#pushController = undefined;
@@ -1820,6 +1923,7 @@ export class FilesPanel implements Component {
     }
     this.#commitDialog = undefined;
     this.#amendDialog = undefined;
+    this.#revertDialog = undefined;
     this.#pushStage = undefined;
     this.#installWatch();
     this.#queueRefresh();
@@ -1827,9 +1931,10 @@ export class FilesPanel implements Component {
   }
 
   #cancelWriteDialog(): void {
-    if (this.#commitController !== undefined || this.#amendController !== undefined || this.#pushController !== undefined) return;
+    if (this.#commitController !== undefined || this.#amendController !== undefined || this.#revertController !== undefined || this.#pushController !== undefined) return;
     this.#commitDialog = undefined;
     this.#amendDialog = undefined;
+    this.#revertDialog = undefined;
     this.#pushStage = undefined;
     this.#pushPlan = undefined;
     this.#pushConfirmation = "";
@@ -1861,6 +1966,20 @@ export class FilesPanel implements Component {
         inputCursor = dialog.cursor;
       }
       busy = this.#commitController !== undefined;
+    } else if (this.#revertDialog !== undefined) {
+      const summary = summarizeRevert(this.#revertDialog);
+      title = "Confirm revert";
+      if (this.#revertController !== undefined) details.push("Reverting…");
+      else {
+        details.push(`${summary.total} ${summary.total === 1 ? "path" : "paths"} will be discarded`);
+        for (const path of this.#revertDialog.restore) details.push(`restore to HEAD: ${path}`);
+        for (const path of this.#revertDialog.unindex) details.push(`untrack and delete: ${path}`);
+        if (summary.deleted.length > 0) {
+          details.push(`${summary.deleted.length} untracked ${summary.deleted.length === 1 ? "file" : "files"} deleted`);
+        }
+        details.push("This discards the changes and cannot be undone.");
+      }
+      busy = this.#revertController !== undefined;
     } else if (this.#amendDialog !== undefined) {
       title = "Amend HEAD subject";
       if (this.#amendDialog.pushed) details.push("WARNING: this commit was already pushed; do not force-push");
@@ -1899,6 +2018,7 @@ export class FilesPanel implements Component {
     if (this.#pushError !== undefined) details.push(`Push error: ${this.#pushError}`);
     if (this.#commitError !== undefined) details.push(`Commit error: ${this.#commitError}`);
     if (this.#amendError !== undefined) details.push(`Amend error: ${this.#amendError}`);
+    if (this.#revertError !== undefined) details.push(`Revert error: ${this.#revertError}`);
     const footer = this.#commitDialog?.kind === "message"
       ? "Type message · Enter continue · Ctrl+N no-verify · Esc cancel"
       : this.#commitDialog?.kind === "confirm"
@@ -1909,7 +2029,9 @@ export class FilesPanel implements Component {
           ? this.#amendController !== undefined
             ? "Loading HEAD message · Esc cancel"
             : "Enter amend HEAD subject · Ctrl+N no-verify · Esc cancel"
-          : this.#pushStage === "plan"
+          : this.#revertDialog !== undefined
+            ? this.#revertController !== undefined ? "Reverting · Esc cancel" : "y revert · n/Esc cancel"
+            : this.#pushStage === "plan"
             ? this.#pushController !== undefined
               ? "Planning push · Esc cancel"
               : this.#pushPlan?.upstream === undefined
@@ -2626,6 +2748,8 @@ export class FilesPanel implements Component {
     }
 
     if (this.#refreshLoading) pieces.push("refreshing");
+    else if (this.#revertNotice !== undefined) pieces.push(this.#revertNotice);
+    else if (this.#revertError !== undefined) pieces.push(`revert error: ${this.#revertError}`);
     else if (this.#refreshError !== undefined) pieces.push(`error: ${this.#refreshError}`);
     else if (this.#watchError !== undefined) pieces.push(`watch error: ${this.#watchError}`);
     else if (this.#leftMode === "log" && this.#historyLoading) pieces.push("loading history");
@@ -2671,7 +2795,7 @@ export class FilesPanel implements Component {
           ? ["F5/r refresh", "↑↓ scroll", "pgup/dn", "d/c diff", "\\ tree", "←/h/tab/esc tree", "drag copy", width]
           : project?.kind === "filesystem"
             ? ["F5/r refresh", "n/p move", "→/l preview", "↵ open", "tab", "\\ tree", width, "esc"]
-            : ["F5/r refresh", "n/p move", "→/l preview", this.#usesChangeList() && this.#scope === "workspace" ? "↵ commit" : "↵ open", ...(this.#usesChangeList() ? ["space toggle", "x invert", "A select all"] : []), "tab", "\\ tree", "g log", "b branches", width, ...(this.#directoryMode() ? [] : ["v list/tree", "s"]), "esc"];
+            : ["F5/r refresh", "n/p move", "→/l preview", this.#usesChangeList() && this.#scope === "workspace" ? "↵ commit" : "↵ open", ...(this.#usesChangeList() ? ["space toggle", "x invert", "A select all"] : []), ...(this.#usesChangeList() && this.#scope === "workspace" ? ["R revert"] : []), "tab", "\\ tree", "g log", "b branches", width, ...(this.#directoryMode() ? [] : ["v list/tree", "s"]), "esc"];
     pieces.unshift(...(pushAction === undefined ? [] : [pushAction]), ...notices);
     pieces.push(...(project?.kind === "git" && this.#leftMode === "files" ? ["m mode"] : []), "i /btw history", hints.filter(hint => hint !== undefined).join(" · "));
     return pieces.join(" · ");

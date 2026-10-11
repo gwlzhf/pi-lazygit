@@ -174,6 +174,9 @@ function createSource(): ReviewSource {
     push: async () => {
       throw new Error("not used by entry tests");
     },
+    revert: async () => {
+      throw new Error("not used by entry tests");
+    },
   };
 }
 

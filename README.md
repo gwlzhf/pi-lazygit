@@ -151,6 +151,16 @@ Press `P` in the files, history, or branches view—or click `P push current bra
 
 Ahead/behind counts use the last known local remote-tracking refs; this panel does not fetch. Fetch outside the panel to refresh those counts. Git still rejects a non-fast-forward push if the remote changed after the last fetch.
 
+### Reverting changes
+
+`R` in the workspace change list offers to discard changes. The hot key only describes what would happen — it never writes. A second, distinct `y` in the confirmation is what reaches the repository, and `n` or `Esc` cancels it.
+
+It covers, in order: **every ticked file** — the `space` selection may be many files, and they are discarded together in one confirmed action; failing that, the file under the cursor. Session scope has no revert.
+
+A tracked change is restored to the version in `HEAD`, including the index, so a staged edit is unstaged rather than half-reverted. A deleted file comes back from `HEAD`. A file that no commit holds — an untracked file, or one staged as an addition — is untracked and deleted, because there is no earlier version to restore. Unmerged paths are skipped: Git refuses to restore one side of a conflict the user never chose. Untracked removal runs `git clean` without `-x`, so an ignored file is never deleted even if Git reports it among the changes. A repository with no commit has nothing to restore to, so additions there are removed outright.
+
+The plugin does not offer a per-hunk revert, a `git revert` of a past commit, or a stash.
+
 Git writes time out after 120 seconds by default (`commitTimeoutMs`, `pushTimeoutMs` in `pi-lazygit.json`); change these settings in that file to configure the limits. Git will not prompt for credentials in the panel. HTTPS disables terminal prompts and relies on noninteractive Git credential helpers. Default SSH uses OpenSSH batch mode and an existing key/agent; configured custom SSH commands are preserved but must explicitly enable OpenSSH `BatchMode=yes` or plink `-batch`, otherwise push fails closed. On Windows, killing Git's direct child on timeout may not terminate hook-spawned grandchildren.
 
 Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent directory returned by OMP (`getAgentDir()`). Cache identity includes canonical repository root, HEAD identity/OID, and index fingerprint; invalid/mismatched data is ignored, and worktree contents are still hashed against the session baseline on every refresh. Worktree edits do not invalidate that baseline; a changed HEAD captures a new session origin, while an index-only change clears its disk checkpoint but preserves the in-memory baseline so staging does not hide prior edits. Caching defaults on (`cacheEnabled` in `pi-lazygit.json`); use `/files-cache on|off` to toggle it and `/clear-cache` to remove this project's cache entry.
@@ -166,6 +176,7 @@ Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent 
 | `space` | Toggle the current file selection |
 | `x` | Invert the current file selection |
 | `A` | Toggle all selection |
+| `R` | Offer to revert the ticked files (workspace change list only) |
 | `Enter` | Start commit in workspace change list |
 | `Ctrl+N` | Toggle `--no-verify` for commit/amend |
 | `u` | Amend `HEAD` subject in commit history |
@@ -307,7 +318,7 @@ The panel displays a truncation state when a limit is reached. Directory browsin
 
 ## Scope and safety
 
-Reviewing files, diffs, and history does not write to the repository. Explicit writes are limited to switching to a local branch, committing selected workspace paths, amending the current `HEAD` subject, and pushing the reviewed upstream plan. These ordinary Git operations update branch refs as needed; there are no separate branch/tag/ref management controls. The panel does not fetch, stash, or apply/revert hunks; force push is never available. No write is implicit in selecting or previewing a row. Session scope describes changes since the baseline, not which Agent produced them.
+Reviewing files, diffs, and history does not write to the repository. Explicit writes are limited to switching to a local branch, committing selected workspace paths, discarding the confirmed revert selection, amending the current `HEAD` subject, and pushing the reviewed upstream plan. These ordinary Git operations update branch refs as needed; there are no separate branch/tag/ref management controls. The panel does not fetch, stash, or apply/revert individual hunks; force push is never available. No write is implicit in selecting or previewing a row. Session scope describes changes since the baseline, not which Agent produced them.
 
 ## Development checks
 

@@ -15,6 +15,8 @@ import type {
   PushOptions,
   PushPlan,
   PushResult,
+  RevertOptions,
+  RevertResult,
   ReviewSource,
   StatusCode,
   SwitchBranchOptions,
@@ -98,6 +100,9 @@ class ControlledSource implements ReviewSource {
   readonly pushCalls: (Pending<PushResult> & {
     readonly branch: string;
     readonly upstream: string;
+  })[] = [];
+  readonly revertCalls: (Pending<RevertResult> & {
+    readonly paths: string[];
   })[] = [];
 
 
@@ -193,6 +198,16 @@ class ControlledSource implements ReviewSource {
     this.pushCalls.push({
       branch: options.branch,
       upstream: options.upstream,
+      signal: options.signal,
+      value,
+    });
+    return value.promise;
+  }
+
+  revert(options: RevertOptions): Promise<RevertResult> {
+    const value = deferred<RevertResult>();
+    this.revertCalls.push({
+      paths: [...options.paths],
       signal: options.signal,
       value,
     });
@@ -1910,6 +1925,150 @@ describe("FilesPanel commit selection", () => {
     expect(allCleared).toContain("[ ]  src/b.ts");
     panel.handleInput("A");
     expect(panel.render(80).join("\n")).toContain("[x]  src/a.ts");
+    panel.dispose();
+  });
+});
+
+describe("FilesPanel revert", () => {
+  test("Shift+R describes the ticked files and writes nothing until y", async () => {
+    const { panel, source } = harness(80, 10);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    // Both tracked changes start ticked, so both are what a revert covers.
+    expect(panel.render(80).join("\n")).toContain("[x]  src/a.ts");
+    panel.handleInput("R");
+    const confirmation = panel.render(80).join("\n");
+    expect(confirmation).toContain("Confirm revert");
+    expect(confirmation).toContain("2 paths will be discarded");
+    expect(confirmation).toContain("restore to HEAD: src/a.ts");
+    expect(confirmation).toContain("restore to HEAD: src/b.ts");
+    expect(confirmation).toContain("cannot be undone");
+    expect(confirmation).toContain("y revert");
+    // The description is not a write.
+    expect(source.revertCalls).toHaveLength(0);
+
+    // Any other key leaves it alone.
+    panel.handleInput("w");
+    expect(source.revertCalls).toHaveLength(0);
+
+    panel.handleInput("y");
+    await settle();
+    expect(source.revertCalls).toHaveLength(1);
+    expect(source.revertCalls[0]?.paths.sort()).toEqual(["src/a.ts", "src/b.ts"]);
+    source.revertCalls[0]?.value.resolve({ paths: ["src/a.ts", "src/b.ts"] });
+    await settle();
+    // The revert queues a refresh; the footer reports the outcome once it lands.
+    source.refreshCalls[1]?.value.resolve(snapshot());
+    await settle();
+    expect(panel.render(200).join("\n")).toContain("Reverted 2 paths");
+    panel.dispose();
+  });
+
+  test("reverts exactly the ticked file, whichever row the cursor is on", async () => {
+    const { panel, source } = harness(80, 10);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    // Untick src/b.ts so only src/a.ts remains chosen.
+    panel.handleInput("\x1b[B");
+    panel.handleInput(" ");
+    expect(panel.render(80).join("\n")).toContain("[ ]  src/b.ts");
+
+    // The cursor stays on src/b.ts, which is deliberately not what is reverted.
+    panel.handleInput("R");
+    const confirmation = panel.render(80).join("\n");
+    expect(confirmation).toContain("1 path will be discarded");
+    expect(confirmation).toContain("restore to HEAD: src/a.ts");
+    expect(confirmation).not.toContain("src/b.ts");
+
+    panel.handleInput("y");
+    await settle();
+    expect(source.revertCalls[0]?.paths).toEqual(["src/a.ts"]);
+    source.revertCalls[0]?.value.resolve({ paths: ["src/a.ts"] });
+    await settle();
+    source.refreshCalls[1]?.value.resolve(snapshot());
+    await settle();
+    expect(panel.render(200).join("\n")).toContain("Reverted 1 path");
+    panel.dispose();
+  });
+
+  test("cancelling with n leaves the panel untouched", async () => {
+    const { panel, source } = harness(80, 10);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    panel.handleInput("R");
+    expect(panel.render(80).join("\n")).toContain("Confirm revert");
+    panel.handleInput("n");
+    expect(panel.render(80).join("\n")).not.toContain("Confirm revert");
+    expect(source.revertCalls).toHaveLength(0);
+    panel.dispose();
+  });
+
+  test("escape cancels the confirmation", async () => {
+    const { panel, source } = harness(80, 10);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    panel.handleInput("R");
+    expect(panel.render(80).join("\n")).toContain("Confirm revert");
+    panel.handleInput("\x1b");
+    expect(panel.render(80).join("\n")).not.toContain("Confirm revert");
+    expect(source.revertCalls).toHaveLength(0);
+    panel.dispose();
+  });
+
+  test("offers no revert in the session scope", async () => {
+    const { panel, source } = harness(80, 10);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    panel.handleInput("s");
+    panel.handleInput("R");
+    expect(panel.render(80).join("\n")).not.toContain("Confirm revert");
+    expect(source.revertCalls).toHaveLength(0);
+    panel.dispose();
+  });
+
+  test("reports a failed revert without leaving the panel stuck", async () => {
+    const { panel, source } = harness(80, 10);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    panel.handleInput("R");
+    panel.handleInput("y");
+    await settle();
+    source.revertCalls[0]?.value.reject(new Error("fatal: Unable to create index.lock"));
+    await settle();
+    source.refreshCalls[1]?.value.resolve(snapshot());
+    await settle();
+
+    expect(panel.render(80).join("\n")).not.toContain("Confirm revert");
+    expect(panel.render(200).join("\n")).toContain("revert error:");
+    panel.dispose();
+  });
+
+  test("falls back to the cursor's own row when nothing is ticked", async () => {
+    const { panel, source } = harness(80, 10);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+
+    // Clear the ticking, so the cursor's row is what a revert covers.
+    panel.handleInput("A");
+    panel.handleInput("R");
+    expect(panel.render(80).join("\n")).toContain("Confirm revert");
+
+    panel.handleInput("y");
+    await settle();
+    expect(source.revertCalls[0]?.paths).toEqual(["src/a.ts"]);
     panel.dispose();
   });
 });

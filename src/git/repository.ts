@@ -24,6 +24,8 @@ import {
   type PushOptions,
   type PushPlan,
   type PushResult,
+  type RevertOptions,
+  type RevertResult,
   type SwitchBranchOptions,
 } from "../contracts";
 import {
@@ -57,6 +59,8 @@ import {
   type UpstreamRef,
 } from "./push";
 import { GitOutputError, parsePorcelainV1Z } from "./status";
+import { revertPlan } from "../model/revert-plan";
+import { revertInvocations } from "./revert";
 const HISTORY_LIMIT = 200;
 
 const SMALL_GIT_OUTPUT = 64 * 1024;
@@ -361,6 +365,30 @@ function validateCommitOid(oid: string): void {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(oid)) {
     throw new GitOutputError("Invalid commit object ID");
   }
+}
+
+/**
+ * Rejects a path that could name something outside the repository, so a
+ * selection reaching Git is always relative to the work tree.
+ */
+function assertSafeProjectPaths(paths: readonly string[]): Set<string> {
+  const wanted = new Set<string>();
+  for (const path of paths) {
+    const normalized = normalizeProjectPath(path);
+    const segments = normalized.split("/");
+    if (
+      normalized.length === 0 ||
+      normalized.includes("\0") ||
+      normalized.startsWith("/") ||
+      nodePath.isAbsolute(normalized) ||
+      nodePath.win32.isAbsolute(normalized) ||
+      segments.some(segment => segment === "..")
+    ) {
+      throw new GitOutputError(`Refusing to act on an unsafe path: ${JSON.stringify(path)}`);
+    }
+    wanted.add(normalized);
+  }
+  return wanted;
 }
 
 function parsePushCandidates(bytes: Uint8Array): PushCandidate[] {
@@ -796,26 +824,18 @@ export class GitRepository {
     paths: readonly string[],
     signal: AbortSignal,
   ): Promise<Map<string, ChangeRecord>> {
-    const wanted = new Set<string>();
-    for (const path of paths) {
-      const normalized = normalizeProjectPath(path);
-      const segments = normalized.split("/");
-      if (
-        normalized.length === 0 ||
-        normalized.includes("\0") ||
-        normalized.startsWith("/") ||
-        nodePath.isAbsolute(normalized) ||
-        nodePath.win32.isAbsolute(normalized) ||
-        segments.some(segment => segment === "..")
-      ) {
-        throw new GitOutputError(`Refusing to commit an unsafe path: ${JSON.stringify(path)}`);
-      }
-      wanted.add(normalized);
-    }
+    const wanted = assertSafeProjectPaths(paths);
     if (wanted.size === 0) {
       throw new GitOutputError("Select at least one file to commit");
     }
+    return this.recordsFor(wanted, signal);
+  }
 
+  /** Picks the records Git currently reports for `wanted`, dropping vanished paths. */
+  private async recordsFor(
+    wanted: ReadonlySet<string>,
+    signal: AbortSignal,
+  ): Promise<Map<string, ChangeRecord>> {
     const changes = await this.readStatus(signal);
     const selected = new Map<string, ChangeRecord>();
     for (const path of wanted) {
@@ -1113,6 +1133,31 @@ export class GitRepository {
     }
     if (configured.exitCode !== 1) throw commandFailure(configArgs, configured);
     return { ...NON_INTERACTIVE_ENV, GIT_SSH_COMMAND: "ssh -oBatchMode=yes" };
+  }
+
+  /**
+   * Discards the selected changes. The selection is resolved against a fresh
+   * status, so a path the caller named but that has since been committed or
+   * reverted is skipped instead of reverting something else.
+   */
+  async revert(options: RevertOptions): Promise<RevertResult> {
+    const signal = options.signal;
+    throwIfAborted(signal);
+    const head = await this.detectHeadIdentity(signal);
+    const wanted = assertSafeProjectPaths(options.paths);
+    if (wanted.size === 0) {
+      throw new GitOutputError("There is nothing to revert");
+    }
+    const plan = revertPlan(await this.recordsFor(wanted, signal));
+    if (plan.paths.length === 0) {
+      throw new GitOutputError("None of the selected paths can be reverted");
+    }
+    for (const invocation of revertInvocations(plan, { hasHead: head.hasHead })) {
+      throwIfAborted(signal);
+      const output = await this.run(invocation.argv, signal, SMALL_GIT_OUTPUT);
+      ensureComplete(invocation.argv, output);
+    }
+    return { paths: plan.paths };
   }
 
   async push(

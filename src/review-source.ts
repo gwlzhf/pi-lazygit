@@ -18,6 +18,8 @@ import {
   type PushOptions,
   type PushPlan,
   type PushResult,
+type RevertOptions,
+type RevertResult,
   type RefreshOptions,
   type ReviewSource,
   type SwitchBranchOptions,
@@ -43,6 +45,7 @@ type GitBackend = Pick<
   | "amend"
   | "pushPlan"
   | "push"
+  | "revert"
   | "cacheFingerprint"
 >;
 type FilesystemBackend = Pick<FilesystemProject, "inspect" | "preview">;
@@ -577,6 +580,11 @@ export class ProjectReviewSource implements ReviewSource {
   async push(options: PushOptions): Promise<PushResult> {
     const backend = await this.#gitBackend(options.signal);
     return backend.project.push(options);
+  }
+
+  async revert(options: RevertOptions): Promise<RevertResult> {
+    const backend = await this.#gitBackend(options.signal);
+    return backend.project.revert(options);
   }
 }
 
