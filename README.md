@@ -15,17 +15,21 @@ The extension targets the OMP 18.3.1 interactive TUI in Windows PowerShell and W
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.9.2
+omp plugin install github:gwlzhf/pi-lazygit#v0.9.3
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.9.2
+omp plugin install github:gwlzhf/pi-lazygit#v0.9.3
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
+
+The OMP SDK packages are optional peers: installed plugins use the SDK bundled with the host instead of downloading another OMP runtime. Their `devDependencies` entries are only for developing and testing this repository; a source checkout still needs `bun install` for development.
+
+This dependency change applies to packages built from the updated source. Existing installations and previously published tags are unchanged; install a newly built package to use it.
 
 For a one-run development session without installing the plugin, run this from the repository root:
 
