@@ -1,0 +1,39 @@
+name: Release
+
+# Push a version tag (v0.9.3) to typecheck, test, and attach the packed plugin
+# to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Tag must match package.json version
+        run: |
+          expected="v$(bun -e 'console.log((await Bun.file("package.json").json()).version)')"
+          if [ "$expected" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version ($expected)"
+            exit 1
+          fi
+
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun pm pack --destination dist
+
+      - name: GitHub release
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.tgz --title "$GITHUB_REF_NAME" --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" dist/*.tgz --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
