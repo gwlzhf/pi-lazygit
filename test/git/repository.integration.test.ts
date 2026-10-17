@@ -634,6 +634,21 @@ test("widens the diff context on request and rejects unsupported levels", async 
   expect(rejected.lines).toEqual(narrow.lines);
 });
 
+test("records a working-tree modification time for changed files and skips deletions", async () => {
+  const root = await initializeRepository();
+  await writeFile(join(root, "tracked.ts"), "changed\n");
+  await writeFile(join(root, "new.ts"), "added\n");
+  await rm(join(root, "deleted.ts"));
+
+  const inspection = await (await openRepository(root)).inspect(new AbortController().signal);
+
+  for (const path of ["tracked.ts", "new.ts"]) {
+    expect(inspection.mtimeByPath.get(path)).toBe((await stat(join(root, path))).mtimeMs);
+  }
+  expect(inspection.mtimeByPath.has("deleted.ts")).toBe(false);
+  expect([...inspection.mtimeByPath.keys()].sort()).toEqual(["new.ts", "tracked.ts"]);
+});
+
 test("previews untracked content and deleted tracked files", async () => {
   const root = await initializeRepository();
   await writeFile(join(root, "new.ts"), "first\nsecond\n");

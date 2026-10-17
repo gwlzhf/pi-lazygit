@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { open } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import * as nodePath from "node:path";
 import {
   DEFAULT_DIFF_CONTEXT,
@@ -77,6 +77,8 @@ export interface RepositoryInspection {
   readonly detachedAt?: string;
   readonly allFiles: readonly string[];
   readonly changes: ReadonlyMap<string, ChangeRecord>;
+  /** Working-tree modification time of each changed path that has a file. */
+  readonly mtimeByPath: ReadonlyMap<string, number>;
   readonly summaryByPath: ReadonlyMap<
     string,
     { readonly insertions: number; readonly deletions: number }
@@ -611,6 +613,29 @@ export class GitRepository {
     }
   }
 
+  /** Records when each changed path was last written, so the change list can lead with the newest file. */
+  private async addModificationTimes(
+    changes: ReadonlyMap<string, ChangeRecord>,
+    mtimeByPath: Map<string, number>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    for (const record of changes.values()) {
+      throwIfAborted(signal);
+      if (record.status === "D") continue;
+      try {
+        const { absolutePath } = await resolveProjectFile(this.root(), record.path);
+        const stats = await stat(absolutePath);
+        if (!stats.isFile()) continue;
+        mtimeByPath.set(record.path, stats.mtimeMs);
+      } catch (error) {
+        // A deletion, submodule, or untracked nested repository leaves no file
+        // to date; the list falls back to path order for such a path.
+        if (isMissingFile(error) || isNotRegularFile(error)) continue;
+        throw error;
+      }
+    }
+  }
+
   async inspect(signal: AbortSignal): Promise<RepositoryInspection> {
     throwIfAborted(signal);
     const head = await this.detectHeadIdentity(signal);
@@ -628,6 +653,8 @@ export class GitRepository {
     if (numstatOutput !== undefined) ensureComplete(numstatArgs, numstatOutput);
 
     const changes = parsePorcelainV1Z(statusOutput.stdout);
+    const mtimeByPath = new Map<string, number>();
+    await this.addModificationTimes(changes, mtimeByPath, signal);
     const summaryByPath = new Map<
       string,
       { readonly insertions: number; readonly deletions: number }
@@ -665,6 +692,7 @@ export class GitRepository {
       ...(head.detachedAt !== undefined ? { detachedAt: head.detachedAt } : {}),
       allFiles: parseNulPaths(filesOutput.stdout),
       changes,
+      mtimeByPath,
       summaryByPath,
       summary: { files: changes.size, insertions, deletions },
     };

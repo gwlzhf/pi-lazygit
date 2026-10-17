@@ -513,6 +513,7 @@ export class ProjectReviewSource implements ReviewSource {
       allFiles: inspection.allFiles,
       workspaceChanges: inspection.changes,
       sessionChanges,
+      mtimeByPath: inspection.mtimeByPath,
       workspaceSummary: inspection.summary,
       workspaceSummaryByPath: inspection.summaryByPath,
       sessionSummary: sessionSummary(sessionChanges, inspection.summaryByPath),

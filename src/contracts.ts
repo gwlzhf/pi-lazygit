@@ -220,6 +220,12 @@ export interface ProjectSnapshot {
   readonly allFiles: readonly string[];
   readonly workspaceChanges: ReadonlyMap<string, ChangeRecord>;
   readonly sessionChanges: ReadonlyMap<string, ChangeRecord>;
+  /**
+   * Working-tree modification time per changed path, so the change list can
+   * show the newest first. A path the worktree does not hold — a deletion, a
+   * submodule, an untracked nested repository — has no entry.
+   */
+  readonly mtimeByPath?: ReadonlyMap<string, number>;
   readonly workspaceSummary: ChangeSummary;
   readonly workspaceSummaryByPath: ReadonlyMap<string, FileLineSummary>;
   readonly sessionSummary: ChangeSummary;

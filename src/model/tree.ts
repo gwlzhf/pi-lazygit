@@ -218,18 +218,35 @@ function comparePaths(left: string, right: string): number {
 }
 
 /**
+ * Newest modification first, so the files a session just touched lead the
+ * list. A path without a recorded time sorts after every dated path, and equal
+ * or undated paths keep the alphabetical order the list already had.
+ */
+function compareChangeRecords(
+  left: ChangeRecord,
+  right: ChangeRecord,
+  mtimeByPath: ReadonlyMap<string, number> | undefined,
+): number {
+  const difference = (mtimeByPath?.get(right.path) ?? 0) - (mtimeByPath?.get(left.path) ?? 0);
+  return difference || comparePaths(left.path, right.path);
+}
+
+/**
  * Lists every change as a flat full project path under one of two dividers:
  * tracked files Git reports as changed, then the files Git does not track at
- * all. Each file appears once, under its display status. A section with no
- * files is omitted, so a repository with nothing untracked shows one divider.
+ * all. Each file appears once, under its display status, newest modification
+ * first. A section with no files is omitted, so a repository with nothing
+ * untracked shows one divider.
  */
 export function buildChangeList(
   changes: ReadonlyMap<string, ChangeRecord>,
+  mtimeByPath?: ReadonlyMap<string, number>,
 ): readonly TreeRow[] {
   const modified: TreeNode[] = [];
   const unversioned: TreeNode[] = [];
 
-  const records = [...changes.values()].sort((left, right) => comparePaths(left.path, right.path));
+  const records = [...changes.values()].sort((left, right) =>
+    compareChangeRecords(left, right, mtimeByPath));
   for (const record of records) {
     const path = normalizeTreePath(record.path);
     const node = changeNode(path, record.status);

@@ -62,6 +62,7 @@ function inspection(
     currentBranch: "main",
     allFiles: records.map((record) => record.path),
     changes,
+    mtimeByPath: new Map(),
     summary: { files: changes.size, insertions, deletions },
     summaryByPath,
     ...overrides,

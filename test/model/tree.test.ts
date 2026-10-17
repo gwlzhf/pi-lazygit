@@ -231,3 +231,67 @@ test("buildChangeList lists a renamed file once under its display status", () =>
     "R src/new.ts",
   ]);
 });
+
+test("buildChangeList lists the newest modified path first", () => {
+  const rows = buildChangeList(
+    changes(
+      record("src/a.ts", " ", "M", "M"),
+      record("src/b.ts", " ", "M", "M"),
+      record("notes.txt", "?", "?", "?"),
+    ),
+    new Map([
+      ["src/a.ts", 100],
+      ["src/b.ts", 300],
+      ["notes.txt", 200],
+    ]),
+  );
+
+  expect(describeRows(rows)).toEqual([
+    "-- Modified files",
+    "M src/b.ts",
+    "M src/a.ts",
+    "-- No version files",
+    "? notes.txt",
+  ]);
+});
+
+test("buildChangeList orders equally dated and undated paths alphabetically", () => {
+  const rows = buildChangeList(
+    changes(
+      record("src/b.ts", " ", "M", "M"),
+      record("src/a.ts", " ", "M", "M"),
+      record("deleted-b.ts", "D", " ", "D"),
+      record("deleted-a.ts", "D", " ", "D"),
+    ),
+    new Map([
+      ["src/a.ts", 100],
+      ["src/b.ts", 100],
+    ]),
+  );
+
+  expect(describeRows(rows)).toEqual([
+    "-- Modified files",
+    "M src/a.ts",
+    "M src/b.ts",
+    "D deleted-a.ts",
+    "D deleted-b.ts",
+  ]);
+});
+
+test("buildChangeList without recorded times keeps path order", () => {
+  const undated = changes(
+    record("src/b.ts", " ", "M", "M"),
+    record("src/a.ts", "A", " ", "A"),
+  );
+
+  expect(describeRows(buildChangeList(undated))).toEqual([
+    "-- Modified files",
+    "A src/a.ts",
+    "M src/b.ts",
+  ]);
+  expect(describeRows(buildChangeList(undated, new Map()))).toEqual([
+    "-- Modified files",
+    "A src/a.ts",
+    "M src/b.ts",
+  ]);
+});

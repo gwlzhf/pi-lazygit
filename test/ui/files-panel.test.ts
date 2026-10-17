@@ -423,6 +423,21 @@ describe("FilesPanel state machine", () => {
     expect(tree).toContain("a.ts");
   });
 
+  test("the change list leads with the most recently modified file", async () => {
+    const { panel, source } = harness(60, 9);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot({
+      mtimeByPath: new Map([["src/a.ts", 10], ["src/b.ts", 20]]),
+    }));
+    await settle();
+
+    const body = panel.render(60);
+    expect(body.findIndex(line => line.includes("src/b.ts")))
+      .toBeLessThan(body.findIndex(line => line.includes("src/a.ts")));
+    expect(source.previewCalls.at(-1)?.path).toBe("src/b.ts");
+    panel.dispose();
+  });
+
   test("an untracked-only list selects its file and stays unselected after all changes disappear", async () => {
     const { panel, source } = harness(80, 8);
     panel.start();

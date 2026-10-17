@@ -2089,7 +2089,7 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
     const previousIndex = this.#selectedIndex;
     const changes = this.#activeChanges();
     if (this.#usesChangeList()) {
-      this.#rows = buildChangeList(changes);
+      this.#rows = buildChangeList(changes, project.mtimeByPath);
       this.#selectedIndex = this.#skipSections(
         recoverSelection(this.#rows, previousPath, previousIndex),
         1,
