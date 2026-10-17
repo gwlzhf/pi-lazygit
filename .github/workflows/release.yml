@@ -1,6 +1,6 @@
 name: Release
 
-# Push a version tag (v0.9.4) to typecheck, test, and attach the packed plugin
+# Push a version tag (v0.9.5) to typecheck, test, and attach the packed plugin
 # to a GitHub release.
 on:
   push:
