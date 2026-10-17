@@ -15,21 +15,19 @@ The extension targets the OMP 18.3.1 interactive TUI in Windows PowerShell and W
 Install the published Git tag through OMP:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.9.5
+omp plugin install github:gwlzhf/pi-lazygit#v0.9.6
 ```
 
 When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
 
 ```powershell
 omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.9.5
+omp plugin install github:gwlzhf/pi-lazygit#v0.9.6
 ```
 
 Restart OMP after installation so the plugin is loaded and the session baseline is established.
 
-The OMP SDK packages are optional peers: installed plugins use the SDK bundled with the host instead of downloading another OMP runtime. Their `devDependencies` entries are only for developing and testing this repository; a source checkout still needs `bun install` for development.
-
-Installing the plugin does not need this repository's `devDependencies`. If you install from a checkout or an extracted archive, delete the `devDependencies` block from that copy's `package.json` before running `bun install`; with no runtime dependencies, nothing is installed. Running `bun install --omit dev` instead still downloads the optional OMP peer packages into `node_modules`, about 920 MB in testing.
+The plugin does not declare or download the OMP SDK. It uses the `@oh-my-pi/pi-coding-agent` and `@oh-my-pi/pi-tui` modules bundled with the OMP you have installed, so installing it never pulls a separate or newer copy of those packages into `node_modules`. The `devDependencies` entries pin the same version (18.3.1) only for developing and testing this repository; a source checkout still needs `bun install` for development.
 
 This dependency change applies to packages built from the updated source. Existing installations and previously published tags are unchanged; install a newly built package to use it.
 

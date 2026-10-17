@@ -1,6 +1,6 @@
 {
   "name": "pi-lazygit",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Review project files and Git diffs inside Oh My Pi",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
@@ -42,18 +42,6 @@
   },
   "omp": {
     "extensions": ["./src/index.ts"]
-  },
-  "peerDependencies": {
-    "@oh-my-pi/pi-coding-agent": ">=18.3.1 <19",
-    "@oh-my-pi/pi-tui": ">=18.3.1 <19"
-  },
-  "peerDependenciesMeta": {
-    "@oh-my-pi/pi-coding-agent": {
-      "optional": true
-    },
-    "@oh-my-pi/pi-tui": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": "18.3.1",
