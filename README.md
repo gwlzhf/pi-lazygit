@@ -29,6 +29,8 @@ Restart OMP after installation so the plugin is loaded and the session baseline 
 
 The OMP SDK packages are optional peers: installed plugins use the SDK bundled with the host instead of downloading another OMP runtime. Their `devDependencies` entries are only for developing and testing this repository; a source checkout still needs `bun install` for development.
 
+Installing the plugin does not need this repository's `devDependencies`. If you install from a checkout or an extracted archive, delete the `devDependencies` block from that copy's `package.json` before running `bun install`; with no runtime dependencies, nothing is installed. Running `bun install --omit dev` instead still downloads the optional OMP peer packages into `node_modules`, about 920 MB in testing.
+
 This dependency change applies to packages built from the updated source. Existing installations and previously published tags are unchanged; install a newly built package to use it.
 
 For a one-run development session without installing the plugin, run this from the repository root:
