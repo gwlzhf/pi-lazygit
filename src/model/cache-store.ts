@@ -44,7 +44,7 @@ function fileName(root: string): string {
 
 async function defaultAgentDir(): Promise<string> {
   // Keep the plugin entry point out of this model's import graph until storage is used.
-  const { getAgentDir } = await import("@oh-my-pi/pi-coding-agent");
+  const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
   return getAgentDir();
 }
 

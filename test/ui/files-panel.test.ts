@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "bun:test";
-import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
-import { matchesKey, visibleWidth, type KeybindingsManager, type TUI } from "@oh-my-pi/pi-tui";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { matchesKey, visibleWidth, type KeybindingsManager, type TUI } from "@earendil-works/pi-tui";
 import type {
   AmendOptions,
   AmendResult,
@@ -301,7 +301,7 @@ function fakeTui(columns = 100, rows = 7): FakeTui {
 }
 
 /**
- * OMP's real defaults: `app.interrupt` is Escape and `app.clear` is Ctrl+C.
+ * The host's default keybinding setup routes Escape to interrupt and Ctrl+C to clear.
  * Stubbing interrupt as Ctrl+C instead would let a quit key swallow Escape and
  * hide the regression it caused.
  */
@@ -329,7 +329,7 @@ function harness(columns = 100, rows = 7, overrides: Partial<FilesPanelOptions> 
   const panel = new FilesPanel({
     cwd: "C:/repo",
     source,
-    tui,
+    tui: tui as unknown as TUI,
     theme: plainTheme(),
     sessionName: "demo",
     onTreeRatioChange: ratio => ratios.push(ratio),
@@ -1003,7 +1003,19 @@ describe("FilesPanel branches, help, and primary movement", () => {
     await settle();
     panel.render(80);
 
-    panel.handleInput("\x1b[<0;5;4M");
+    panel.handleMouse({
+      type: "press",
+      button: "left",
+      x: 4,
+      y: 3,
+      screenX: 4,
+      screenY: 3,
+      width: 80,
+      height: 7,
+      shift: false,
+      alt: false,
+      ctrl: false,
+    });
 
     expect(source.switchBranchCalls).toHaveLength(0);
     expect(panel.render(80).join("\n")).toContain(">   feature/ui");
@@ -1361,8 +1373,8 @@ describe("FilesPanel syntax highlighting", () => {
 
     const rendered = panel.render(60);
     expect(calls).toEqual([["const x = 1;\nexport {};", "src/a.ts", "pi", piTheme]]);
-    expect(rendered[2]).toBe(`│1 \x1b[35mconst x = 1;\x1b[39m${" ".repeat(44)}\x1b[0m│`);
-    expect(rendered[3]).toBe(`│2 \x1b[35mexport {};\x1b[39m${" ".repeat(46)}\x1b[0m│`);
+    expect(rendered[2]).toBe(`│1 \x1b[35mconst x = 1;\x1b[39m${" ".repeat(44)}│`);
+    expect(rendered[3]).toBe(`│2 \x1b[35mexport {};\x1b[39m${" ".repeat(46)}│`);
     expectWidthSafe(rendered, 60);
 
     // Highlighting a preview is memoized, not repeated per render.
@@ -1781,26 +1793,7 @@ describe("FilesPanel diff layout and context", () => {
     expect(end[2]).toBe(`│${"  ▼ src/".padEnd(29)}│5 ${"-old 5".padEnd(31)}│5 ${"+new 5".padEnd(32)}│`);
     expect(end[5]).toBe(`│${"".padEnd(29)}│8 ${"-old 8".padEnd(31)}│8 ${"+new 8".padEnd(32)}│`);
   });
-  test("i opens native /btw history without rendering a second composer or closing review", async () => {
-    const opacity: number[] = [];
-    const openings: string[] = [];
-    const { panel, doneResults } = await diffHarness(100, {
-      diffMaskOpacity: 0.5,
-      onDiffMaskOpacityChange: value => opacity.push(value),
-      onBtwHistory: () => openings.push("open"),
-    });
-    panel.handleInput("=");
-    panel.handleInput("-");
-    expect(opacity).toEqual([0.6, 0.5]);
-    const before = panel.render(100);
-    panel.handleInput("i");
-    expect(openings).toEqual(["open"]);
-    expect(panel.render(100)).toEqual(before);
-    expect(before.join("\n")).not.toContain("/btw answer");
-    expect(doneResults).toEqual([]);
-    panel.handleInput("\x1b[B");
-    expect(panel.render(100).join("\n")).toContain("src/b.ts");
-  });
+
 
 });
 
@@ -2638,7 +2631,7 @@ describe("FilesPanel quit keys", () => {
     expect(doneResults).toEqual([]);
   });
 
-  test("bare Escape is never a quit key, even though OMP binds app.interrupt to it", () => {
+  test("bare Escape is never a quit key, even when the host uses it for interrupt", () => {
     // The host does consider Escape the interrupt key; the panel must not.
     expect(keybindings().matches("\x1b", "app.interrupt")).toBe(true);
     expect(isQuitKey("q")).toBe(true);

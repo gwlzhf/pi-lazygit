@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Theme } from "@oh-my-pi/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_HIGHLIGHT_THEME,
   getHighlightThemeLabel,
@@ -28,7 +28,7 @@ test("exposes the fixed theme catalog and default", () => {
   expect(isHighlightThemeName("unknown")).toBe(false);
 });
 
-test("loads each OMP theme once and forwards the selected theme", async () => {
+test("loads each Pi theme once and forwards the selected theme", async () => {
   const themeLoads: string[] = [];
   const highlightCalls: Array<readonly [string, string | undefined, Theme | undefined]> = [];
   const highlight = await loadHighlighter({

@@ -1,5 +1,5 @@
-import type { Theme, ThemeBg, ThemeColor } from "@oh-my-pi/pi-coding-agent";
-import { replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import type { Theme, ThemeBg, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import {
   DEFAULT_DIFF_MASK_OPACITY,
   normalizeDiffMaskOpacity,
@@ -11,6 +11,22 @@ const CSI_SEQUENCE = /(?:\x1b\[|\u009b)[0-?]*[ -/]*[@-~]/gu;
 const ESCAPE_SEQUENCE = /\x1b[ -/]*[0-~]/gu;
 const UNSAFE_CONTROLS = /[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]/gu;
 const ANSI_RESET = "\x1b[0m";
+
+function replaceTabs(text: string): string {
+  let column = 0;
+  let result = "";
+  for (const character of text) {
+    if (character === "\t") {
+      const spaces = 4 - column % 4;
+      result += " ".repeat(spaces);
+      column += spaces;
+    } else {
+      result += character;
+      column++;
+    }
+  }
+  return result;
+}
 
 export type BorderEdge = "top" | "bottom";
 
@@ -30,7 +46,7 @@ export function fitCell(text: string, width: number): string {
   const safeWidth = Math.max(0, Math.floor(width));
   if (safeWidth === 0) return "";
   const oneLine = replaceTabs(text.replaceAll("\r", " ").replaceAll("\n", " "));
-  const clipped = truncateToWidth(oneLine, safeWidth, "");
+  const clipped = truncateToWidth(oneLine, safeWidth, "").replace(/\x1b\[0m$/u, "");
   return clipped + " ".repeat(Math.max(0, safeWidth - visibleWidth(clipped)));
 }
 
@@ -136,19 +152,18 @@ function diffColor(line: string): ThemeColor {
 
 /** Claude Code paints added/removed rows as a background mask over the default foreground. */
 function diffText(theme: Theme, color: ThemeColor, text: string): string {
-  if (color !== "toolDiffAdded" && color !== "toolDiffRemoved") return theme.fg(color, text);
-  if (typeof theme.isLight !== "boolean") return theme.fg(color, text);
-  return text;
+  if (color === "toolDiffAdded" || color === "toolDiffRemoved") return text;
+  return theme.fg(color, text);
 }
 
 /**
- * `Theme.fgOnBg` only exists in newer OMP runtimes. Older hosts still expose
+ * `Theme.fgOnBg` only exists in newer Pi runtimes. Older hosts still expose
  * `fg` and `bg`, so compose the same result there instead of crashing the panel.
  */
 function fgOnBg(theme: Theme, color: ThemeColor, background: ThemeBg, text: string): string {
-  if (typeof theme.fgOnBg === "function") return theme.fgOnBg(color, background, text);
-  if (typeof theme.bg === "function") return theme.bg(background, theme.fg(color, text));
-  return theme.fg(color, text);
+  const combined = (theme as Theme & { fgOnBg?: (fg: ThemeColor, bg: ThemeBg, value: string) => string }).fgOnBg;
+  if (combined !== undefined) return combined.call(theme, color, background, text);
+  return theme.bg?.(background, theme.fg(color, text)) ?? theme.fg(color, text);
 }
 
 type ThemeMaskApi = Theme & {
@@ -187,10 +202,11 @@ function modernDiffMask(
   text: string,
   opacity: number,
 ): string | undefined {
-  if (typeof theme.isLight !== "boolean") return undefined;
-  const palette = CLAUDE_DIFF_MASKS[theme.isLight ? "light" : "dark"];
+  if (theme.appearance !== "light" && theme.appearance !== "dark") return undefined;
+  const isLight = theme.appearance === "light";
+  const palette = CLAUDE_DIFF_MASKS[isLight ? "light" : "dark"];
   const original = background === "toolSuccessBg" ? palette.toolSuccessBg : palette.toolErrorBg;
-  const base = theme.isLight ? 255 : 0;
+  const base = isLight ? 255 : 0;
   const rgb = original.map(channel => Math.round(base + (channel - base) * opacity));
   return `[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m${text}[49m`;
 }
@@ -202,7 +218,7 @@ function maskedDiffText(
   text: string,
   opacity = DEFAULT_DIFF_MASK_OPACITY,
 ): string {
-  const styled = typeof theme.isLight === "boolean" ? diffText(theme, color, text) : text;
+  const styled = diffText(theme, color, text);
   const modern = modernDiffMask(
     theme,
     background,
@@ -274,7 +290,7 @@ function renderDiffCell(
   const dimPrefix = theme.fg("dim", `${number} `);
   if (cell.kind === "context") return `${dimPrefix}${diffText(theme, color, body)}`;
   const background = cell.kind === "add" ? "toolSuccessBg" : "toolErrorBg";
-  const styled = typeof theme.isLight === "boolean" ? diffText(theme, color, body) : body;
+  const styled = diffText(theme, color, body);
   const normalizedOpacity = normalizeDiffMaskOpacity(opacity) ?? DEFAULT_DIFF_MASK_OPACITY;
   const modern = modernDiffMask(theme, background, `${dimPrefix}${styled}`, normalizedOpacity);
   if (modern !== undefined) return modern;

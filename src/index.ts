@@ -1,8 +1,7 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
-} from "@oh-my-pi/pi-coding-agent";
-import { Editor, type TUI } from "@oh-my-pi/pi-tui";
+} from "@earendil-works/pi-coding-agent";
 import type { ReviewSource } from "./contracts";
 import {
   clearProjectBaselineCache,
@@ -11,7 +10,7 @@ import {
   prepareSessionBaseline,
   setSessionBaselineCacheEnabled,
 } from "./review-source";
-import { createPanelSettingsStore, useHostAgentDir, type PanelSettingsStore } from "./settings";
+import { createPanelSettingsStore, type PanelSettingsStore } from "./settings";
 import { FilesPanel, type FilesPanelOptions } from "./ui/files-panel";
 import { loadHighlighter, type Highlighter } from "./ui/highlight";
 
@@ -44,13 +43,6 @@ function errorMessage(error: unknown): string {
 }
 
 
-/** The fullscreen overlay owns focus; native /btw still submits through the core editor. */
-function hostEditor(tui: TUI): Editor | undefined {
-  const focused = tui.getFocused();
-  return focused instanceof Editor ? focused : undefined;
-}
-
-
 export function createExtension(
   dependencies: ExtensionDependencies = productionDependencies,
 ): (pi: ExtensionAPI) => void {
@@ -59,7 +51,7 @@ export function createExtension(
     const openFileReview = async (ctx: ExtensionContext): Promise<void> => {
       if (!ctx.hasUI || ctx.mode !== "tui") {
         ctx.ui.notify(
-          "Files review is available only in OMP's interactive TUI.",
+          "Files review is available only in Pi's interactive TUI.",
           "warning",
         );
         return;
@@ -74,13 +66,11 @@ export function createExtension(
         const sessionName = pi.getSessionName();
         const [settings, highlight] = await Promise.all([
           dependencies.settings.load(),
-          dependencies.loadHighlighter(pi.pi),
+          dependencies.loadHighlighter(),
         ]);
         const source = dependencies.createReviewSource(ctx.cwd, settings.cacheEnabled);
         await ctx.ui.custom<undefined>(
           (tui, theme, keybindings, done) => {
-            const editor = hostEditor(tui);
-            if (editor?.onSubmit === undefined) throw new Error("The OMP editor is not available for /btw history.");
             const panel = dependencies.createPanel({
               cwd: ctx.cwd,
               source,
@@ -114,15 +104,6 @@ export function createExtension(
               onDiffMaskOpacityChange: opacity => {
                 dependencies.settings.saveDiffMaskOpacity(opacity);
               },
-              onBtwHistory: async () => {
-                const draft = ctx.ui.getEditorText();
-                try {
-                  await editor.onSubmit?.("/btw");
-                  if (draft && ctx.ui.getEditorText() === "") ctx.ui.setEditorText(draft);
-                } catch (error) {
-                  ctx.ui.notify(`Unable to open /btw history: ${errorMessage(error)}`, "error");
-                }
-              },
               ...(highlight === undefined ? {} : { highlight }),
               done,
             });
@@ -136,8 +117,6 @@ export function createExtension(
               width: "100%",
               maxHeight: "100%",
               margin: 0,
-              fullscreen: true,
-              mouseTracking: true,
             },
           },
         );
@@ -194,7 +173,7 @@ export function createExtension(
       handler: openFileReview,
     });
 
-    // OMP awaits session_start before the UI becomes interactive, so the baseline
+    // Pi awaits session_start before the UI becomes interactive, so the baseline
     // is captured in the background. Opening the panel joins the in-flight capture.
     pi.on("session_start", (_event, ctx) => {
       void (async () => {
@@ -220,6 +199,5 @@ export function createExtension(
 }
 
 export default function extension(pi: ExtensionAPI): void {
-  useHostAgentDir(pi.pi?.getAgentDir);
   createExtension()(pi);
 }

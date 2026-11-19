@@ -1,4 +1,4 @@
-import { BunProcessRunner } from "../src/git/process";
+import { NodeProcessRunner } from "../src/git/process";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -824,7 +824,7 @@ test("prepareSessionBaseline is reused by refresh and preview delegates to the a
 test("Git content previews read bounded working-tree content while default previews remain diffs", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-review-content-"));
   temporaryCacheRoots.push(root);
-  const runner = new BunProcessRunner();
+  const runner = new NodeProcessRunner();
   const controller = new AbortController();
   const runGit = async (...args: string[]) => {
     const result = await runner.run(root, "git", args, controller.signal);

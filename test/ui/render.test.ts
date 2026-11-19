@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
-import { visibleWidth } from "@oh-my-pi/pi-tui";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { parseUnifiedDiff, type DiffRow } from "../../src/ui/diff-view";
 import {
   fitCell,
@@ -18,7 +18,7 @@ import {
   sanitizeTerminalText,
 } from "../../src/ui/render";
 
-/** An older OMP runtime: `fg` and `bg` exist, `fgOnBg` does not. */
+/** A theme exposes foreground/background styling without the optional combined helper. */
 function legacyTheme(calls: string[] = []): Theme {
   return {
     fg(color: ThemeColor, text: string): string {
@@ -51,7 +51,7 @@ function plainTheme(calls: string[] = []): Theme {
 
 function modernTheme(isLight: boolean): Theme {
   return {
-    isLight,
+    appearance: isLight ? "light" : "dark",
     fg(_color: ThemeColor, text: string): string {
       return text;
     },
@@ -218,7 +218,7 @@ describe("preview line rendering", () => {
 
   test("masks changed lines with Claude Code backgrounds over the default foreground", () => {
     for (const isLight of [true, false]) {
-      const theme = { ...plainTheme(), isLight } as Theme;
+      const theme = Object.assign(plainTheme(), { appearance: isLight ? "light" : "dark" }) as Theme;
       const added = renderDiffLine("+new", 8, theme);
       const removed = renderDiffLine("-old", 8, theme);
       expect(added).toContain(isLight ? "[48;2;105;219;124m" : "[48;2;34;92;43m");
@@ -362,11 +362,11 @@ describe("preview line rendering", () => {
     }
   });
 
-  test("falls back to fg over bg on hosts whose theme has no fgOnBg", () => {
+  test("uses Pi fg/bg styling when no combined foreground/background helper exists", () => {
     const calls: string[] = [];
     const theme = legacyTheme(calls);
 
-    // These crashed with "theme.fgOnBg is not a function" on OMP 18.0.3.
+    // The standard Pi Theme exposes fg/bg but no combined fgOnBg helper.
     expect(renderSelectedRow("src/a.ts", 12, theme)).toBe("src/a.ts    ");
     expect(renderDiffLine("+added", 8, theme)).toBe("+added  ");
     expect(renderDiffLine("-gone", 8, theme)).toBe("-gone   ");
@@ -385,7 +385,7 @@ describe("preview line rendering", () => {
 
     expect(renderHighlightedLine(colored, 1, 14, theme, 2)).toBe(" 1 \x1b[35mconst\x1b[39m x    \x1b[0m");
     // A truncated row still ends with a reset, so no color reaches the border.
-    expect(renderHighlightedLine(colored, 1, 8, theme, 2)).toBe(" 1 \x1b[35mconst\x1b[0m\x1b[0m");
+    expect(renderHighlightedLine(colored, 1, 8, theme, 2)).toBe(" 1 \x1b[35mconst\x1b[0m");
     expect(renderHighlightedLine(colored, 7, 2, theme, 2)).toBe(" 7");
 
     for (let width = 1; width <= 120; width += 1) {

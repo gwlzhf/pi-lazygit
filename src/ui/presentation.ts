@@ -90,7 +90,6 @@ function actionsFor(input: PanelPresentationInput): readonly PanelAction[] {
         ? "commit disabled in session scope"
         : (input.selectedCount ?? 0) > 0 ? "commit" : "select files"
       : "open" },
-    { key: "i", label: "/btw history" },
   ];
   if (input.changeList && input.focus === "tree") {
     actions.push(

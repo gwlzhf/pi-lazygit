@@ -7,7 +7,7 @@
  * selected text to the system clipboard with OSC 52 on release.
  */
 
-import { sliceByColumn, visibleWidth } from "@oh-my-pi/pi-tui";
+import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./render";
 
 const REVERSE_ON = "\x1b[7m";

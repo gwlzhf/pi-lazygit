@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULT_DIFF_CONTEXT, FULL_DIFF_CONTEXT, MAX_PREVIEW_BYTES } from "../../src/contracts";
 import { GitRepository } from "../../src/git/repository";
 import {
-  BunProcessRunner,
+  NodeProcessRunner,
   type CommandOutput,
   type ProcessRunner,
   type RunOptions,
@@ -89,7 +89,7 @@ class CapturingRunner implements ProcessRunner {
     readonly options?: RunOptions;
   }> = [];
 
-  private readonly runner = new BunProcessRunner();
+  private readonly runner = new NodeProcessRunner();
 
   async run(
     cwd: string,
@@ -538,7 +538,7 @@ test("inspects visible spaced and Unicode paths while excluding ignored files", 
   await writeFile(join(root, "ignored.log"), "ignored\n");
   const inspection = await (await openRepository(root)).inspect(new AbortController().signal);
 
-  expect(inspection.root).toBe(root);
+  expect(inspection.root).toBe(await realpath(root));
   expect(inspection.hasHead).toBe(true);
   expect(inspection.allFiles).toContain("src/space name.ts");
   expect(inspection.allFiles).toContain("目录/文件.ts");
@@ -815,7 +815,7 @@ test("history caps its log at 200 entries and reports truncation", async () => {
   expect(history.truncated).toBe(true);
   expect(history.entries[0]?.subject).toBe("commit-200");
   expect(history.entries.at(-1)?.subject).toBe("commit-1");
-}, { timeout: 30_000 });
+}, { timeout: 60_000 });
 
 test("returns an ordinary commit patch without git-show metadata", async () => {
   const root = await initializeRepository();

@@ -1,9 +1,8 @@
-import { Editor } from "@oh-my-pi/pi-tui";
 import { expect, test } from "bun:test";
 import type {
   ExtensionAPI,
   ExtensionContext,
-} from "@oh-my-pi/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { DiffLayout, ReviewSource } from "../src/contracts";
 import { createExtension, FILES_SHORTCUT, type ExtensionDependencies } from "../src/index";
 import { DEFAULT_PANEL_SETTINGS, type PanelSettings, type PanelSettingsStore } from "../src/settings";
@@ -20,7 +19,7 @@ interface Deferred<T> {
   reject(error: unknown): void;
 }
 
-/** Stand-in for the coding-agent namespace OMP injects as `pi.pi`. */
+/** Stand-in module value used by the highlighter dependency test. */
 const HOST_MODULE = { marker: "host-coding-agent" };
 
 interface ApiHarness {
@@ -108,12 +107,7 @@ function createContextHarness(options?: {
       customCalls.push(factory);
       customOptions.push(customOptionsArgument);
       factory({
-        getFocused: () => Object.assign(Object.create(Editor.prototype), {
-          onSubmit: async (text: string) => {
-            submissions.push(text);
-            editorText = "";
-          },
-        }),
+        getFocused: () => undefined,
       }, {}, {}, () => {});
       return options?.customResult ?? Promise.resolve(undefined);
     },
@@ -380,7 +374,7 @@ test("command and shortcut route through the same panel opener", async () => {
   ]);
 });
 
-test("mounts the panel as a fullscreen overlay with mouse tracking", async () => {
+test("mounts the panel in a terminal-sized overlay", async () => {
   const api = createApiHarness();
   const context = createContextHarness();
 
@@ -401,8 +395,6 @@ test("mounts the panel as a fullscreen overlay with mouse tracking", async () =>
         width: "100%",
         maxHeight: "100%",
         margin: 0,
-        fullscreen: true,
-        mouseTracking: true,
       },
     },
   ]);
@@ -483,34 +475,6 @@ test("closing review leaves the editor draft unchanged", async () => {
   expect(context.editorText()).toBe("Check this");
 });
 
-test("i opens native /btw history without replacing an existing draft or closing review", async () => {
-  const api = createApiHarness();
-  const closed = deferred<undefined>();
-  const created = deferred<void>();
-  const context = createContextHarness({
-    draft: "Check this @docs/manual.md",
-    customResult: closed.promise,
-  });
-  let options: FilesPanelOptions | undefined;
-  createExtension(dependencies({
-    createPanel: value => {
-      options = value;
-      created.resolve();
-      return createPanel();
-    },
-  }))(api.api);
-
-  const opening = invokeCommand(api.commands.get("files"), context.ctx);
-  await created.promise;
-  await options?.onBtwHistory?.();
-  expect(context.submissions).toEqual(["/btw"]);
-  expect(context.editorText()).toBe("Check this @docs/manual.md");
-  expect(context.customCalls).toHaveLength(1);
-  closed.resolve(undefined);
-  await opening;
-  expect(context.editorText()).toBe("Check this @docs/manual.md");
-});
-
 test("passes a highlighter to the panel only when one loads", async () => {
   const api = createApiHarness();
   const context = createContextHarness();
@@ -539,7 +503,7 @@ test("passes a highlighter to the panel only when one loads", async () => {
   expect(panelOptions.map(options => options.highlight)).toEqual([highlighter, undefined]);
 });
 
-test("resolves the highlighter against the host's injected coding-agent module", async () => {
+test("loads the highlighter without a host-module override", async () => {
   const api = createApiHarness();
   const context = createContextHarness();
   const hosts: unknown[] = [];
@@ -552,7 +516,7 @@ test("resolves the highlighter against the host's injected coding-agent module",
   }))(api.api);
   await invokeCommand(api.commands.get("files"), context.ctx);
 
-  expect(hosts).toEqual([HOST_MODULE]);
+  expect(hosts).toEqual([undefined]);
 });
 
 test("does not mount a second panel while the first custom UI is open", async () => {
@@ -660,7 +624,7 @@ test("prepares the session baseline before opening and clears it at shutdown", a
     createPanel,
   }))(api.api);
 
-  // session_start must return immediately: OMP awaits it before the UI is interactive.
+  // session_start must return immediately: Pi awaits it before the UI is interactive.
   await api.lifecycle.get("session_start")?.(
     { type: "session_start" },
     context.ctx,

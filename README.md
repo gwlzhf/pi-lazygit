@@ -1,45 +1,39 @@
 # Pi Files Review
 
-Pi Files Review is an Oh My Pi extension for reviewing project files and Git changes inside the current OMP terminal session. It opens with a keyboard- and mouse-driven list of changed files and a selected-file diff or content preview; press `v` for the directory tree. Review is read-only until you explicitly invoke a write action: commit selected workspace paths, amend the current `HEAD` subject, push a reviewed upstream plan, or switch to a local branch.
+Pi Files Review is a Pi extension for reviewing project files and Git changes inside the current Pi terminal session. It opens with a keyboard- and mouse-driven list of changed files and a selected-file diff or content preview; press `v` for the directory tree. Review is read-only until you explicitly invoke a write action: commit selected workspace paths, amend the current `HEAD` subject, push a reviewed upstream plan, or switch to a local branch.
 
 ## Prerequisites
 
-- Oh My Pi (OMP) 18.3.1 or newer (native `/btw` history required)
-- Bun 1.3.14 or newer
+- Pi 1.0.4 or newer
 - Git installed and available on `PATH` for Git mode
 
-The extension targets the OMP 18.3.1 interactive TUI in Windows PowerShell and Windows Terminal. Git repositories without an initial commit are supported. Both Git and non-Git projects support read-only directory browsing.
+The extension targets the Pi 1.0.4 interactive TUI in Windows PowerShell and Windows Terminal. Git repositories without an initial commit are supported. Both Git and non-Git projects support read-only directory browsing.
 
 ## Install
 
-Install the published Git tag through OMP:
+Install the Pi 1.0.4 release:
 
 ```powershell
-omp plugin install github:gwlzhf/pi-lazygit#v0.9.3
+pi install git:github.com/gwlzhf/pi-lazygit#v1.0.4
 ```
 
-When replacing an installation that came from another source, uninstall it first so OMP can register the Git package cleanly:
+To install the current checkout only for this project, run:
 
 ```powershell
-omp plugin uninstall pi-lazygit
-omp plugin install github:gwlzhf/pi-lazygit#v0.9.3
+pi install --local --approve .
 ```
 
-Restart OMP after installation so the plugin is loaded and the session baseline is established.
-
-The OMP SDK packages are optional peers: installed plugins use the SDK bundled with the host instead of downloading another OMP runtime. Their `devDependencies` entries are only for developing and testing this repository; a source checkout still needs `bun install` for development.
-
-This dependency change applies to packages built from the updated source. Existing installations and previously published tags are unchanged; install a newly built package to use it.
-
-For a one-run development session without installing the plugin, run this from the repository root:
+For a one-run smoke test without saving the package in project settings:
 
 ```powershell
-omp --extension ./src/index.ts
+pi --extension ./src/index.ts
 ```
+
+Bun 1.3.14 or newer is only needed for repository development and tests (`bun install`, `bun run check`); the installed extension runs in Pi's Node host and does not depend on Bun at runtime. The coding-agent and TUI SDKs are optional peers supplied by Pi.
 
 ## Open the panel
 
-Within an interactive OMP session, use either entry point:
+Within an interactive Pi session, use either entry point:
 
 - `/files`
 - `Alt+Q`
@@ -50,7 +44,7 @@ At wide terminal widths the file list (or directory tree) and preview appear sid
 
 The panel fills the terminal without a separate input box. The top row is an overview header: on the left the active review (`Diff working tree`, `Diff session`, `Project files`, `History`, or `Switch branch`), on the right the current branch — or `detached <short-oid>` — followed by the visible file count. Below it the pane-title row names the left pane and the selected file; on a diff preview the file is followed by its `+N -N` line summary, taken from the same status inspection that produces the totals, and omitted entirely when the file has no summary. The footer carries status and key hints.
 
-The panel opens as a fullscreen overlay on the terminal's alternate screen, so the OMP transcript stays intact underneath and the terminal reports mouse events to the panel. The terminal's own text selection is unavailable while the panel is open; the preview pane provides its own (see [Copying preview text](#copying-preview-text)).
+The panel opens as a fullscreen overlay on the terminal's alternate screen, so the Pi transcript stays intact underneath and the terminal reports mouse events to the panel. The terminal's own text selection is unavailable while the panel is open; the preview pane provides its own (see [Copying preview text](#copying-preview-text)).
 
 ## Layout
 
@@ -64,13 +58,13 @@ The single-pane layout has no divider to move — the visible pane spans the pan
 
 `\` (also `Ctrl+B`) collapses the tree pane so the preview uses the full panel width, and restores it again. While the tree is collapsed the preview holds focus and every key routes to it; `\`, `Ctrl+B`, `Tab`, `Esc`, `Left`/`h`, and `]` all bring the tree back and return focus to it. `Esc` therefore takes two presses to close the panel from a collapsed tree: one to reveal it, one to close.
 
-The width, collapsed state, syntax theme, diff view, and diff mask opacity settings are stored in `pi-lazygit.json` in the OMP agent directory (`~/.omp` unless overridden), so they survive panel closes and OMP restarts. Width is stored as a ratio of the panel interior. Rapid changes are coalesced into a single write; unreadable, invalid, or unwritable settings fall back to the 30% width, expanded tree, Pi syntax theme, unified 3-line diff, and the default mask opacity without interrupting the session.
+The width, collapsed state, syntax theme, diff view, and diff mask opacity settings are stored in `pi-lazygit.json` in the Pi agent directory (`~/.pi` unless overridden), so they survive panel closes and Pi restarts. Width is stored as a ratio of the panel interior. Rapid changes are coalesced into a single write; unreadable, invalid, or unwritable settings fall back to the 30% width, expanded tree, Pi syntax theme, unified 3-line diff, and the default mask opacity without interrupting the session.
 
 The mouse wheel moves the selection in the left pane and scrolls the preview pane, following the pointer in the side-by-side layout and the focused pane in the single-pane layout.
 
 Left-clicking a visible row in the left pane focuses that pane and selects the row. In the project tree a file click starts its preview immediately, and a directory click selects it without expanding or collapsing it — expansion stays on the keyboard. History and branch rows behave the same way: a click selects only. The footer's `P push current branch` action is also clickable; other footer positions and clicks on the overview header, pane-title row, padding below the last row, and divider select nothing. Divider dragging and preview text selection keep their existing meaning.
 
-Selected rows are painted across the full pane width using the active OMP theme's selection background. Runtimes older than the `Theme.fgOnBg` helper fall back to a plain foreground over the same background token instead of failing to render. Diff previews mask whole rows as well: added lines use Claude Code's green background, removed lines its red background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. These darker masks change neither the visible width nor the text that a selection copies; changed-line foregrounds use the deeper red/green palette described below.
+Selected rows are painted across the full pane width using the active Pi theme's selection background. Pi themes style foreground and background separately, so the panel composes them with `theme.fg` and `theme.bg`. Diff previews mask whole rows as well: added lines use Claude Code's green background, removed lines its red background, and in the split layout each column carries its own background through its gutter, marker, body, and padding while the unchanged side keeps the context background. These darker masks change neither the visible width nor the text that a selection copies; changed-line foregrounds use the deeper red/green palette described below.
 
 ## Copying preview text
 
@@ -80,15 +74,9 @@ The copy is an OSC 52 clipboard write, so it reaches the system clipboard of the
 
 The selection is cleared by scrolling, by selecting another file, and by any change to the pane geometry — resizing or collapsing the tree, or switching the diff layout or context.
 
-## `/btw` history while reviewing
-
-Press `i` in either review pane to open OMP's **native `/btw` history** over the review. Its left pane lists side conversations; its right pane displays the selected conversation and answers. `Up`/`Down` choose a topic; `Tab` or `Right`/`Left` switch between the list and details. Press `f` or `Enter` on a topic to use OMP's own follow-up input. `Esc` closes history and returns to the same review panel. The review does not render an input box or an answer of its own.
-
-The shortcut opens history without submitting a question or injecting the selected diff or a file mention. Your existing main-editor draft remains unchanged. To start a new topic, leave review and use `/btw <question>` in the main OMP editor; then return to review and press `i` to browse it.
-
 ## Syntax highlighting
 
-Text previews use OMP's highlighter with four palettes: Pi (default, using the active OMP theme), Catppuccin, Nord, and Tokyo Night. Press `t` from either pane to cycle them in that order. The selected palette affects code syntax only; panel borders and status colors continue to use the active OMP theme. The language is detected from the file path — TypeScript, JavaScript/Node, C#, Go, C/C++, Rust, Python, Java, Kotlin, Ruby, PHP, shell, JSON, YAML, and the other languages OMP supports. Files whose language is unknown or unsupported render as plain text.
+Text previews use Pi's highlighter with four palettes: Pi (default, using the active Pi theme), Catppuccin, Nord, and Tokyo Night. Press `t` from either pane to cycle them in that order. The selected palette affects code syntax only; panel borders and status colors continue to use the active Pi theme. The language is detected from the file path — TypeScript, JavaScript/Node, C#, Go, C/C++, Rust, Python, Java, Kotlin, Ruby, PHP, shell, JSON, YAML, and the other languages Pi supports. Files whose language is unknown or unsupported render as plain text.
 
 Diffs keep per-line colors instead of language highlighting: additions and removals are shown with Claude Code's default diff masks (dark green and dark red backgrounds, lighter shades on light themes) over the terminal's default foreground. Preview content is sanitized before it is highlighted, so file contents can never emit their own terminal escape sequences.
 
@@ -145,7 +133,7 @@ Session baselines are per branch. Each branch, detached checkout, or unborn bran
 
 ## Commit, amend, and push
 
-In the flat change list, `space` toggles the current file, `x` inverts the current file's selection, and `A` toggles all visible changes. Committable tracked changes (`Modified files`) default to selected; untracked changes (`No version files`) default to unselected and can be selected manually. Refresh preserves manual choices; scope changes and post-commit resets apply these defaults again. Selection is held only in memory and is never persisted across sessions. A selection in session scope cannot be committed: session scope attributes changes since the OMP session baseline, while Git path-limited commits cannot isolate only those later edits.
+In the flat change list, `space` toggles the current file, `x` inverts the current file's selection, and `A` toggles all visible changes. Committable tracked changes (`Modified files`) default to selected; untracked changes (`No version files`) default to unselected and can be selected manually. Refresh preserves manual choices; scope changes and post-commit resets apply these defaults again. Selection is held only in memory and is never persisted across sessions. A selection in session scope cannot be committed: session scope attributes changes since the Pi session baseline, while Git path-limited commits cannot isolate only those later edits.
 
 `Enter` in the workspace change list starts commit: message → dry-run → `y` confirm. Git stages selected paths in batches of 200; the final path-limited commit still passes the complete selected path list, so an exceptionally large selection can exceed the platform's command-line limit. Dry-run stages those selected paths before showing its report; cancelling confirmation leaves them staged. `Ctrl+N` toggles `--no-verify` for commit/amend.
 
@@ -167,7 +155,7 @@ The plugin does not offer a per-hunk revert, a `git revert` of a past commit, or
 
 Git writes time out after 120 seconds by default (`commitTimeoutMs`, `pushTimeoutMs` in `pi-lazygit.json`); change these settings in that file to configure the limits. Git will not prompt for credentials in the panel. HTTPS disables terminal prompts and relies on noninteractive Git credential helpers. Default SSH uses OpenSSH batch mode and an existing key/agent; configured custom SSH commands are preserved but must explicitly enable OpenSSH `BatchMode=yes` or plink `-batch`, otherwise push fails closed. On Windows, killing Git's direct child on timeout may not terminate hook-spawned grandchildren.
 
-Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent directory returned by OMP (`getAgentDir()`). Cache identity includes canonical repository root, HEAD identity/OID, and index fingerprint; invalid/mismatched data is ignored, and worktree contents are still hashed against the session baseline on every refresh. Worktree edits do not invalidate that baseline; a changed HEAD captures a new session origin, while an index-only change clears its disk checkpoint but preserves the in-memory baseline so staging does not hide prior edits. Caching defaults on (`cacheEnabled` in `pi-lazygit.json`); use `/files-cache on|off` to toggle it and `/clear-cache` to remove this project's cache entry.
+Session baselines can be persisted in `pi-lazygit-cache/v1` under the Pi agent directory returned by Pi (`getAgentDir()`). Cache identity includes canonical repository root, HEAD identity/OID, and index fingerprint; invalid/mismatched data is ignored, and worktree contents are still hashed against the session baseline on every refresh. Worktree edits do not invalidate that baseline; a changed HEAD captures a new session origin, while an index-only change clears its disk checkpoint but preserves the in-memory baseline so staging does not hide prior edits. Caching defaults on (`cacheEnabled` in `pi-lazygit.json`); use `/files-cache on|off` to toggle it and `/clear-cache` to remove this project's cache entry.
 
 ## Keys
 
@@ -203,7 +191,6 @@ Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent 
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `d` | Switch the diff preview between unified and split columns |
 | `-` / `=` | Lower/raise diff mask opacity by 10% |
-| `i` | Open native `/btw` history above review |
 | `m` | Toggle Git review / ordinary directory browsing (also from file preview); preserve Git layout and scope |
 | `v` | Toggle the flat change list / modified directory tree in Git mode |
 | `s` | Toggle workspace/session scope in Git mode |
@@ -230,7 +217,6 @@ Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent 
 | `\` or `Ctrl+B` | Collapse/restore the tree pane |
 | `t` | Cycle Pi, Catppuccin, Nord, and Tokyo Night syntax themes |
 | `-` / `=` | Lower/raise diff mask opacity by 10% |
-| `i` | Open native `/btw` history above review |
 | `g` | Switch the left pane between the project tree and the commit history |
 | `b` | Switch the left pane to the local branch list |
 | `?` | Show every shortcut |
@@ -243,15 +229,6 @@ Session baselines can be persisted in `pi-lazygit-cache/v1` under the OMP agent 
 Selecting a file begins loading its preview immediately. `Enter` transfers focus to the preview.
 
 Press `F5` from either pane to reload repository status and the selected file together. The refreshed list/tree preserves the selected path when it still exists; otherwise it moves to the nearest surviving row.
-
-### Native `/btw` history
-
-| Key | Action |
-| --- | --- |
-| `Up` / `Down` | Select a side conversation |
-| `Tab` or `Left` / `Right` | Switch between conversation list and details |
-| `f` / `Enter` | Open OMP's native follow-up input for the selected topic |
-| `Esc` | Close `/btw` history and return to review |
 
 ### Commit history
 
@@ -293,9 +270,9 @@ The Git panel opens in **Git mode**, showing the change list. Press `m` to switc
 - **Change list** (default) shows full project paths under two dividers: `Modified files` for tracked changes, then `No version files` for untracked files. Each file is listed once; empty groups are omitted. The dividers are display-only: keyboard navigation skips them, and clicking them does not change the selected file.
 - **Directory mode** shows the complete Git-visible file tree, including unchanged code. Deleted paths are excluded. Preview reads current file contents rather than a Git diff; there are no commit checkboxes or diff totals. `Enter` opens the file, never commits it. `v` and `s` are inactive here. Repository-level history, branches, and confirmed push remain available.
 - **Workspace scope** shows current working-tree changes relative to `HEAD`, including staged and unstaged changes.
-- **Session scope** (`s`, Git mode only) shows changes since the repository snapshot captured for the current OMP session.
+- **Session scope** (`s`, Git mode only) shows changes since the repository snapshot captured for the current Pi session.
 
-The active repository baseline is captured at `session_start`, before the panel opens. A repository first visited later in the same OMP session receives a baseline on first access. When caching is enabled, a validated persistent copy may preload this baseline; cache identity mismatches are treated as misses. Baseline data survives in memory until `session_shutdown`; if caching is enabled it is also persisted for a later session.
+The active repository baseline is captured at `session_start`, before the panel opens. A repository first visited later in the same Pi session receives a baseline on first access. When caching is enabled, a validated persistent copy may preload this baseline; cache identity mismatches are treated as misses. Baseline data survives in memory until `session_shutdown`; if caching is enabled it is also persisted for a later session.
 
 Session scope is temporal attribution, not Agent attribution. Any edit made after the baseline counts, including edits made by external programs, other terminals, or people. A file restored to its baseline state disappears from session scope.
 
@@ -303,11 +280,11 @@ Tracked files display a fresh `HEAD`-to-working-tree diff that combines staged a
 
 ## Non-Git directories
 
-Outside a Git repository, the panel opens directly in the same read-only directory browser rooted at OMP's current working directory. It includes ordinary entries except `.git`; files preview their current contents. Git mode, workspace/session scope, history, branches, and Git writes are unavailable. Git ignore rules do not apply outside Git repositories.
+Outside a Git repository, the panel opens directly in the same read-only directory browser rooted at Pi's current working directory. It includes ordinary entries except `.git`; files preview their current contents. Git mode, workspace/session scope, history, branches, and Git writes are unavailable. Git ignore rules do not apply outside Git repositories.
 
 ## Limits
 
-To keep the OMP session responsive:
+To keep the Pi session responsive:
 
 - Preview source or diff input is limited to 1 MiB per file.
 - A preview renders at most 5,000 logical lines.

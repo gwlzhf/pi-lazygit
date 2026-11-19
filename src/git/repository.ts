@@ -43,7 +43,7 @@ import {
   type CommitPlan,
 } from "./commit";
 import {
-  BunProcessRunner,
+  NodeProcessRunner,
   type CommandOutput,
   type ProcessRunner,
   type RunOptions,
@@ -436,11 +436,11 @@ export function splitHeadMessage(message: string): { subject: string; body?: str
 export class GitRepository {
   private rootPath: string | undefined;
 
-  constructor(private readonly runner: ProcessRunner = new BunProcessRunner()) {}
+  constructor(private readonly runner: ProcessRunner = new NodeProcessRunner()) {}
 
   static async open(
     cwd: string,
-    runner: ProcessRunner = new BunProcessRunner(),
+    runner: ProcessRunner = new NodeProcessRunner(),
     signal: AbortSignal = new AbortController().signal,
   ): Promise<GitRepository | undefined> {
     throwIfAborted(signal);

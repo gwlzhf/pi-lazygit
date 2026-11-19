@@ -1,4 +1,4 @@
-import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { fitCell, sanitizeTerminalText } from "./render";
 
 export interface CommitDialogState {

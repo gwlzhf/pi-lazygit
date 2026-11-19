@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BunProcessRunner } from "../../src/git/process";
+import { NodeProcessRunner } from "../../src/git/process";
 
 const temporaryDirectories: string[] = [];
 
@@ -45,7 +45,7 @@ test("executes directly and preserves argument boundaries", async () => {
   const fixture = await fixturePath();
   const signal = new AbortController().signal;
 
-  const output = await new BunProcessRunner().run(
+  const output = await new NodeProcessRunner().run(
     process.cwd(),
     process.execPath,
     [fixture, "args", "value with spaces & an ampersand"],
@@ -61,7 +61,7 @@ test("executes directly and preserves argument boundaries", async () => {
 });
 test("merges explicit child environment values", async () => {
   const fixture = await fixturePath();
-  const output = await new BunProcessRunner().run(
+  const output = await new NodeProcessRunner().run(
     process.cwd(),
     process.execPath,
     [fixture, "env"],
@@ -77,7 +77,7 @@ test("merges explicit child environment values", async () => {
 test("caps stdout while draining the child and reports truncation", async () => {
   const fixture = await fixturePath();
 
-  const output = await new BunProcessRunner().run(
+  const output = await new NodeProcessRunner().run(
     process.cwd(),
     process.execPath,
     [fixture, "overflow"],
@@ -94,7 +94,7 @@ test("caps stdout while draining the child and reports truncation", async () => 
 test("caps stderr at 64 KiB without treating it as stdout truncation", async () => {
   const fixture = await fixturePath();
 
-  const output = await new BunProcessRunner().run(
+  const output = await new NodeProcessRunner().run(
     process.cwd(),
     process.execPath,
     [fixture, "stderr-overflow"],
@@ -108,7 +108,7 @@ test("caps stderr at 64 KiB without treating it as stdout truncation", async () 
 test("kills a waiting child and throws AbortError on cancellation", async () => {
   const fixture = await fixturePath();
   const controller = new AbortController();
-  const running = new BunProcessRunner().run(
+  const running = new NodeProcessRunner().run(
     process.cwd(),
     process.execPath,
     [fixture, "wait"],
@@ -126,7 +126,7 @@ test("does not spawn when cancellation has already been requested", async () => 
   controller.abort();
 
   await expect(
-    new BunProcessRunner().run(
+    new NodeProcessRunner().run(
       process.cwd(),
       process.execPath,
       [fixture, "args", "unreachable"],

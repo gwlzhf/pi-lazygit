@@ -17,7 +17,7 @@ import {
   type HighlightThemeName,
 } from "./ui/highlight";
 
-/** Panel preferences that outlive a single OMP session. */
+/** Panel preferences that outlive a single Pi session. */
 export interface PanelSettings {
   readonly treeRatio: number;
   readonly treeCollapsed: boolean;
@@ -79,23 +79,13 @@ function normalizeProtectedBranches(value: unknown): readonly string[] {
 }
 
 
-let hostAgentDir: (() => string) | undefined;
-
-/** Reuse the host's already-loaded `getAgentDir` instead of importing the whole OMP module graph. */
-export function useHostAgentDir(getAgentDir: (() => string) | undefined): void {
-  hostAgentDir = getAgentDir;
-}
-
 async function settingsPath(): Promise<string> {
-  if (hostAgentDir !== undefined) return nodePath.join(hostAgentDir(), SETTINGS_FILE);
-  // Standalone fallback, imported lazily: the OMP entry point is a heavy
-  // module graph (seconds when cold) and only the persistence path needs it.
-  const { getAgentDir } = await import("@oh-my-pi/pi-coding-agent");
+  const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
   return nodePath.join(getAgentDir(), SETTINGS_FILE);
 }
 
 /**
- * Panel settings persisted as JSON under the OMP agent directory. Every read
+ * Panel settings persisted as JSON under the Pi agent directory. Every read
  * and write failure degrades to the defaults: the panel is a review tool and
  * must open even when its preferences file is missing or corrupt.
  */

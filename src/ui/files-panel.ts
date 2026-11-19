@@ -1,12 +1,12 @@
-﻿import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
   matchesKey,
-  routeSgrMouseInput,
   visibleWidth,
   type Component,
-  type SgrMouseEvent,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
   type TUI,
-} from "@oh-my-pi/pi-tui";
+} from "@earendil-works/pi-tui";
 import {
   DEFAULT_DIFF_CONTEXT,
   DEFAULT_DIFF_LAYOUT,
@@ -114,8 +114,6 @@ export interface FilesPanelOptions {
   readonly highlightTheme?: HighlightThemeName;
   /** Reports every syntax palette change so the host can persist it. */
   readonly onHighlightThemeChange?: (theme: HighlightThemeName) => void;
-  /** Opens OMP's native /btw history above the review panel. */
-  readonly onBtwHistory?: () => void;
   /** Colors text previews; previews render unstyled when omitted. */
   readonly highlight?: Highlighter;
   readonly commitTimeoutMs?: number;
@@ -150,6 +148,33 @@ const WHEEL_STEP = 3;
 /** Prefix of an SGR mouse report. */
 const MOUSE_REPORT_PREFIX = "\x1b[<";
 
+interface SgrMouseEvent {
+  readonly button: number;
+  readonly col: number;
+  readonly row: number;
+  readonly motion: boolean;
+  readonly release: boolean;
+  readonly leftClick: boolean;
+  readonly wheel: number | null;
+}
+
+function parseSgrMouseEvent(data: string): SgrMouseEvent | undefined {
+  const match = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/u.exec(data);
+  if (match === null) return undefined;
+  const button = Number(match[1]);
+  const wheel = button & 64 ? (button & 1 ? 1 : -1) : null;
+  const release = match[4] === "m";
+  return {
+    button,
+    col: Number(match[2]) - 1,
+    row: Number(match[3]) - 1,
+    motion: (button & 32) !== 0,
+    release,
+    leftClick: !release && wheel === null && (button & 3) === 0 && (button & 32) === 0,
+    wheel,
+  };
+}
+
 function errorMessage(error: unknown): string {
   return sanitizeTerminalText(error instanceof Error ? error.message : String(error)).replaceAll("\n", " ");
 }
@@ -161,7 +186,7 @@ function isAbort(error: unknown, signal: AbortSignal): boolean {
 /**
  * The keys that leave the panel outright, whatever it currently has open.
  *
- * Ctrl+C is matched as a fixed control character on purpose. OMP binds
+ * Ctrl+C is matched as a fixed control character on purpose. Pi binds
  * `app.interrupt` to Escape by default, so asking the host which key means
  * "interrupt" would turn Escape into a quit and break the layered back-out.
  */
@@ -252,7 +277,6 @@ export class FilesPanel implements Component {
   readonly #onDiffContextChange: ((context: number) => void) | undefined;
   readonly #onHighlightThemeChange: ((theme: HighlightThemeName) => void) | undefined;
   readonly #onDiffMaskOpacityChange: ((opacity: number) => void) | undefined;
-  readonly #onBtwHistory: (() => void) | undefined;
   #panelRows = 0;
   readonly #highlight: Highlighter | undefined;
   readonly #done: (result: undefined) => void;
@@ -382,7 +406,6 @@ export class FilesPanel implements Component {
     this.#onDiffContextChange = options.onDiffContextChange;
     this.#onHighlightThemeChange = options.onHighlightThemeChange;
     this.#onDiffMaskOpacityChange = options.onDiffMaskOpacityChange;
-    this.#onBtwHistory = options.onBtwHistory;
     this.#highlight = options.highlight;
     this.#treeRatio = Math.max(TREE_MIN_RATIO, options.treeRatio ?? DEFAULT_TREE_RATIO);
     this.#treeCollapsed = options.treeCollapsed ?? false;
@@ -403,10 +426,30 @@ export class FilesPanel implements Component {
     this.#queueRefresh();
   }
 
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (this.#disposed || this.#doneCalled) return undefined;
+    const routed: SgrMouseEvent = {
+      button: event.button === "left" ? 0 : event.button === "middle" ? 1 : event.button === "right" ? 2 : 3,
+      col: event.x,
+      row: event.y,
+      motion: event.type === "move" || event.type === "drag",
+      release: event.type === "release",
+      leftClick: (event.type === "press" || event.type === "click") && event.button === "left",
+      wheel: event.type === "wheel" ? Math.sign(event.wheelDelta ?? 0) : null,
+    };
+    this.#routeMouse(routed);
+    return {
+      handled: true,
+      capture: event.type === "press" && event.button === "left",
+      focus: event.type === "press" && event.button === "left",
+    };
+  }
+
   handleInput(data: string): void {
     if (this.#disposed || this.#doneCalled) return;
     if (data.startsWith(MOUSE_REPORT_PREFIX)) {
-      routeSgrMouseInput(data, event => this.#routeMouse(event));
+      const event = parseSgrMouseEvent(data);
+      if (event !== undefined) this.#routeMouse(event);
       return;
     }
     // Quitting leaves the plugin; Escape only steps back one level. The two are
@@ -475,10 +518,6 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
       return;
     }
     if (this.#helpOpen) return;
-    if (matchesKey(data, "i")) {
-      this.#onBtwHistory?.();
-      return;
-    }
     if (matchesKey(data, "f5") || matchesKey(data, "r")) {
       // Queued rather than immediate: watching can have a refresh in flight.
       this.#queueRefresh();
@@ -567,7 +606,7 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
     this.#handleTreeInput(data);
   }
 
-  render(width: number): readonly string[] {
+  render(width: number): string[] {
     const safeWidth = Math.max(1, Math.floor(width));
     this.#lastWidth = safeWidth;
     const reportedRows = Math.floor(this.#tui.terminal.rows);
@@ -581,7 +620,7 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
       cached.revision === this.#revision &&
       cached.theme === this.#theme
     ) {
-      return cached.lines;
+      return cached.lines as string[];
     }
     let lines: readonly string[];
     if (this.#panelRows === 0) {
@@ -603,7 +642,7 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
         ? this.#renderWide(safeWidth, contentHeight)
         : this.#renderNarrow(safeWidth, contentHeight);
     }
-    const result = Object.freeze([...lines]);
+    const result = Object.freeze([...lines]) as unknown as string[];
     this.#cache = {
       width: safeWidth,
       rows: terminalRows,
@@ -2797,7 +2836,7 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
             ? ["F5/r refresh", "n/p move", "→/l preview", "↵ open", "tab", "\\ tree", width, "esc"]
             : ["F5/r refresh", "n/p move", "→/l preview", this.#usesChangeList() && this.#scope === "workspace" ? "↵ commit" : "↵ open", ...(this.#usesChangeList() ? ["space toggle", "x invert", "A select all"] : []), ...(this.#usesChangeList() && this.#scope === "workspace" ? ["R revert"] : []), "tab", "\\ tree", "g log", "b branches", width, ...(this.#directoryMode() ? [] : ["v list/tree", "s"]), "esc"];
     pieces.unshift(...(pushAction === undefined ? [] : [pushAction]), ...notices);
-    pieces.push(...(project?.kind === "git" && this.#leftMode === "files" ? ["m mode"] : []), "i /btw history", hints.filter(hint => hint !== undefined).join(" · "));
+    pieces.push(...(project?.kind === "git" && this.#leftMode === "files" ? ["m mode"] : []), hints.filter(hint => hint !== undefined).join(" · "));
     return pieces.join(" · ");
   }
 }

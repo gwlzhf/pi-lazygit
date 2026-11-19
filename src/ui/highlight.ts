@@ -2,19 +2,19 @@
  * Syntax highlighting for text previews.
  *
  * The panel takes a {@link Highlighter} as an option instead of importing one:
- * OMP's highlighter lives behind the coding-agent entry point (a native
+ * Pi's highlighter lives behind the coding-agent entry point (a native
  * tokenizer plus its whole module graph), which the panel's unit tests must not
  * load. `loadHighlighter` resolves it lazily at panel-open time and reports
  * `undefined` when it is unavailable, in which case previews render unstyled.
  */
 
-import type { Theme } from "@oh-my-pi/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 
 export const HIGHLIGHT_THEMES = [
-  { name: "pi", label: "Pi", ompName: undefined },
-  { name: "catppuccin", label: "Catppuccin", ompName: "dark-catppuccin" },
-  { name: "nord", label: "Nord", ompName: "dark-nord" },
-  { name: "tokyo-night", label: "Tokyo Night", ompName: "dark-tokyo-night" },
+  { name: "pi", label: "Pi", piName: undefined },
+  { name: "catppuccin", label: "Catppuccin", piName: "dark-catppuccin" },
+  { name: "nord", label: "Nord", piName: "dark-nord" },
+  { name: "tokyo-night", label: "Tokyo Night", piName: "dark-tokyo-night" },
 ] as const;
 
 export type HighlightThemeName = (typeof HIGHLIGHT_THEMES)[number]["name"];
@@ -51,7 +51,7 @@ export interface Highlighter {
   ) => HighlighterStream | undefined;
 }
 
-/** The slice of OMP's coding-agent exports the highlighter needs. */
+/** The slice of Pi's coding-agent exports the highlighter needs. */
 export interface HighlightModule {
   readonly getLanguageFromPath: (path: string) => string | undefined;
   readonly getThemeByName: (name: string) => Promise<Theme | undefined>;
@@ -74,7 +74,7 @@ function isHighlightModule(value: unknown): value is HighlightModule {
 }
 
 /**
- * Resolve OMP's tokenizer and the three optional palettes once when the panel
+ * Resolve Pi's tokenizer and the three optional palettes once when the panel
  * opens. Pi uses the active host theme passed at highlight time. Prefer the
  * host namespace; fall back to the plugin-local dependency when the host does
  * not expose the complete API.
@@ -87,10 +87,10 @@ export async function loadHighlighter(host?: unknown): Promise<Highlighter | und
     const [loaded] = await Promise.all([
       Promise.all(
         HIGHLIGHT_THEMES
-          .filter(theme => theme.ompName !== undefined)
-          .map(async ({ name, ompName }) => {
-            if (ompName === undefined) return undefined;
-            const theme = await module.getThemeByName(ompName);
+          .filter(theme => theme.piName !== undefined)
+          .map(async ({ name, piName }) => {
+            if (piName === undefined) return undefined;
+            const theme = await module.getThemeByName(piName);
             return theme === undefined ? undefined : ([name, theme] as const);
           }),
       ),
@@ -137,7 +137,7 @@ export async function loadHighlighter(host?: unknown): Promise<Highlighter | und
 async function resolveModule(host: unknown): Promise<HighlightModule | undefined> {
   if (isHighlightModule(host)) return host;
   try {
-    const imported = await import("@oh-my-pi/pi-coding-agent");
+    const imported = await import("@earendil-works/pi-coding-agent");
     return isHighlightModule(imported) ? imported : undefined;
   } catch {
     return undefined;

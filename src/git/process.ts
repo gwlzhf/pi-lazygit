@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import type { Readable } from "node:stream";
+
 const DEFAULT_STDOUT_LIMIT = 8 * 1024 * 1024;
 const STDERR_LIMIT = 64 * 1024;
 
@@ -46,29 +49,22 @@ function validateTimeout(timeoutMs: number): void {
 }
 
 async function readCapped(
-  stream: ReadableStream<Uint8Array>,
+  stream: Readable,
   limit: number,
 ): Promise<{ bytes: Uint8Array; truncated: boolean }> {
-  const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let retained = 0;
   let truncated = false;
 
-  try {
-    while (true) {
-      const result = await reader.read();
-      if (result.done) break;
-      const chunk = result.value;
-      const remaining = limit - retained;
-      if (remaining > 0) {
-        const length = Math.min(remaining, chunk.byteLength);
-        chunks.push(length === chunk.byteLength ? chunk : chunk.slice(0, length));
-        retained += length;
-      }
-      if (chunk.byteLength > remaining) truncated = true;
+  for await (const value of stream) {
+    const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+    const remaining = limit - retained;
+    if (remaining > 0) {
+      const length = Math.min(remaining, chunk.byteLength);
+      chunks.push(length === chunk.byteLength ? chunk : chunk.slice(0, length));
+      retained += length;
     }
-  } finally {
-    reader.releaseLock();
+    if (chunk.byteLength > remaining) truncated = true;
   }
 
   const bytes = new Uint8Array(retained);
@@ -80,7 +76,7 @@ async function readCapped(
   return { bytes, truncated };
 }
 
-export class BunProcessRunner implements ProcessRunner {
+export class NodeProcessRunner implements ProcessRunner {
   async run(
     cwd: string,
     executable: string,
@@ -93,14 +89,12 @@ export class BunProcessRunner implements ProcessRunner {
     if (options?.timeoutMs !== undefined) validateTimeout(options.timeoutMs);
     if (signal.aborted) throw abortError(signal.reason);
 
-    const child = Bun.spawn([executable, ...args], {
+    const child = spawn(executable, [...args], {
       cwd,
       // A child that waits on stdin would hang the panel: nothing is wired to
       // answer it, and the TUI has no terminal to hand over.
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      ...(options?.env === undefined ? {} : { env: { ...process.env, ...options.env } }),
+      stdio: ["ignore", "pipe", "pipe"],
+      env: options?.env === undefined ? process.env : { ...process.env, ...options.env },
     });
     let aborted = false;
     let timedOut = false;
@@ -120,10 +114,14 @@ export class BunProcessRunner implements ProcessRunner {
     }
 
     try {
+      const exit = new Promise<number>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", code => resolve(code ?? -1));
+      });
       const [stdout, stderr, exitCode] = await Promise.all([
-        readCapped(child.stdout, maxBytes),
-        readCapped(child.stderr, STDERR_LIMIT),
-        child.exited,
+        readCapped(child.stdout!, maxBytes),
+        readCapped(child.stderr!, STDERR_LIMIT),
+        exit,
       ]);
       if (timedOut) {
         throw new Error(
