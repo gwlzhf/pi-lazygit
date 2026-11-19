@@ -14,7 +14,7 @@ The extension targets the Pi 1.0.4 interactive TUI in Windows PowerShell and Win
 Install the Pi 1.0.4 release:
 
 ```powershell
-pi install git:github.com/gwlzhf/pi-lazygit#v1.0.4
+pi install git:github.com/gwlzhf/pi-lazygit@v1.0.5
 ```
 
 To install the current checkout only for this project, run:

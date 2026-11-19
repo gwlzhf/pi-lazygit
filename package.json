@@ -1,6 +1,6 @@
 {
   "name": "pi-lazygit",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Review project files and Git diffs inside Pi",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
