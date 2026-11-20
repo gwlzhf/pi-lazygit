@@ -69,7 +69,9 @@ test("supports the Pi public highlighter exports without optional theme loading"
   expect(highlight?.("const value = 1;", "app.ts", "pi", PI_THEME)).toEqual([
     "<const value = 1;>",
   ]);
-  expect(highlight?.("const value = 1;", "app.ts", "nord", PI_THEME)).toBeUndefined();
+  expect(highlight?.("const value = 1;", "app.ts", "nord", PI_THEME)).toEqual([
+    "<const value = 1;>",
+  ]);
 });
 
 test("warms native grammars while loading themes", async () => {

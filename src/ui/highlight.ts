@@ -1,11 +1,10 @@
 /**
  * Syntax highlighting for text previews.
  *
- * The panel takes a {@link Highlighter} as an option instead of importing one:
- * Pi's highlighter lives behind the coding-agent entry point (a native
- * tokenizer plus its whole module graph), which the panel's unit tests must not
- * load. `loadHighlighter` resolves it lazily at panel-open time and reports
- * `undefined` when it is unavailable, in which case previews render unstyled.
+ * The panel takes a {@link Highlighter} as an option instead of importing one.
+ * `loadHighlighter` lazily resolves Pi's theme module after the panel opens, so
+ * the panel's unit tests never load the SDK module. It reports `undefined` when
+ * highlighting is unavailable, in which case previews render unstyled.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -18,6 +17,7 @@ export const HIGHLIGHT_THEMES = [
 ] as const;
 
 export type HighlightThemeName = (typeof HIGHLIGHT_THEMES)[number]["name"];
+type OptionalHighlightThemeName = Exclude<HighlightThemeName, "pi">;
 
 export const DEFAULT_HIGHLIGHT_THEME: HighlightThemeName = "pi";
 
@@ -83,7 +83,7 @@ export async function loadHighlighter(host?: unknown): Promise<Highlighter | und
   if (module === undefined) return undefined;
 
   try {
-    const loadThemes = async (): Promise<Array<readonly [HighlightThemeName, Theme]>> => {
+    const loadThemes = async (): Promise<Array<readonly [OptionalHighlightThemeName, Theme]>> => {
       if (module.getThemeByName === undefined) return [];
       const themes = await Promise.all(
         HIGHLIGHT_THEMES
@@ -98,7 +98,7 @@ export async function loadHighlighter(host?: unknown): Promise<Highlighter | und
             }
           }),
       );
-      return themes.filter((theme): theme is readonly [HighlightThemeName, Theme] => (
+      return themes.filter((theme): theme is readonly [OptionalHighlightThemeName, Theme] => (
         theme !== undefined
       ));
     };
