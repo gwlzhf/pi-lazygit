@@ -25,7 +25,7 @@ export interface ExtensionDependencies {
   readonly loadHighlighter: (host?: unknown) => Promise<Highlighter | undefined>;
 }
 
-export const FILES_SHORTCUT = "alt+shift+f";
+export const FILES_SHORTCUT = "alt+d";
 
 const productionDependencies: ExtensionDependencies = {
   createReviewSource: (cwd, cacheEnabled) => createReviewSource(cwd, cacheEnabled ?? true),
