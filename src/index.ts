@@ -25,7 +25,7 @@ export interface ExtensionDependencies {
   readonly loadHighlighter: (host?: unknown) => Promise<Highlighter | undefined>;
 }
 
-export const FILES_SHORTCUT = "alt+q";
+export const FILES_SHORTCUT = "alt+shift+f";
 
 const productionDependencies: ExtensionDependencies = {
   createReviewSource: (cwd, cacheEnabled) => createReviewSource(cwd, cacheEnabled ?? true),
@@ -48,6 +48,13 @@ export function createExtension(
 ): (pi: ExtensionAPI) => void {
   return pi => {
     let panelOpen = false;
+    let highlighterPromise: Promise<Highlighter | undefined> | undefined;
+    const loadHighlighterOnce = (): Promise<Highlighter | undefined> => {
+      highlighterPromise ??= Promise.resolve()
+        .then(() => dependencies.loadHighlighter())
+        .catch(() => undefined);
+      return highlighterPromise;
+    };
     const openFileReview = async (ctx: ExtensionContext): Promise<void> => {
       if (!ctx.hasUI || ctx.mode !== "tui") {
         ctx.ui.notify(
@@ -64,10 +71,7 @@ export function createExtension(
       panelOpen = true;
       try {
         const sessionName = pi.getSessionName();
-        const [settings, highlight] = await Promise.all([
-          dependencies.settings.load(),
-          dependencies.loadHighlighter(),
-        ]);
+        const settings = await dependencies.settings.load();
         const source = dependencies.createReviewSource(ctx.cwd, settings.cacheEnabled);
         await ctx.ui.custom<undefined>(
           (tui, theme, keybindings, done) => {
@@ -104,10 +108,16 @@ export function createExtension(
               onDiffMaskOpacityChange: opacity => {
                 dependencies.settings.saveDiffMaskOpacity(opacity);
               },
-              ...(highlight === undefined ? {} : { highlight }),
               done,
             });
             panel.start();
+            // Show the panel first; Pi's highlighter module graph is expensive to
+            // load and is not needed to render the initial loading state.
+            setTimeout(() => {
+              void loadHighlighterOnce().then(highlight => {
+                if (highlight !== undefined) panel.setHighlighter(highlight);
+              });
+            }, 0);
             return panel;
           },
           {

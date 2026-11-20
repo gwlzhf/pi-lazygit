@@ -1382,6 +1382,24 @@ describe("FilesPanel syntax highlighting", () => {
     expect(calls).toHaveLength(1);
   });
 
+  test("accepts a highlighter after the panel has opened", async () => {
+    const { panel, source } = harness(60, 6);
+    panel.start();
+    source.refreshCalls[0]?.value.resolve(snapshot());
+    await settle();
+    panel.handleInput("v");
+    panel.handleInput("\x1b[A");
+    panel.handleInput("\x1b[B");
+    source.previewCalls.at(-1)?.value.resolve(preview("src/a.ts", "text", ["const x = 1;"]));
+    await settle();
+    panel.handleInput("\r");
+    expect(panel.render(60).join("\n")).not.toContain("\x1b[35m");
+
+    panel.setHighlighter((code: string) => code.split("\n").map(line => `\x1b[35m${line}\x1b[39m`));
+    expect(panel.render(60).join("\n")).toContain("\x1b[35mconst x = 1;\x1b[39m");
+    panel.dispose();
+  });
+
   test("highlights only the visible prefix and extends it incrementally while scrolling", async () => {
     const fallbackCalls: string[] = [];
     const pushedChunks: string[] = [];

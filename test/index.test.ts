@@ -7,7 +7,7 @@ import type { DiffLayout, ReviewSource } from "../src/contracts";
 import { createExtension, FILES_SHORTCUT, type ExtensionDependencies } from "../src/index";
 import { DEFAULT_PANEL_SETTINGS, type PanelSettings, type PanelSettingsStore } from "../src/settings";
 import type { FilesPanel, FilesPanelOptions } from "../src/ui/files-panel";
-import type { HighlightThemeName } from "../src/ui/highlight";
+import type { Highlighter, HighlightThemeName } from "../src/ui/highlight";
 
 type CommandRegistration = Parameters<ExtensionAPI["registerCommand"]>[1];
 type ShortcutRegistration = Parameters<ExtensionAPI["registerShortcut"]>[1];
@@ -209,6 +209,7 @@ function dependencies(
 function createPanel(): FilesPanel {
   return {
     start() {},
+    setHighlighter() {},
     handleInput() {},
     render: () => [],
     invalidate() {},
@@ -233,7 +234,7 @@ async function invokeShortcut(
   await shortcut?.handler(ctx);
 }
 
-test("registers /files, Alt+Q, and session lifecycle handlers", () => {
+test("registers /files, Alt+Shift+F, and session lifecycle handlers", () => {
   const harness = createApiHarness();
   createExtension(dependencies({
     createReviewSource: createSource,
@@ -243,7 +244,7 @@ test("registers /files, Alt+Q, and session lifecycle handlers", () => {
   }))(harness.api);
 
   expect(harness.commands.get("files")?.description).toContain("files");
-  expect(harness.shortcuts.get("alt+q")).toBeDefined();
+  expect(harness.shortcuts.get("alt+shift+f")).toBeDefined();
   expect(harness.shortcuts.get("ctrl+shift+g")).toBeUndefined();
   expect(harness.lifecycle.get("session_start")).toBeDefined();
 
@@ -475,32 +476,39 @@ test("closing review leaves the editor draft unchanged", async () => {
   expect(context.editorText()).toBe("Check this");
 });
 
-test("passes a highlighter to the panel only when one loads", async () => {
+test("opens the panel before loading and applying the highlighter", async () => {
   const api = createApiHarness();
-  const context = createContextHarness();
-  const panelOptions: FilesPanelOptions[] = [];
-  const highlighter = (code: string): readonly string[] => code.split("\n");
+  const customResult = deferred<undefined>();
+  const context = createContextHarness({ customResult: customResult.promise });
+  const loaded = deferred<Highlighter | undefined>();
+  const highlighter = (() => []) as unknown as Highlighter;
+  const installed: Highlighter[] = [];
+  let loads = 0;
 
   createExtension(dependencies({
-    createPanel: options => {
-      panelOptions.push(options);
-      return createPanel();
+    createPanel: () => ({
+      ...createPanel(),
+      setHighlighter: (value: Highlighter) => installed.push(value),
+    } as unknown as FilesPanel),
+    loadHighlighter: () => {
+      loads += 1;
+      return loaded.promise;
     },
-    loadHighlighter: async () => highlighter,
   }))(api.api);
-  await invokeCommand(api.commands.get("files"), context.ctx);
 
-  const withoutHighlighter = createApiHarness();
-  createExtension(dependencies({
-    createPanel: options => {
-      panelOptions.push(options);
-      return createPanel();
-    },
-    loadHighlighter: async () => undefined,
-  }))(withoutHighlighter.api);
-  await invokeCommand(withoutHighlighter.commands.get("files"), context.ctx);
+  const opening = invokeCommand(api.commands.get("files"), context.ctx);
+  await Promise.resolve();
+  expect(context.customCalls).toHaveLength(1);
+  expect(loads).toBe(0);
 
-  expect(panelOptions.map(options => options.highlight)).toEqual([highlighter, undefined]);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(loads).toBe(1);
+  loaded.resolve(highlighter);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(installed).toEqual([highlighter]);
+
+  customResult.resolve(undefined);
+  await opening;
 });
 
 test("loads the highlighter without a host-module override", async () => {
@@ -515,6 +523,7 @@ test("loads the highlighter without a host-module override", async () => {
     },
   }))(api.api);
   await invokeCommand(api.commands.get("files"), context.ctx);
+  await new Promise(resolve => setTimeout(resolve, 0));
 
   expect(hosts).toEqual([undefined]);
 });

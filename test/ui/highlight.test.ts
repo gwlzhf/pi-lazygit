@@ -60,6 +60,18 @@ test("loads each Pi theme once and forwards the selected theme", async () => {
   ]);
 });
 
+test("supports the Pi public highlighter exports without optional theme loading", async () => {
+  const highlight = await loadHighlighter({
+    getLanguageFromPath: () => "typescript",
+    highlightCode: (code: string) => code.split("\n").map(line => `<${line}>`),
+  });
+
+  expect(highlight?.("const value = 1;", "app.ts", "pi", PI_THEME)).toEqual([
+    "<const value = 1;>",
+  ]);
+  expect(highlight?.("const value = 1;", "app.ts", "nord", PI_THEME)).toBeUndefined();
+});
+
 test("warms native grammars while loading themes", async () => {
   let warmCalls = 0;
 
@@ -113,22 +125,30 @@ test("reports no highlighting for unknown languages and tokenizer failures", asy
   expect(highlight?.("a", "app.ts", "pi", PI_THEME)).toBeUndefined();
 });
 
-test("disables highlighting when a built-in theme cannot load", async () => {
+test("falls back to the active Pi theme when optional palettes cannot load", async () => {
+  const usedThemes: Array<Theme | undefined> = [];
   const missing = await loadHighlighter({
     getLanguageFromPath: () => "typescript",
     getThemeByName: async (name: string) => (
       name === "dark-nord" ? undefined : THEMES[name as keyof typeof THEMES]
     ),
-    highlightCode: (code: string) => [code],
+    highlightCode: (code: string, _language?: string, theme?: Theme) => {
+      usedThemes.push(theme);
+      return [code];
+    },
   });
   const rejected = await loadHighlighter({
     getLanguageFromPath: () => "typescript",
     getThemeByName: async () => {
       throw new Error("theme loader unavailable");
     },
-    highlightCode: (code: string) => [code],
+    highlightCode: (code: string, _language?: string, theme?: Theme) => {
+      usedThemes.push(theme);
+      return [code];
+    },
   });
 
-  expect(missing).toBeUndefined();
-  expect(rejected).toBeUndefined();
+  expect(missing?.("a", "app.ts", "nord", PI_THEME)).toEqual(["a"]);
+  expect(rejected?.("b", "app.ts", "catppuccin", PI_THEME)).toEqual(["b"]);
+  expect(usedThemes).toEqual([PI_THEME, PI_THEME]);
 });

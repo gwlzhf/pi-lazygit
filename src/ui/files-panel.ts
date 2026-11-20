@@ -278,7 +278,7 @@ export class FilesPanel implements Component {
   readonly #onHighlightThemeChange: ((theme: HighlightThemeName) => void) | undefined;
   readonly #onDiffMaskOpacityChange: ((opacity: number) => void) | undefined;
   #panelRows = 0;
-  readonly #highlight: Highlighter | undefined;
+  #highlight: Highlighter | undefined;
   readonly #done: (result: undefined) => void;
 
   #leftMode: LeftMode = "files";
@@ -424,6 +424,13 @@ export class FilesPanel implements Component {
     if (this.#started || this.#disposed || this.#doneCalled) return;
     this.#started = true;
     this.#queueRefresh();
+  }
+
+  setHighlighter(highlight: Highlighter): void {
+    if (this.#disposed || this.#doneCalled || this.#highlight === highlight) return;
+    this.#highlight = highlight;
+    this.#highlighted = undefined;
+    this.#requestRender();
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
