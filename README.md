@@ -36,7 +36,7 @@ Bun 1.3.14 or newer is only needed for repository development and tests (`bun in
 Within an interactive Pi session, use either entry point:
 
 - `/files`
-- `Alt+D`
+- `Ctrl+Alt+D`
 
 Both open the same review panel. Only one panel can be open at a time. Headless, print, RPC, and ACP invocations do not mount the panel; an attempted invocation reports that the interactive UI is unavailable.
 
