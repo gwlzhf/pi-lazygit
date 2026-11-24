@@ -263,7 +263,8 @@ export interface RefreshOptions {
 
 export interface WatchOptions {
   readonly signal: AbortSignal;
-  readonly onChange: () => void;
+  /** Worktree-relative path; omitted for Git metadata or an unknown change. */
+  readonly onChange: (path?: string) => void;
   readonly onError: (error: unknown) => void;
 }
 

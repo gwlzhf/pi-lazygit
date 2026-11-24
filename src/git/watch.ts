@@ -173,7 +173,12 @@ function watchTargets(targets: readonly WatchTarget[], options: WatchOptions): P
         (_event, filename) => {
           if (stopped || !shouldNotify(target, filename)) return;
           try {
-            options.onChange();
+            const relativePath = filename === null ? undefined : String(filename).replaceAll("\\", "/");
+            // Metadata can change the meaning of every preview (HEAD, index,
+            // attributes). Worktree edits only invalidate the affected file.
+            options.onChange(target.metadata || relativePath?.startsWith(".git/")
+              ? undefined
+              : relativePath);
           } catch (error) {
             fail(error);
           }

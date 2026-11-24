@@ -33,10 +33,12 @@ function delay(milliseconds: number): Promise<void> {
 
 class ChangeObserver {
   readonly errors: unknown[] = [];
+  readonly paths: (string | undefined)[] = [];
   #count = 0;
 
-  readonly onChange = (): void => {
+  readonly onChange = (path?: string): void => {
     this.#count += 1;
+    this.paths.push(path);
   };
 
   readonly onError = (error: unknown): void => {
@@ -91,6 +93,7 @@ test("reports worktree file writes and stops when the signal aborts", async () =
     await observer.observes(() => writeFile(join(root, "a.ts"), `export const a = ${Date.now()};\n`)),
   ).toBe(true);
 
+  expect(observer.paths).toContain("a.ts");
   controller.abort();
   await watching;
   expect(observer.errors).toEqual([]);
@@ -116,6 +119,7 @@ test("reports Git metadata writes such as a moved HEAD", async () => {
     await observer.observes(() => writeFile(join(root, ".git", "HEAD"), "ref: refs/heads/main\n")),
   ).toBe(true);
 
+  expect(observer.paths).toContain(undefined);
   controller.abort();
   await watching;
 }, TEST_TIMEOUT_MS);

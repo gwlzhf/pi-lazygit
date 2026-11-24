@@ -67,7 +67,7 @@ interface CommitDiffPreview {
 
 interface WatchCall {
   readonly signal: AbortSignal;
-  readonly onChange: () => void;
+  readonly onChange: (path?: string) => void;
   readonly onError: (error: unknown) => void;
 }
 class ControlledSource implements ReviewSource {
@@ -768,6 +768,64 @@ describe("FilesPanel state machine", () => {
     } finally {
       panel.dispose();
       vi.useRealTimers();
+    }
+  });
+
+  test("unrelated watcher edits do not reload the selected preview", async () => {
+    const { panel, source } = harness(100, 7);
+    try {
+      panel.start();
+      source.refreshCalls[0]?.value.resolve(snapshot());
+      await settle();
+      const selected = source.previewCalls.at(-1)!;
+      selected.value.resolve(preview(selected.path, "text", ["stable preview"]));
+      await settle();
+      const before = source.previewCalls.length;
+
+      source.watchCalls[0]?.onChange("other-file.ts");
+      await new Promise(resolve => setTimeout(resolve, 180));
+      source.refreshCalls.at(-1)?.value.resolve(snapshot());
+      await settle();
+      expect(source.previewCalls).toHaveLength(before);
+      expect(panel.render(100).join("\n")).toContain("stable preview");
+
+      source.watchCalls[0]?.onChange(selected.path);
+      await new Promise(resolve => setTimeout(resolve, 180));
+      source.refreshCalls.at(-1)?.value.resolve(snapshot());
+      await settle();
+      expect(source.previewCalls).toHaveLength(before + 1);
+      expect(panel.render(100).join("\n")).not.toContain(`Loading: ${selected.path}`);
+    } finally {
+      panel.dispose();
+    }
+  });
+
+  test("refreshing the same file preserves preview scroll position", async () => {
+    const { panel, source } = harness(100, 7);
+    try {
+      panel.start();
+      source.refreshCalls[0]?.value.resolve(snapshot());
+      await settle();
+      const selected = source.previewCalls.at(-1)!;
+      const lines = Array.from({ length: 50 }, (_, index) => `content-line-${index}`);
+      selected.value.resolve(preview(selected.path, "text", lines));
+      await settle();
+      panel.handleInput("\t");
+      panel.render(100);
+      panel.handleInput("\x1b[6~");
+      const before = panel.render(100).join("\n");
+      expect(before).not.toContain("content-line-0");
+
+      panel.handleInput("r");
+      source.refreshCalls.at(-1)?.value.resolve(snapshot());
+      await settle();
+      source.previewCalls.at(-1)?.value.resolve(preview(selected.path, "text", lines));
+      await settle();
+      const after = panel.render(100).join("\n");
+      expect(after).not.toContain("content-line-0");
+      expect(after).toContain("content-line-");
+    } finally {
+      panel.dispose();
     }
   });
 

@@ -318,6 +318,7 @@ export class FilesPanel implements Component {
   #watchGeneration = 0;
   #refreshTimer: NodeJS.Timeout | undefined;
   #refreshQueued = false;
+  #previewInvalidated = true;
   #treeRatio: number;
   #treeCollapsed: boolean;
   #diffLayout: DiffLayout;
@@ -1123,6 +1124,7 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
 
   #queueRefresh(debounce = false): void {
     if (this.#disposed || this.#doneCalled) return;
+    if (!debounce) this.#previewInvalidated = true;
     if (debounce) {
       if (this.#refreshTimer !== undefined) clearTimeout(this.#refreshTimer);
       this.#refreshTimer = setTimeout(() => {
@@ -1152,9 +1154,11 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
   #beginRefresh(): void {
     if (this.#disposed || this.#doneCalled || this.#refreshController !== undefined) return;
     const generation = ++this.#refreshGeneration;
+    const refreshPreview = this.#previewInvalidated;
+    this.#previewInvalidated = false;
     if (this.#leftMode === "log") {
       this.#cancelCommitDiff();
-    } else {
+    } else if (refreshPreview) {
       this.#previewGeneration += 1;
       this.#previewController?.abort();
       this.#previewController = undefined;
@@ -1187,7 +1191,7 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
         if (project.kind === "git") {
           this.#installWatch();
           if (this.#leftMode === "log") this.#beginHistory();
-          else this.#rebuildRows(true);
+          else this.#rebuildRows(refreshPreview);
         } else {
           this.#stopWatch();
           if (this.#leftMode === "log") this.#leftMode = "files";
@@ -1224,8 +1228,13 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
     this.#watchController = controller;
     void this.#source.watch({
       signal: controller.signal,
-      onChange: () => {
+      onChange: path => {
         if (!this.#isCurrentWatch(generation, controller)) return;
+        const selectedPath = this.#previewPath;
+        if (path === undefined || path === selectedPath || selectedPath?.startsWith(`${path}/`)
+          || path === ".gitattributes" || path?.endsWith("/.gitattributes")) {
+          this.#previewInvalidated = true;
+        }
         this.#queueRefresh(true);
       },
       onError: error => this.#setWatchError(error, generation, controller),
@@ -2276,7 +2285,7 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
       return;
     }
     const samePath = this.#previewPath === path;
-    this.#clearSelection();
+    if (!samePath) this.#clearSelection();
     const generation = ++this.#previewGeneration;
     this.#previewController?.abort();
     const controller = new AbortController();
@@ -2296,8 +2305,17 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
         if (!this.#isCurrentPreview(generation, controller, path)) return;
         this.#previewController = undefined;
         this.#previewLoading = false;
-        this.#preview = result.path === path ? result : { ...result, path };
-        this.#previewScroll = 0;
+        const previous = this.#preview;
+        const unchanged = previous !== undefined && previous.kind === result.kind
+          && previous.byteSize === result.byteSize && previous.truncated === result.truncated
+          && previous.error === result.error && previous.lines.length === result.lines.length
+          && previous.lines.every((line, index) => line === result.lines[index]);
+        if (!unchanged) {
+          this.#clearSelection();
+          this.#preview = result.path === path ? result : { ...result, path };
+        }
+        // A background refresh must not jump a reader back to the first line.
+        // Rendering clamps the position if the updated file became shorter.
         this.#requestRender();
       },
       error => {
@@ -2549,7 +2567,7 @@ if (this.#commitDialog !== undefined || this.#amendDialog !== undefined || this.
     const selected = this.#selectedRow();
     const path = this.#previewPath ?? (selected?.node.kind === "file" ? selected.node.path : undefined);
     if (path === undefined) return "Preview";
-    if (this.#previewLoading) return `Loading: ${path}`;
+    if (this.#previewLoading && this.#preview === undefined) return `Loading: ${path}`;
     switch (this.#preview?.kind) {
       case "diff":
         return `Diff: ${path}`;
